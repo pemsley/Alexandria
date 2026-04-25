@@ -16,7 +16,8 @@ import time
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("GdkPixbuf", "2.0")
-from gi.repository import Gtk, Gdk, GLib, Gio, Pango
+gi.require_version("Adw", "1")
+from gi.repository import Gtk, Gdk, GLib, Gio, Pango, Adw
 
 from . import (index, edit_dialog, importer, metrics, sidecar, extract,
                viewer, marks_config, watcher as watcher_mod, author_works,
@@ -632,20 +633,18 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     return box
 
 
-class BrowserWindow(Gtk.ApplicationWindow):
+class BrowserWindow(Adw.ApplicationWindow):
     def __init__(self, app, conn):
         super().__init__(application=app)
         self.conn = conn
         self.set_title("Alexandria")
         self.set_default_size(900, 700)
 
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        outer.set_margin_start(6)
-        outer.set_margin_end(6)
-        outer.set_margin_top(6)
-        outer.set_margin_bottom(6)
-
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        toolbar.set_margin_start(8)
+        toolbar.set_margin_end(8)
+        toolbar.set_margin_top(6)
+        toolbar.set_margin_bottom(6)
         import_files_btn = Gtk.Button(label="Import Files…")
         import_files_btn.connect("clicked", self._on_import_files)
         toolbar.append(import_files_btn)
@@ -689,10 +688,12 @@ class BrowserWindow(Gtk.ApplicationWindow):
         # (where freshly-imported entries sit, post-sort).
         self.status.connect("activate-link", self._on_status_link)
         toolbar.append(self.status)
-        outer.append(toolbar)
 
         # Progress strip (hidden when idle).
         self.progress_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.progress_box.set_margin_start(8)
+        self.progress_box.set_margin_end(8)
+        self.progress_box.set_margin_bottom(4)
         self.progress_label = Gtk.Label(xalign=0.0)
         self.progress_label.set_hexpand(True)
         self.progress_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
@@ -701,7 +702,6 @@ class BrowserWindow(Gtk.ApplicationWindow):
         self.progress_box.append(self.progress_label)
         self.progress_box.append(self.progress_bar)
         self.progress_box.set_visible(False)
-        outer.append(self.progress_box)
         self._import_busy = False
 
         self.results_scrolled = Gtk.ScrolledWindow()
@@ -711,9 +711,19 @@ class BrowserWindow(Gtk.ApplicationWindow):
                                          Gtk.PolicyType.AUTOMATIC)
         self.results = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.results_scrolled.set_child(self.results)
-        outer.append(self.results_scrolled)
 
-        self.set_child(outer)
+        # Compose with Adw.ToolbarView: native HeaderBar + window
+        # controls on top, the actions toolbar as a secondary top
+        # bar, the progress strip below it (only when busy), and
+        # the cards scrolled-window as the main content.
+        toolbar_view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        toolbar_view.add_top_bar(header)
+        toolbar_view.add_top_bar(toolbar)
+        toolbar_view.add_top_bar(self.progress_box)
+        toolbar_view.set_content(self.results_scrolled)
+
+        self.set_content(toolbar_view)
         self._reload(None)
 
         # Drop target: accept files (Gdk.FileList) dragged in from the
@@ -2173,7 +2183,9 @@ class BrowserWindow(Gtk.ApplicationWindow):
 
 def main(argv):
     conn = index.open_db()
-    app = Gtk.Application(application_id="io.github.pemsley.Alexandria")
+    # Adw.Application initialises libadwaita (theme + dark/light follow
+    # the system) and gives us native HeaderBar / Toast support.
+    app = Adw.Application(application_id="io.github.pemsley.Alexandria")
 
     def on_activate(app):
         win = BrowserWindow(app, conn)

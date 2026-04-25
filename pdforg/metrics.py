@@ -468,6 +468,92 @@ def fetch_cited_by(doi=None, openalex_id=None, sort="recent", limit=10):
     return out
 
 
+def fetch_references(doi=None, openalex_id=None, limit=50):
+    """Return the references *of* a paper, in publication order.
+
+    Reads the paper's OpenAlex Work record, takes its `referenced_works`
+    list (Work IDs the paper cites — derived from CrossRef and other
+    sources), and batched-fetches their bibliographic details.
+
+    Returns `[{openalex_id, doi, title, year, journal,
+    first_author, last_author, citations}, ...]` ordered as in the
+    source `referenced_works` list. Returns `[]` on failure / no DOI."""
+    if not doi and not openalex_id:
+        return []
+    if not openalex_id:
+        url = ("https://api.openalex.org/works/doi:"
+               + urllib.parse.quote(doi, safe=""))
+        if OPENALEX_MAILTO:
+            url += "?mailto=" + urllib.parse.quote(OPENALEX_MAILTO)
+        data = _http_get_json(
+            url,
+            headers={"User-Agent": OPENALEX_UA,
+                     "Accept": "application/json"},
+            timeout=15)
+        if not data:
+            return []
+    else:
+        url = ("https://api.openalex.org/works/"
+               + urllib.parse.quote(openalex_id, safe=""))
+        if OPENALEX_MAILTO:
+            url += "?mailto=" + urllib.parse.quote(OPENALEX_MAILTO)
+        data = _http_get_json(
+            url,
+            headers={"User-Agent": OPENALEX_UA,
+                     "Accept": "application/json"},
+            timeout=15)
+        if not data:
+            return []
+    refs = data.get("referenced_works") or []
+    ref_ids = []
+    for r in refs:
+        sid = _strip_openalex_id(r) or r
+        if sid and sid not in ref_ids:
+            ref_ids.append(sid)
+    if not ref_ids:
+        return []
+    ref_ids = ref_ids[:limit]
+
+    # Batched fetch with field-selection to keep the response small.
+    filt = "ids.openalex:" + "|".join(ref_ids)
+    params = [
+        ("filter", filt),
+        ("per_page", str(len(ref_ids))),
+        ("select",
+         "id,doi,title,publication_year,publication_date,"
+         "authorships,primary_location,cited_by_count"),
+    ]
+    if OPENALEX_MAILTO:
+        params.append(("mailto", OPENALEX_MAILTO))
+    url2 = "https://api.openalex.org/works?" + urllib.parse.urlencode(params)
+    data2 = _http_get_json(
+        url2,
+        headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
+        timeout=20)
+    if not data2:
+        return []
+
+    by_id = {}
+    for w in (data2.get("results") or []):
+        wid = _strip_openalex_id(w.get("id")) or w.get("id")
+        first, last = _author_first_last(w.get("authorships"))
+        primary = w.get("primary_location") or {}
+        src = primary.get("source") or {}
+        by_id[wid] = {
+            "openalex_id": wid,
+            "doi": _normalize_doi(w.get("doi")),
+            "title": w.get("title"),
+            "year": w.get("publication_year"),
+            "publication_date": w.get("publication_date"),
+            "journal": src.get("display_name"),
+            "first_author": first,
+            "last_author": last,
+            "citations": w.get("cited_by_count") or 0,
+        }
+    # Preserve the publication-order from referenced_works.
+    return [by_id[r] for r in ref_ids if r in by_id]
+
+
 def _crossref_count(doi):
     qdoi = urllib.parse.quote(doi, safe="")
     url = "https://api.crossref.org/works/" + qdoi
@@ -608,6 +694,74 @@ def _surname(name):
         return ""
     parts = name.strip().split()
     return parts[-1] if parts else ""
+
+
+def find_doi(title, year=None, author_names=None, journal=None):
+    """Search OpenAlex for a Work matching the given title (+ optional
+    year, authors, journal) and return its DOI string, or None.
+
+    Used to back-fill a DOI on BibTeX ghost entries that came in
+    without one. We require at least one author-surname match to avoid
+    grabbing an unrelated paper with a similar title.
+
+    `author_names` is a list of full names (we use surnames only)."""
+    if not title:
+        return None
+    # Drop BibTeX transliterations of symbols ("3-prime-end" really
+    # means "3′-end") and similar fluff that won't be in the real title.
+    cleaned = re.sub(r"\b(prime|hyphen)\b", " ", title, flags=re.I)
+    q_title = re.sub(r"\W+", " ", cleaned).strip()
+    if len(q_title) < 8:
+        return None
+    q_title = q_title[:200]
+
+    filt = "title.search:" + q_title
+    if year:
+        filt += ",publication_year:{}".format(int(year))
+    params = [
+        ("filter", filt),
+        ("per_page", "10"),
+    ]
+    if OPENALEX_MAILTO:
+        params.append(("mailto", OPENALEX_MAILTO))
+    url = "https://api.openalex.org/works?" + urllib.parse.urlencode(params)
+
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
+        timeout=15)
+    if data is None:
+        return None
+
+    surnames_lc = {_surname(n).lower()
+                   for n in (author_names or []) if n and _surname(n)}
+    journal_lc = (journal or "").lower().strip()
+
+    for w in (data.get("results") or []):
+        cand_doi = _normalize_doi(w.get("doi"))
+        if not cand_doi:
+            continue
+        # Author-overlap gate (skip if the caller didn't give us authors).
+        if surnames_lc:
+            cand_surnames = set()
+            for a in (w.get("authorships") or []):
+                n = (a.get("author") or {}).get("display_name") or ""
+                sn = _surname(n).lower()
+                if sn:
+                    cand_surnames.add(sn)
+            if not (surnames_lc & cand_surnames):
+                continue
+        # Soft journal check: if both supplied and they're clearly
+        # different, skip. Substring match is enough — OpenAlex source
+        # names vary ("Science" vs "Science (American Association ...)").
+        if journal_lc:
+            cand_journal = (((w.get("primary_location") or {}).get("source")
+                             or {}).get("display_name") or "").lower()
+            if cand_journal and (journal_lc not in cand_journal
+                                 and cand_journal not in journal_lc):
+                continue
+        return cand_doi
+    return None
 
 
 def find_published_version(title, author_names, preprint_doi=None):

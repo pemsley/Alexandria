@@ -25,6 +25,12 @@ LIBRARY_ROOT = os.environ.get(
     "PDFORG_LIBRARY", os.path.expanduser("~/pdfs"))
 
 
+# Display flags. Future plan: surface these via a "Display Options"
+# popover with Compact / Standard / Verbose presets. For now they are
+# module-level constants and default to a quiet card.
+display_auto_keywords = False
+
+
 def open_pdf(path):
     try:
         subprocess.Popen(["xdg-open", path],
@@ -111,20 +117,17 @@ def is_preprint(row):
 
 
 def make_keyword_chip(text):
-    """A small framed chip used to display an auto-keyword (OpenAlex
-    concept). Visually distinct from user-set tags (when those get UI)
-    by being smaller and using muted text."""
-    frame = Gtk.Frame()
-    frame.set_valign(Gtk.Align.CENTER)
+    """A small auto-keyword (OpenAlex concept) shown beneath a card.
+    Plain label with theme-aware dim styling — `alpha` follows the
+    theme foreground so it reads in both light and dark modes."""
     lbl = Gtk.Label()
-    lbl.set_markup('<span foreground="#666666"><small>{}</small></span>'.format(
-        GLib.markup_escape_text(text)))
-    lbl.set_margin_start(6)
-    lbl.set_margin_end(6)
-    lbl.set_margin_top(1)
-    lbl.set_margin_bottom(1)
-    frame.set_child(lbl)
-    return frame
+    lbl.set_markup(
+        '<small><span alpha="60%">{}</span></small>'.format(
+            GLib.markup_escape_text(text)))
+    lbl.set_valign(Gtk.Align.CENTER)
+    lbl.set_margin_start(2)
+    lbl.set_margin_end(2)
+    return lbl
 
 
 def make_mark_dropdown(items):
@@ -550,18 +553,21 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
         star_lbl.set_halign(Gtk.Align.START)
         text.append(star_lbl)
 
-    # Auto-keywords (OpenAlex concepts). Capped to 5 visible to avoid
-    # card bloat; tooltip on each chip shows the full topic name.
-    auto_kw_json = row["auto_keywords_json"] if "auto_keywords_json" in row.keys() else None
-    try:
-        auto_kw = json.loads(auto_kw_json or "[]")
-    except (TypeError, ValueError):
-        auto_kw = []
-    if auto_kw:
-        kw_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        for kw in auto_kw[:5]:
-            kw_row.append(make_keyword_chip(kw))
-        text.append(kw_row)
+    # Auto-keywords (OpenAlex concepts). Hidden by default — they bulk
+    # the card up without being especially actionable. Will be revealed
+    # by a future "Display Options → Verbose" preset.
+    if display_auto_keywords:
+        auto_kw_json = (row["auto_keywords_json"]
+                        if "auto_keywords_json" in row.keys() else None)
+        try:
+            auto_kw = json.loads(auto_kw_json or "[]")
+        except (TypeError, ValueError):
+            auto_kw = []
+        if auto_kw:
+            kw_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            for kw in auto_kw[:5]:
+                kw_row.append(make_keyword_chip(kw))
+            text.append(kw_row)
 
     box.append(text)
     return box

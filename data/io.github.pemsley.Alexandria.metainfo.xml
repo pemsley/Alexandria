@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.pemsley.Alexandria</id>
+
+  <!-- Licence of this metainfo file itself, not the application -->
+  <metadata_license>FSFAP</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>Alexandria</name>
+  <summary>Personal library of scientific PDFs</summary>
+
+  <description>
+    <p>
+      Alexandria is a GTK4 research library for managing scientific papers.
+      Point it at a directory of PDFs and it extracts metadata (title,
+      authors, year, DOI, journal) from XMP, page text, CrossRef and
+      OpenAlex, then presents a searchable, filterable card browser.
+    </p>
+    <ul>
+      <li>Full-text search across title, authors, abstract, DOI and journal</li>
+      <li>Citation counts and per-year sparklines from OpenAlex</li>
+      <li>Built-in PDF viewer with highlight and comment annotations</li>
+      <li>BibTeX import and export</li>
+      <li>Preprint detection (arXiv, bioRxiv, chemRxiv and more)</li>
+      <li>Author follow — see what authors you track have published recently</li>
+      <li>Duplicate detection by DOI and file hash</li>
+      <li>Sidecar JSON metadata lives next to each PDF, never inside it</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.github.pemsley.Alexandria.desktop</launchable>
+
+  <url type="homepage">https://github.com/pemsley/Alexandria</url>
+  <url type="bugtracker">https://github.com/pemsley/Alexandria/issues</url>
+
+  <developer>
+    <name>Paul Emsley</name>
+  </developer>
+
+  <!-- OARS content rating — no objectionable content -->
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-05-05">
+      <description>
+        <p>Initial release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

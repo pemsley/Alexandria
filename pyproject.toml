@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdforg"
+version = "0.1.0"
+description = "GTK4 organizer for a personal library of scientific PDFs"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{name = "Paul Emsley"}]
+requires-python = ">=3.9"
+dependencies = [
+    "PyGObject>=3.42",
+    "pdfx",
+    "pypdf",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: GTK",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Database",
+]
+keywords = ["pdf", "bibliography", "reference-manager", "gtk4", "openalex", "crossref"]
+
+[project.urls]
+Homepage    = "https://github.com/pemsley/pdforg"
+Repository  = "https://github.com/pemsley/pdforg"
+Issues      = "https://github.com/pemsley/pdforg/issues"
+
+[project.scripts]
+pdforg-browse   = "pdforg.browse:main"
+pdforg-import   = "pdforg.cli_import:main"
+pdforg-classify = "pdforg.classify:main"
+
+[tool.setuptools.packages.find]
+include = ["pdforg*"]
+exclude = ["tests*"]

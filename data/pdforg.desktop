@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=PDF Organizer
+GenericName=Reference Manager
+Comment=Browse and search a personal library of scientific PDFs
+Exec=pdforg-browse
+Icon=pdforg
+Terminal=false
+Type=Application
+Categories=Office;Science;Education;Database;
+StartupNotify=true
+StartupWMClass=org.coot.pdforg
+Keywords=pdf;papers;research;bibliography;crossref;openalex;

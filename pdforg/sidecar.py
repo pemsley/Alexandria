@@ -11,6 +11,12 @@ from datetime import date
 SCHEMA_VERSION = 1
 SIDECAR_SUFFIX = ".meta.json"
 
+# Ghost (PDF-less) entries imported from BibTeX live in this hidden
+# subdirectory of LIBRARY_ROOT. Their `pdf_path` in the index is
+# `bibtex:<key>` — a synthetic identifier, not a filesystem path.
+GHOST_SUBDIR = ".alexandria-bibtex"
+GHOST_PATH_PREFIX = "bibtex:"
+
 
 def sidecar_path_for(pdf_path):
     return pdf_path + SIDECAR_SUFFIX
@@ -18,6 +24,22 @@ def sidecar_path_for(pdf_path):
 
 def thumb_path_for(pdf_path):
     return pdf_path + ".thumb.png"
+
+
+def is_ghost_path(pdf_path):
+    """True for synthetic `bibtex:<key>` identifiers used by BibTeX-only
+    library entries (no PDF on disk)."""
+    return bool(pdf_path) and pdf_path.startswith(GHOST_PATH_PREFIX)
+
+
+def ghost_pdf_path(bibtex_key):
+    return GHOST_PATH_PREFIX + bibtex_key
+
+
+def ghost_sidecar_path(library_root, bibtex_key):
+    """Where the ghost sidecar JSON lives on disk."""
+    return os.path.join(library_root, GHOST_SUBDIR,
+                        bibtex_key + SIDECAR_SUFFIX)
 
 
 def new_record(pdf_path):
@@ -58,6 +80,14 @@ def new_record(pdf_path):
         #    "comment": str, "author": str,
         #    "created": iso8601, "modified": iso8601}
         "highlights": [],
+        # BibTeX provenance / round-trip support. When the entry came
+        # from a `.bib` import these get populated; otherwise they're
+        # quietly None / {}. `bibtex_extra` carries fields we don't
+        # promote to the top level (volume, number, pages, publisher,
+        # url, abstract, keywords, ...) so re-export is faithful.
+        "bibtex_key": None,
+        "bibtex_type": None,
+        "bibtex_extra": {},
         "raw": {},
     }
 

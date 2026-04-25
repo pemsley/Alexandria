@@ -316,13 +316,19 @@ def search(conn, query=None, limit=500, mark_filter=None):
     Implicit prefix matching: each query token is treated as a prefix,
     so 'Cro' matches 'Croll' / 'Crowfoot' / 'crystallography'.
 
-    `mark_filter` constrains by the user "Mark" colour."""
+    `mark_filter` constrains by the user "Mark" colour.
+
+    Result order: most recently *added* first (date the file was first
+    imported, descending), then by sidecar mtime as a tie-break so a
+    single-day import batch keeps stable order, then title. This puts a
+    just-imported paper at row 0 — the user can find it without
+    knowing the title."""
     mark_sql, mark_params = _mark_filter_clause(mark_filter)
+    order_clause = (" ORDER BY added_date DESC, sidecar_mtime DESC, title")
 
     if not query:
         sql = ("SELECT papers.* FROM papers"
-               " WHERE 1=1" + mark_sql +
-               " ORDER BY year DESC, title LIMIT ?")
+               " WHERE 1=1" + mark_sql + order_clause + " LIMIT ?")
         cur = conn.execute(sql, tuple(mark_params + [limit]))
         return [dict(r) for r in cur.fetchall()]
 
@@ -332,8 +338,7 @@ def search(conn, query=None, limit=500, mark_filter=None):
             sql = ("SELECT papers.* FROM papers"
                    " JOIN papers_fts ON papers.id = papers_fts.rowid"
                    " WHERE papers_fts MATCH ?" + mark_sql +
-                   " ORDER BY papers.year DESC, papers.title"
-                   " LIMIT ?")
+                   order_clause + " LIMIT ?")
             cur = conn.execute(sql, tuple([fts_query] + mark_params + [limit]))
             return [dict(r) for r in cur.fetchall()]
         except sqlite3.OperationalError:
@@ -345,7 +350,7 @@ def search(conn, query=None, limit=500, mark_filter=None):
            " WHERE (title LIKE ? OR authors_json LIKE ? OR doi LIKE ?"
            "        OR journal LIKE ? OR abstract LIKE ?"
            "        OR auto_keywords_json LIKE ?)" + mark_sql +
-           " ORDER BY year DESC, title LIMIT ?")
+           order_clause + " LIMIT ?")
     cur = conn.execute(sql, tuple([pat]*6 + mark_params + [limit]))
     return [dict(r) for r in cur.fetchall()]
 

@@ -183,13 +183,24 @@ def _normalize_doi(doi):
     return s or None
 
 
-def fetch_works_by_author(orcid=None, openalex_id=None, since=None, limit=50):
+_AUTHOR_WORKS_SORTS = {
+    "recent": "publication_date:desc",
+    "cited":  "cited_by_count:desc",
+}
+
+
+def fetch_works_by_author(orcid=None, openalex_id=None, since=None,
+                          limit=50, sort="recent"):
     """Return a list of works by the given author. Prefers ORCID, falls
     back to OpenAlex ID. `since` is an ISO date string (e.g. '2023-01-01')
     that, when set, restricts to works published on or after that date.
-    Sorted most-recent first. Returns [] on failure / no match."""
+    `sort` is one of:
+      'recent' (default) — most-recently published first
+      'cited'            — most-cited first
+    Returns [] on failure / no match."""
     if not orcid and not openalex_id:
         return []
+    sort_key = _AUTHOR_WORKS_SORTS.get(sort, _AUTHOR_WORKS_SORTS["recent"])
     if orcid:
         filt = "author.orcid:" + orcid
     else:
@@ -199,7 +210,7 @@ def fetch_works_by_author(orcid=None, openalex_id=None, since=None, limit=50):
 
     params = [
         ("filter", filt),
-        ("sort", "publication_date:desc"),
+        ("sort", sort_key),
         ("per_page", str(limit)),
     ]
     if OPENALEX_MAILTO:
@@ -383,6 +394,78 @@ def _reconstruct_abstract(inv_idx):
         return None
     positions.sort()
     return " ".join(word for _, word in positions) or None
+
+
+_CITED_BY_SORTS = {
+    "recent": "publication_date:desc",
+    "cited":  "cited_by_count:desc",
+}
+
+
+def fetch_cited_by(doi=None, openalex_id=None, sort="recent", limit=10):
+    """Return the works that cite the given paper, as
+    `[{openalex_id, doi, title, year, publication_date, journal,
+       first_author, last_author, citations}, ...]`.
+    `sort` is `'recent'` (default — newest citing papers first) or
+    `'cited'` (most-cited citing papers first). Returns [] on
+    failure / no DOI / no openalex_id.
+
+    Implementation: OpenAlex's `cites:` filter wants a Work ID
+    (`W12345...`), so when only a DOI is supplied we resolve it via
+    `/works/doi:<doi>` first — that's one extra HTTP."""
+    if not doi and not openalex_id:
+        return []
+    if not openalex_id:
+        url = ("https://api.openalex.org/works/doi:"
+               + urllib.parse.quote(doi, safe=""))
+        if OPENALEX_MAILTO:
+            url += "?mailto=" + urllib.parse.quote(OPENALEX_MAILTO)
+        data = _http_get_json(
+            url,
+            headers={"User-Agent": OPENALEX_UA,
+                     "Accept": "application/json"},
+            timeout=15)
+        if not data:
+            return []
+        openalex_id = _strip_openalex_id(data.get("id")) or data.get("id")
+        if not openalex_id:
+            return []
+
+    sort_key = _CITED_BY_SORTS.get(sort, _CITED_BY_SORTS["recent"])
+    params = [
+        ("filter", "cites:" + openalex_id),
+        ("sort", sort_key),
+        ("per_page", str(limit)),
+        ("select",
+         "id,doi,title,publication_year,publication_date,"
+         "authorships,primary_location,cited_by_count"),
+    ]
+    if OPENALEX_MAILTO:
+        params.append(("mailto", OPENALEX_MAILTO))
+    url = "https://api.openalex.org/works?" + urllib.parse.urlencode(params)
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
+        timeout=20)
+    if not data:
+        return []
+    out = []
+    for w in (data.get("results") or []):
+        first, last = _author_first_last(w.get("authorships"))
+        primary = w.get("primary_location") or {}
+        src = primary.get("source") or {}
+        out.append({
+            "openalex_id": _strip_openalex_id(w.get("id")) or w.get("id"),
+            "doi": _normalize_doi(w.get("doi")),
+            "title": w.get("title"),
+            "year": w.get("publication_year"),
+            "publication_date": w.get("publication_date"),
+            "journal": src.get("display_name"),
+            "first_author": first,
+            "last_author": last,
+            "citations": w.get("cited_by_count") or 0,
+        })
+    return out
 
 
 def _crossref_count(doi):

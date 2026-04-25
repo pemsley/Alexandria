@@ -299,6 +299,13 @@ class AuthorWorksWindow(Gtk.Window):
                 "<span size='small' alpha='75%'>{}</span>".format(
                     GLib.markup_escape_text("  ·  ".join(sub))))
             sub_lbl.set_selectable(True)
+            # GtkLabel selects all its text on focus by default. The
+            # window opens with this label often the first focusable,
+            # so it arrives pre-selected — visually noisy. Clear the
+            # selection once after the window is shown; the label
+            # stays selectable for on-demand copy-paste.
+            GLib.idle_add(
+                lambda: (sub_lbl.select_region(0, 0), False)[1])
             hleft.append(sub_lbl)
 
         self.stats_lbl = Gtk.Label(xalign=0.0)
@@ -332,6 +339,23 @@ class AuthorWorksWindow(Gtk.Window):
         outer.append(self.coauth_box)
 
         outer.append(Gtk.Separator())
+
+        # --- Sort toggle: most-recent vs most-cited -------------------
+        self._works_sort = "recent"
+        sort_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        sort_row.set_halign(Gtk.Align.START)
+        self._sort_recent_btn = Gtk.ToggleButton(label="Most recent")
+        self._sort_cited_btn = Gtk.ToggleButton(label="Most cited")
+        # Linked group so they look like a segmented control.
+        sort_row.add_css_class("linked")
+        self._sort_recent_btn.set_active(True)
+        # Group the toggles so exactly one is active at a time.
+        self._sort_cited_btn.set_group(self._sort_recent_btn)
+        self._sort_recent_btn.connect("toggled", self._on_sort_toggled, "recent")
+        self._sort_cited_btn.connect("toggled", self._on_sort_toggled, "cited")
+        sort_row.append(self._sort_recent_btn)
+        sort_row.append(self._sort_cited_btn)
+        outer.append(sort_row)
 
         # --- Status + results list ------------------------------------
         self.status = Gtk.Label(xalign=0.0)
@@ -369,17 +393,66 @@ class AuthorWorksWindow(Gtk.Window):
 
     def _do_fetch(self, orcid, oa_id):
         profile = metrics.fetch_author_profile(orcid=orcid, openalex_id=oa_id)
-        # Use the OpenAlex ID from the profile (if we only had ORCID) so
-        # fetch_coauthors can filter the target out reliably.
-        target_oa_id = oa_id
-        if profile and not target_oa_id:
-            # profile dict doesn't carry the ID; re-resolve via authorship.
-            pass
         works = metrics.fetch_works_by_author(
-            orcid=orcid, openalex_id=oa_id, limit=50)
+            orcid=orcid, openalex_id=oa_id, limit=50,
+            sort=self._works_sort)
         coauths = metrics.fetch_coauthors(
             orcid=orcid, openalex_id=oa_id, limit=12)
         GLib.idle_add(self._apply_results, profile, works, coauths)
+
+    # --- Sort toggle ---------------------------------------------------
+
+    def _on_sort_toggled(self, btn, sort_key):
+        # Only react to the *activation* event — the deactivated peer
+        # also fires "toggled".
+        if not btn.get_active():
+            return
+        if sort_key == self._works_sort:
+            return
+        self._works_sort = sort_key
+        # Re-fetch with the new sort. Show a placeholder while we wait.
+        self.list_box_clear()
+        self.status.set_markup(
+            "<span alpha='75%'>Re-sorting from OpenAlex…</span>")
+        self._spawn_works_only_fetch()
+
+    def list_box_clear(self):
+        child = self.list_box.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            self.list_box.remove(child)
+            child = nxt
+
+    def _spawn_works_only_fetch(self):
+        """Background refresh of just the works list (skip the
+        author-profile and coauthors calls — those don't change with
+        the sort choice)."""
+        orcid = self.authorship.get("orcid")
+        oa_id = self.authorship.get("openalex_id")
+        threading.Thread(
+            target=self._do_works_only_fetch, args=(orcid, oa_id),
+            daemon=True).start()
+
+    def _do_works_only_fetch(self, orcid, oa_id):
+        works = metrics.fetch_works_by_author(
+            orcid=orcid, openalex_id=oa_id, limit=50,
+            sort=self._works_sort)
+        GLib.idle_add(self._apply_works_only, works)
+
+    def _apply_works_only(self, works):
+        if not works:
+            self.status.set_markup(
+                "<span alpha='75%'>No works found.</span>")
+            return False
+        self.status.set_markup(self._works_status_markup(len(works)))
+        for w in works:
+            self.list_box.append(self._make_work_row(w))
+        return False
+
+    def _works_status_markup(self, n):
+        sort_label = ("most recent" if self._works_sort == "recent"
+                      else "most cited")
+        return "<span alpha='75%'>{} {} works</span>".format(n, sort_label)
 
     def _apply_results(self, profile, works, coauths=None):
         if profile:
@@ -419,8 +492,7 @@ class AuthorWorksWindow(Gtk.Window):
             self.status.set_markup(
                 "<span alpha='75%'>No works found.</span>")
             return
-        self.status.set_markup(
-            "<span alpha='75%'>{} most recent works</span>".format(len(works)))
+        self.status.set_markup(self._works_status_markup(len(works)))
         for w in works:
             self.list_box.append(self._make_work_row(w))
         return False

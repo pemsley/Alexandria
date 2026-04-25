@@ -72,7 +72,8 @@ def refresh_pdf(conn, pdf_path):
                 "citations", "citations_source", "citations_fetched",
                 "citations_by_year",
                 "auto_keywords", "abstract", "authorships", "highlights",
-                "published_version"):
+                "published_version",
+                "bibtex_key", "bibtex_type", "bibtex_extra"):
         if key in old:
             fresh[key] = old[key]
     if not fresh.get("sha256"):
@@ -269,10 +270,31 @@ def _adopt_renamed(conn, new_path, old_row, sha):
 
 
 def delete_pdf(conn, pdf_path):
-    """Remove the PDF, its sidecar, its thumbnail, and the index row."""
-    sc = sidecar.sidecar_path_for(pdf_path)
+    """Remove the PDF, its sidecar, its thumbnail, and the index row.
+
+    For a *ghost* (BibTeX-only) entry whose `pdf_path` is a synthetic
+    `bibtex:<key>` identifier, only the sidecar (in
+    `LIBRARY_ROOT/.alexandria-bibtex/`) and the index row are
+    removed — there is no PDF or thumbnail on disk. We look up the
+    sidecar path from the index row rather than deriving it, since
+    ghost sidecars don't live next to a real PDF."""
+    sc = None
+    try:
+        cur = conn.execute(
+            "SELECT sidecar_path FROM papers WHERE pdf_path = ?",
+            (pdf_path,))
+        row = cur.fetchone()
+        if row is not None:
+            sc = row["sidecar_path"]
+    except Exception:
+        pass
+    if not sc:
+        sc = sidecar.sidecar_path_for(pdf_path)
     th = sidecar.thumb_path_for(pdf_path)
-    for p in (pdf_path, sc, th):
+    paths = [sc, th]
+    if not sidecar.is_ghost_path(pdf_path):
+        paths.insert(0, pdf_path)
+    for p in paths:
         try:
             if os.path.isfile(p):
                 os.remove(p)

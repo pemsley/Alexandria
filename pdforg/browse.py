@@ -19,7 +19,8 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gtk, Gdk, GLib, Gio, Pango
 
 from . import (index, edit_dialog, importer, metrics, sidecar, extract,
-               viewer, marks_config, watcher as watcher_mod, author_works)
+               viewer, marks_config, watcher as watcher_mod, author_works,
+               bibtex_import, bibtex_export)
 
 LIBRARY_ROOT = os.environ.get(
     "PDFORG_LIBRARY", os.path.expanduser("~/pdfs"))
@@ -392,10 +393,16 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     box.set_margin_top(6)
     box.set_margin_bottom(6)
 
+    is_ghost = sidecar.is_ghost_path(row["pdf_path"])
+
     img = Gtk.Image()
     img.set_pixel_size(120)
-    img.set_from_icon_name("application-pdf")
-    if row["thumb_path"] and os.path.isfile(row["thumb_path"]):
+    # Ghost (BibTeX-only) entries have no PDF and no thumbnail; show a
+    # generic "no document" icon to make the difference obvious.
+    img.set_from_icon_name("text-x-generic-symbolic" if is_ghost
+                           else "application-pdf")
+    if (not is_ghost and row["thumb_path"]
+            and os.path.isfile(row["thumb_path"])):
         try:
             tex = Gdk.Texture.new_from_file(Gio.File.new_for_path(row["thumb_path"]))
             img.set_from_paintable(tex)
@@ -404,28 +411,56 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     frame = Gtk.Frame()
     frame.set_size_request(130, 160)
     frame.set_child(img)
-    frame.set_cursor_from_name("pointer")
-    frame.set_tooltip_text("View PDF")
-    click = Gtk.GestureClick.new()
-    click.set_button(1)
-    click.connect(
-        "released",
-        lambda *_: viewer.open_viewer(parent_window, row["pdf_path"],
-                                      row["sidecar_path"]))
-    frame.add_controller(click)
+    if not is_ghost:
+        frame.set_cursor_from_name("pointer")
+        frame.set_tooltip_text("View PDF")
+        click = Gtk.GestureClick.new()
+        click.set_button(1)
+        click.connect(
+            "released",
+            lambda *_: viewer.open_viewer(parent_window, row["pdf_path"],
+                                          row["sidecar_path"]))
+        frame.add_controller(click)
+    else:
+        frame.set_tooltip_text(
+            "BibTeX-only entry — drop a PDF here to attach it")
+        # Drop target: a PDF dropped onto this thumbnail is attached
+        # to the ghost via bibtex_import.attach_pdf_to_ghost().
+        ghost_drop = Gtk.DropTarget.new(Gdk.FileList,
+                                        Gdk.DragAction.COPY)
+        ghost_drop.connect(
+            "drop",
+            lambda t, value, x, y, r=row:
+                parent_window._on_ghost_drop(t, value, r))
+        frame.add_controller(ghost_drop)
     box.append(frame)
 
     text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
     text.set_hexpand(True)
 
     btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-    open_btn = Gtk.Button.new_from_icon_name("document-open-symbolic")
-    open_btn.set_tooltip_text("View PDF")
-    open_btn.connect(
-        "clicked",
-        lambda _b: viewer.open_viewer(parent_window, row["pdf_path"],
-                                      row["sidecar_path"]))
-    btn_row.append(open_btn)
+    if not is_ghost:
+        open_btn = Gtk.Button.new_from_icon_name("document-open-symbolic")
+        open_btn.set_tooltip_text("View PDF")
+        open_btn.connect(
+            "clicked",
+            lambda _b: viewer.open_viewer(parent_window, row["pdf_path"],
+                                          row["sidecar_path"]))
+        btn_row.append(open_btn)
+    else:
+        # "Get PDF" — try to download an OA copy via OpenAlex's
+        # best_oa_location (and its mirrors), and on success run the
+        # ghost-merge automatically. If nothing OA is downloadable
+        # (paywall, Cloudflare, no OA URL), fall back to opening the
+        # DOI in the browser so the user can save and drag in.
+        get_btn = Gtk.Button.new_from_icon_name("folder-download-symbolic")
+        get_btn.set_tooltip_text(
+            "Get PDF — try downloading an open-access copy via "
+            "OpenAlex; on failure, open the DOI in your browser.")
+        get_btn.connect(
+            "clicked",
+            lambda _b, r=row: parent_window._on_get_pdf(r))
+        btn_row.append(get_btn)
     edit_btn = Gtk.Button.new_from_icon_name("document-properties-symbolic")
     edit_btn.set_tooltip_text("Edit metadata")
     edit_btn.connect(
@@ -434,11 +469,12 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
             parent_window, conn,
             row["pdf_path"], row["sidecar_path"], on_saved))
     btn_row.append(edit_btn)
-    rename_btn = Gtk.Button.new_from_icon_name("edit-rename-symbolic")
-    rename_btn.set_tooltip_text("Rename PDF")
-    rename_btn.connect("clicked",
-                       lambda _b: parent_window._open_rename_dialog(row))
-    btn_row.append(rename_btn)
+    if not is_ghost:
+        rename_btn = Gtk.Button.new_from_icon_name("edit-rename-symbolic")
+        rename_btn.set_tooltip_text("Rename PDF")
+        rename_btn.connect("clicked",
+                           lambda _b: parent_window._open_rename_dialog(row))
+        btn_row.append(rename_btn)
     if row["doi"]:
         related_btn = Gtk.Button.new_from_icon_name("view-more-symbolic")
         related_btn.set_tooltip_text(
@@ -449,14 +485,37 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
             "clicked",
             lambda b: parent_window._open_related_popover(b, row))
         btn_row.append(related_btn)
+        cited_by_btn = Gtk.Button.new_from_icon_name("mail-forward-symbolic")
+        cited_by_btn.set_tooltip_text(
+            "Cited by — papers that cite this one (OpenAlex)\n"
+            "Shows the most recent and the most-cited citing papers")
+        cited_by_btn.connect(
+            "clicked",
+            lambda b: parent_window._open_cited_by_popover(b, row))
+        btn_row.append(cited_by_btn)
+    if row["abstract"]:
+        abstract_btn = Gtk.Button.new_from_icon_name(
+            "format-justify-fill-symbolic")
+        abstract_btn.set_tooltip_text("Show abstract")
+        abstract_btn.connect(
+            "clicked",
+            lambda b: parent_window._open_abstract_popover(b, row))
+        btn_row.append(abstract_btn)
     delete_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
     delete_btn.set_tooltip_text("Delete PDF from library")
     delete_btn.connect("clicked",
                        lambda _b: parent_window._confirm_delete(row))
     btn_row.append(delete_btn)
     path_lbl = Gtk.Label()
-    path_lbl.set_markup("<small><tt>{}</tt></small>".format(
-        GLib.markup_escape_text(row["pdf_path"])))
+    if is_ghost:
+        # Show "BibTeX entry: <key>" instead of `bibtex:<key>` directly.
+        key = row["pdf_path"].split(":", 1)[1] if ":" in row["pdf_path"] else "?"
+        path_lbl.set_markup(
+            '<small><span alpha="65%">BibTeX entry: </span>'
+            '<tt>{}</tt></small>'.format(GLib.markup_escape_text(key)))
+    else:
+        path_lbl.set_markup("<small><tt>{}</tt></small>".format(
+            GLib.markup_escape_text(row["pdf_path"])))
     path_lbl.set_halign(Gtk.Align.START)
     path_lbl.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
     path_lbl.set_max_width_chars(70)
@@ -593,6 +652,15 @@ class BrowserWindow(Gtk.ApplicationWindow):
         import_dir_btn = Gtk.Button(label="Import Folder…")
         import_dir_btn.connect("clicked", self._on_import_folder)
         toolbar.append(import_dir_btn)
+        import_bib_btn = Gtk.Button(label="Import BibTeX…")
+        import_bib_btn.connect("clicked", self._on_import_bibtex)
+        toolbar.append(import_bib_btn)
+        export_bib_btn = Gtk.Button(label="Export BibTeX…")
+        export_bib_btn.set_tooltip_text(
+            "Save the currently visible entries (search + mark filter) "
+            "as a .bib file")
+        export_bib_btn.connect("clicked", self._on_export_bibtex)
+        toolbar.append(export_bib_btn)
         self.search = Gtk.SearchEntry()
         self.search.set_hexpand(True)
         self.search.set_placeholder_text("Search title / authors / DOI / journal")
@@ -615,6 +683,11 @@ class BrowserWindow(Gtk.ApplicationWindow):
 
         self.status = Gtk.Label()
         self.status.set_halign(Gtk.Align.END)
+        self.status.set_use_markup(True)
+        # Custom URI scheme `alex:show-top` is intercepted in
+        # _on_status_link to scroll the cards list to the top
+        # (where freshly-imported entries sit, post-sort).
+        self.status.connect("activate-link", self._on_status_link)
         toolbar.append(self.status)
         outer.append(toolbar)
 
@@ -631,13 +704,14 @@ class BrowserWindow(Gtk.ApplicationWindow):
         outer.append(self.progress_box)
         self._import_busy = False
 
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_vexpand(True)
-        scrolled.set_hexpand(True)
-        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self.results_scrolled = Gtk.ScrolledWindow()
+        self.results_scrolled.set_vexpand(True)
+        self.results_scrolled.set_hexpand(True)
+        self.results_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC,
+                                         Gtk.PolicyType.AUTOMATIC)
         self.results = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        scrolled.set_child(self.results)
-        outer.append(scrolled)
+        self.results_scrolled.set_child(self.results)
+        outer.append(self.results_scrolled)
 
         self.set_child(outer)
         self._reload(None)
@@ -755,6 +829,127 @@ class BrowserWindow(Gtk.ApplicationWindow):
             return
         self._start_import_tree(path)
 
+    # --- BibTeX import ------------------------------------------------
+
+    def _on_import_bibtex(self, _btn):
+        if self._import_busy:
+            self.status.set_text("Import already running")
+            return
+        dlg = Gtk.FileDialog()
+        dlg.set_title("Import a .bib file")
+        bib_filter = Gtk.FileFilter()
+        bib_filter.set_name("BibTeX (*.bib)")
+        bib_filter.add_pattern("*.bib")
+        bib_filter.add_pattern("*.bibtex")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(bib_filter)
+        all_filter = Gtk.FileFilter()
+        all_filter.set_name("All files")
+        all_filter.add_pattern("*")
+        filters.append(all_filter)
+        dlg.set_filters(filters)
+        dlg.set_default_filter(bib_filter)
+        dlg.open(self, None, self._on_bib_chosen)
+
+    def _on_bib_chosen(self, dlg, result):
+        try:
+            f = dlg.open_finish(result)
+        except GLib.Error:
+            return
+        if f is None:
+            return
+        path = f.get_path()
+        if not path:
+            return
+        self._start_import_bib(path)
+
+    def _start_import_bib(self, bib_path):
+        self._show_progress(
+            "Reading {}...".format(os.path.basename(bib_path)), 0.0)
+        self._import_busy = True
+        threading.Thread(target=self._do_import_bib,
+                         args=(bib_path,), daemon=True).start()
+
+    def _do_import_bib(self, bib_path):
+        def progress(i, n, key, status):
+            frac = (i / n) if n else 0.0
+            label = "{}/{}  {}  ({})".format(i, n, key or "?", status)
+            GLib.idle_add(self._show_progress, label, frac)
+
+        try:
+            counts = bibtex_import.import_bib(
+                self.conn, bib_path, LIBRARY_ROOT, on_progress=progress)
+        except Exception as e:
+            print("BibTeX import failed:", e)
+            counts = None
+        GLib.idle_add(self._do_import_bib_done, counts)
+
+    def _do_import_bib_done(self, counts):
+        self._import_busy = False
+        self._hide_progress()
+        if counts is None:
+            self.status.set_text("BibTeX import failed (see terminal)")
+        else:
+            msg = "BibTeX: {} imported, {} ghost, {} duplicate, {} errors".format(
+                counts["imported"], counts["ghost"],
+                counts["duplicate"], counts["error"])
+            n_new = counts["imported"] + counts["ghost"]
+            if n_new:
+                self._set_status_with_show(msg)
+            else:
+                self.status.set_text(msg)
+        self._reload(self.search.get_text() or None)
+        return False
+
+    # --- BibTeX export ------------------------------------------------
+
+    def _on_export_bibtex(self, _btn):
+        dlg = Gtk.FileDialog()
+        dlg.set_title("Export BibTeX")
+        dlg.set_initial_name("alexandria-export.bib")
+        bib_filter = Gtk.FileFilter()
+        bib_filter.set_name("BibTeX (*.bib)")
+        bib_filter.add_pattern("*.bib")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(bib_filter)
+        dlg.set_filters(filters)
+        dlg.set_default_filter(bib_filter)
+        dlg.save(self, None, self._on_bib_save_chosen)
+
+    def _on_bib_save_chosen(self, dlg, result):
+        try:
+            f = dlg.save_finish(result)
+        except GLib.Error:
+            return
+        if f is None:
+            return
+        path = f.get_path()
+        if not path:
+            return
+        if not path.lower().endswith(".bib"):
+            path += ".bib"
+
+        # Export *the currently visible rows* — search text + mark
+        # filter applied. That makes "filtered export" the natural
+        # default; users who want everything just clear filters first.
+        query = self.search.get_text() or None
+        mark_filter = self._MARK_FILTER_VALUES[
+            self.mark_filter_dd.get_selected()]
+        rows = index.search(self.conn, query, mark_filter=mark_filter)
+
+        try:
+            written, skipped = bibtex_export.export_rows_to_file(rows, path)
+        except Exception as e:
+            print("BibTeX export failed:", e)
+            self.status.set_text("Export failed: {}".format(e))
+            return
+
+        msg = "Exported {} entries to {}".format(
+            written, os.path.basename(path))
+        if skipped:
+            msg += " ({} skipped — sidecar missing)".format(skipped)
+        self.status.set_text(msg)
+
     def _start_import_paths(self, paths):
         self._show_progress("Importing {} file(s)...".format(len(paths)), 0.0)
         self._import_busy = True
@@ -833,11 +1028,20 @@ class BrowserWindow(Gtk.ApplicationWindow):
     # --- Delete / Rename ------------------------------------------------
 
     def _confirm_delete(self, row):
+        is_ghost = sidecar.is_ghost_path(row["pdf_path"])
         dlg = Gtk.AlertDialog()
         dlg.set_modal(True)
-        dlg.set_message("Delete this PDF from the library?")
-        dlg.set_detail("This will remove:\n  {}\n  + sidecar + thumbnail".format(
-            row["pdf_path"]))
+        if is_ghost:
+            dlg.set_message("Delete this BibTeX-only entry?")
+            dlg.set_detail(
+                "This will remove the metadata sidecar and the index "
+                "row for «{}». No PDF on disk will be touched.".format(
+                    row["title"] or row["pdf_path"]))
+        else:
+            dlg.set_message("Delete this PDF from the library?")
+            dlg.set_detail(
+                "This will remove:\n  {}\n  + sidecar + thumbnail".format(
+                    row["pdf_path"]))
         dlg.set_buttons(["Cancel", "Delete"])
         dlg.set_default_button(0)
         dlg.set_cancel_button(0)
@@ -1008,10 +1212,94 @@ class BrowserWindow(Gtk.ApplicationWindow):
                          args=(paths,), daemon=True).start()
         return True
 
+    def _on_ghost_drop(self, _target, value, ghost_row):
+        """A PDF was dropped onto the thumbnail of a BibTeX-only card.
+        Route it through bibtex_import.attach_pdf_to_ghost — which
+        does its own DOI match check, copies the PDF in, runs the
+        full import, merges the ghost's curation onto the new
+        sidecar, and removes the ghost."""
+        try:
+            files = value.get_files()
+        except Exception:
+            return False
+        src_path = None
+        for f in files:
+            p = f.get_path() if f else None
+            if p and p.lower().endswith(".pdf") and os.path.isfile(p):
+                src_path = p
+                break
+        if not src_path:
+            self.status.set_text("Ghost-drop: not a PDF")
+            return False
+        self.status.set_text("Attaching {}...".format(os.path.basename(src_path)))
+        threading.Thread(
+            target=self._do_ghost_drop,
+            args=(dict(ghost_row), src_path),
+            daemon=True).start()
+        return True
+
+    def _do_ghost_drop(self, ghost_row, src_path):
+        try:
+            new_path, status, msg = bibtex_import.attach_pdf_to_ghost(
+                self.conn, ghost_row, src_path, LIBRARY_ROOT)
+        except Exception as e:
+            print("attach_pdf_to_ghost failed:", e)
+            new_path, status, msg = None, "error", str(e)
+        GLib.idle_add(self._on_ghost_drop_done, status, msg)
+
+    def _on_ghost_drop_done(self, status, msg):
+        self.status.set_text(msg or status)
+        self._reload(self.search.get_text() or None)
+        return False
+
+    def _ghost_for_doi(self, doi):
+        """Find a ghost (BibTeX-only) row whose DOI matches `doi`,
+        or None. Used to route Path C — auto-merge when a dropped
+        PDF's DOI matches an existing ghost."""
+        if not doi:
+            return None
+        ndoi = index.normalize_doi(doi)
+        if not ndoi:
+            return None
+        try:
+            cur = self.conn.execute(
+                "SELECT * FROM papers WHERE LOWER(doi) = ?",
+                (ndoi.lower(),))
+            for row in cur:
+                d = dict(row)
+                if sidecar.is_ghost_path(d["pdf_path"]):
+                    return d
+        except Exception:
+            pass
+        return None
+
     def _do_drop_import(self, paths):
         os.makedirs(LIBRARY_ROOT, exist_ok=True)
-        results = {"imported": [], "duplicate": [], "exists": [], "error": []}
+        results = {"imported": [], "duplicate": [], "exists": [],
+                   "error": [], "merged": []}
         for src in paths:
+            # Path C — auto-merge: if the dropped PDF's DOI matches a
+            # ghost in the library, run the merge flow directly so
+            # the BibTeX provenance is preserved.
+            try:
+                src_doi = extract._scan_doi_in_pages(src, max_pages=4)
+            except Exception:
+                src_doi = None
+            ghost = self._ghost_for_doi(src_doi) if src_doi else None
+            if ghost:
+                try:
+                    new_path, gstatus, gmsg = (
+                        bibtex_import.attach_pdf_to_ghost(
+                            self.conn, ghost, src, LIBRARY_ROOT))
+                except Exception as e:
+                    results["error"].append((src, None, str(e)))
+                    continue
+                if gstatus == "merged":
+                    results["merged"].append((src, new_path, ghost))
+                else:
+                    results["error"].append((src, None, gmsg))
+                continue
+
             target = os.path.join(LIBRARY_ROOT, os.path.basename(src))
             if os.path.realpath(src) == os.path.realpath(target):
                 # Already in the library — just (re)import in place.
@@ -1051,6 +1339,8 @@ class BrowserWindow(Gtk.ApplicationWindow):
         bits = []
         if results["imported"]:
             bits.append("imported {}".format(len(results["imported"])))
+        if results.get("merged"):
+            bits.append("attached to BibTeX {}".format(len(results["merged"])))
         if results["duplicate"]:
             bits.append("duplicate {}".format(len(results["duplicate"])))
         if results["exists"]:
@@ -1059,13 +1349,48 @@ class BrowserWindow(Gtk.ApplicationWindow):
             bits.append("error {}".format(len(results["error"])))
         if not bits:
             bits.append("nothing to do")
-        self.status.set_text("Drop: " + ", ".join(bits))
+        # Newly imported entries land at the top of the list (added_date
+        # DESC). Offer a "show ↗" link in the status so the user can
+        # jump there from anywhere in a long scroll.
+        n_new = len(results["imported"]) + len(results.get("merged") or [])
+        msg = "Drop: " + ", ".join(bits)
+        if n_new:
+            self._set_status_with_show(msg)
+        else:
+            self.status.set_text(msg)
         for src, target, rec in results["error"]:
             print("drop error:", src, "->", target, ":", rec)
         for src, target, rec in results["duplicate"]:
             existing = rec.get("pdf_path") if rec else "?"
             print("drop duplicate: {} matches existing {}".format(src, existing))
         return False
+
+    # --- Status-line "show ↗" affordance ------------------------------
+
+    def _set_status_with_show(self, message):
+        """Set the status label to `message` followed by a clickable
+        'show ↗' link. The link scrolls the cards list to the top —
+        which, with the added-date sort, is where newly-imported
+        entries live."""
+        self.status.set_markup(
+            '{}  <a href="alex:show-top">show ↗</a>'.format(
+                GLib.markup_escape_text(message)))
+
+    def _on_status_link(self, _label, uri):
+        """Intercept clicks on `<a href="alex:...">` links in the
+        status bar. Returning True stops Gtk from trying to open it
+        with xdg-open."""
+        if uri == "alex:show-top":
+            self._scroll_results_to_top()
+            return True
+        return False
+
+    def _scroll_results_to_top(self):
+        try:
+            adj = self.results_scrolled.get_vadjustment()
+            adj.set_value(0)
+        except Exception:
+            pass
 
     def _reload(self, query):
         child = self.results.get_first_child()
@@ -1087,6 +1412,106 @@ class BrowserWindow(Gtk.ApplicationWindow):
         self._reload(self.search.get_text() or None)
 
     # --- Preprint → published-version actions -------------------------
+
+    def _on_get_pdf(self, row):
+        """Ghost-card "Get PDF": ask OpenAlex for OA pdf URLs for the
+        entry's DOI, try them in order via our existing downloader, and
+        on success route through the ghost-merge flow so the BibTeX
+        provenance is preserved on the resulting normal entry. If
+        nothing OA is available — or every download is blocked
+        (Cloudflare, paywall HTML, etc.) — fall back to opening the
+        DOI in the system browser as before."""
+        doi = row["doi"]
+        if not doi:
+            self.status.set_text(
+                "No DOI on this entry — edit metadata to add one")
+            return
+        self.status.set_text("Looking for an open-access PDF…")
+        threading.Thread(
+            target=self._do_get_pdf,
+            args=(dict(row), doi),
+            daemon=True).start()
+
+    def _do_get_pdf(self, row, doi):
+        import tempfile
+        import urllib.parse as _up
+        from . import author_works as _aw
+
+        url = ("https://api.openalex.org/works/doi:"
+               + _up.quote(doi, safe="")
+               + "?mailto=" + _up.quote(metrics.OPENALEX_MAILTO))
+        data = metrics._http_get_json(
+            url,
+            headers={"User-Agent": metrics.OPENALEX_UA,
+                     "Accept": "application/json"},
+            timeout=15)
+        if not data:
+            GLib.idle_add(self._get_pdf_fallback, doi,
+                          "OpenAlex lookup failed")
+            return
+
+        # Collect every OA pdf_url (best_oa_location first, then mirrors).
+        bol = data.get("best_oa_location") or {}
+        pdf_urls = []
+        if bol.get("pdf_url"):
+            pdf_urls.append(bol["pdf_url"])
+        for loc in (data.get("locations") or []):
+            if not loc.get("is_oa"):
+                continue
+            u = loc.get("pdf_url")
+            if u and u not in pdf_urls:
+                pdf_urls.append(u)
+        if not pdf_urls:
+            GLib.idle_add(
+                self._get_pdf_fallback, doi,
+                "no OA PDF URL known to OpenAlex")
+            return
+
+        # Download into a tmp file. Magic-byte check + Cloudflare
+        # detection are inside _download_pdf.
+        fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
+        os.close(fd)
+        last_msg = ""
+        ok = False
+        for u in pdf_urls:
+            ok, last_msg = _aw._download_pdf(u, tmp_path)
+            if ok:
+                break
+        if not ok:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            GLib.idle_add(self._get_pdf_fallback, doi, last_msg)
+            return
+
+        # Attach to the ghost: copy into LIBRARY_ROOT (named for the
+        # bibtex_key), run import_pdf, merge the ghost's curation,
+        # remove the ghost.
+        try:
+            new_path, status, msg = bibtex_import.attach_pdf_to_ghost(
+                self.conn, row, tmp_path, LIBRARY_ROOT)
+        except Exception as e:
+            new_path, status, msg = None, "error", str(e)
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        GLib.idle_add(self._get_pdf_done, status, msg)
+
+    def _get_pdf_fallback(self, doi, error_msg):
+        """No OA copy is downloadable; open DOI in browser and let the
+        user save+drag the PDF in."""
+        open_pdf("https://doi.org/" + doi)
+        self.status.set_text(
+            "Direct download failed ({}) — opened DOI in browser; "
+            "save and drag the PDF onto the card".format(error_msg))
+        return False
+
+    def _get_pdf_done(self, status, msg):
+        self.status.set_text(msg or status)
+        self._reload(self.search.get_text() or None)
+        return False
 
     def _navigate_to_doi(self, doi):
         """Filter the visible list to the given DOI (FTS prefix-matches it)."""
@@ -1231,6 +1656,144 @@ class BrowserWindow(Gtk.ApplicationWindow):
 
     # --- Authors popover ----------------------------------------------
 
+    def _open_abstract_popover(self, anchor_widget, row):
+        """A small popover showing the OpenAlex-reconstructed abstract.
+        Header carries the paper's title (so the popover remains
+        readable when it's visually detached from the card); body is a
+        scrolled, selectable label so users can copy text out.
+        Keyboard: Esc dismisses (popover default)."""
+        text = row["abstract"] or ""
+        title = row["title"] or "(untitled)"
+
+        pop = Gtk.Popover()
+        pop.set_parent(anchor_widget)
+        pop.set_has_arrow(True)
+        pop.set_size_request(560, 380)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        outer.set_margin_start(10)
+        outer.set_margin_end(10)
+        outer.set_margin_top(10)
+        outer.set_margin_bottom(10)
+
+        header = Gtk.Label(xalign=0.0)
+        header.set_wrap(True)
+        header.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        header.set_max_width_chars(70)
+        header.set_markup(
+            "<small><span alpha='65%'>Abstract  ·  "
+            "<i>OpenAlex</i></span></small>\n<b>{}</b>".format(
+                safe_pango_markup(title)))
+        outer.append(header)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_vexpand(True)
+        scrolled.set_hexpand(True)
+        scrolled.set_policy(Gtk.PolicyType.NEVER,
+                            Gtk.PolicyType.AUTOMATIC)
+        body = Gtk.Label(xalign=0.0)
+        body.set_wrap(True)
+        body.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        body.set_max_width_chars(70)
+        body.set_selectable(True)
+        body.set_text(text)
+        body.set_margin_start(2)
+        body.set_margin_end(2)
+        body.set_margin_top(4)
+        body.set_margin_bottom(4)
+        scrolled.set_child(body)
+        outer.append(scrolled)
+
+        pop.set_child(outer)
+        pop.popup()
+        # Selectable GtkLabels auto-select-all on focus, so the body
+        # arrives pre-selected when the popover opens. Clear it once
+        # after the popup; the label stays selectable for on-demand
+        # copy-paste.
+        GLib.idle_add(lambda: (body.select_region(0, 0), False)[1])
+
+    def _open_cited_by_popover(self, anchor_widget, row):
+        """Show two short lists side-by-section in one popover: the
+        most recent papers that cite this paper, and the most-cited
+        papers that cite this paper. Both come from OpenAlex via
+        `cites:` filter queries (one HTTP each)."""
+        pop = Gtk.Popover()
+        pop.set_parent(anchor_widget)
+        pop.set_has_arrow(True)
+        pop.set_size_request(620, 540)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        outer.set_margin_start(10)
+        outer.set_margin_end(10)
+        outer.set_margin_top(10)
+        outer.set_margin_bottom(10)
+
+        header = Gtk.Label()
+        cb = row["citations"] if "citations" in row.keys() else None
+        suffix = "  <small alpha='65%'>({} total)</small>".format(cb) if cb else ""
+        header.set_markup(
+            "<b>Cited by</b>" + suffix +
+            "  <span size='small' alpha='65%'>(OpenAlex)</span>")
+        header.set_halign(Gtk.Align.START)
+        outer.append(header)
+
+        status = Gtk.Label(label="Loading…")
+        status.set_halign(Gtk.Align.START)
+        outer.append(status)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_vexpand(True)
+        scrolled.set_hexpand(True)
+        list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        scrolled.set_child(list_box)
+        outer.append(scrolled)
+
+        pop.set_child(outer)
+        pop.popup()
+
+        doi = row["doi"]
+
+        def _fetch():
+            recent = metrics.fetch_cited_by(doi=doi, sort="recent", limit=10)
+            cited = metrics.fetch_cited_by(doi=doi, sort="cited", limit=5)
+            GLib.idle_add(self._fill_cited_by_popover,
+                          status, list_box, recent, cited)
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _fill_cited_by_popover(self, status, list_box, recent, cited):
+        if not recent and not cited:
+            status.set_text("No citing papers found.")
+            return False
+        status.set_visible(False)
+        existing = self._existing_dois_set()
+
+        def _section_header(text):
+            lbl = Gtk.Label(xalign=0.0)
+            lbl.set_markup(
+                "<b>{}</b>".format(GLib.markup_escape_text(text)))
+            lbl.set_margin_top(4)
+            return lbl
+
+        if recent:
+            list_box.append(
+                _section_header("Most recent ({})".format(len(recent))))
+            for w in recent:
+                list_box.append(
+                    self._build_related_row(
+                        w, existing,
+                        prefer_date=True, show_citations=True))
+        if cited:
+            hdr = _section_header("Most cited ({})".format(len(cited)))
+            hdr.set_margin_top(12)
+            list_box.append(hdr)
+            for w in cited:
+                list_box.append(
+                    self._build_related_row(
+                        w, existing,
+                        prefer_date=False, show_citations=True))
+        return False
+
     def _open_related_popover(self, anchor_widget, row):
         """Show OpenAlex's related_works for this paper. Fetches in a
         background thread so the UI doesn't freeze."""
@@ -1299,10 +1862,17 @@ class BrowserWindow(Gtk.ApplicationWindow):
             pass
         return out
 
-    def _build_related_row(self, r, existing_dois):
-        """One related-work row: title (bold) on top; first author —
-        last author · year · journal underneath; DOI/OpenAlex/in-library
-        badges to the right."""
+    def _build_related_row(self, r, existing_dois,
+                           prefer_date=False, show_citations=False):
+        """One OpenAlex-result row used by both the Related-works
+        and Cited-by popovers: title (bold) on top; first author →
+        last author · date · journal · cited Nx underneath; DOI button
+        and in-library chip to the right.
+
+        `prefer_date`: when True and `r["publication_date"]` is set,
+        show the full date (`2024-09-12`) rather than just the year.
+        `show_citations`: when True, append `cited Nx` to the meta
+        line if `r["citations"]` > 0."""
         frame = Gtk.Frame()
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         box.set_margin_start(8)
@@ -1328,10 +1898,14 @@ class BrowserWindow(Gtk.ApplicationWindow):
             meta_bits.append("{} → {}".format(fa, la))
         elif fa:
             meta_bits.append(fa)
-        if r.get("year"):
+        if prefer_date and r.get("publication_date"):
+            meta_bits.append(r["publication_date"])
+        elif r.get("year"):
             meta_bits.append(str(r["year"]))
         if r.get("journal"):
             meta_bits.append(r["journal"])
+        if show_citations and r.get("citations"):
+            meta_bits.append("cited {}×".format(r["citations"]))
         if meta_bits:
             meta = Gtk.Label(xalign=0.0)
             meta.set_wrap(True)

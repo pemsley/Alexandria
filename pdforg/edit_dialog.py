@@ -8,9 +8,48 @@ import os
 
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk
+from gi.repository import Gtk, GLib
 
-from . import sidecar, index
+from . import sidecar, index, marks_config
+
+
+def _mark_dropdown(initial_idx):
+    """Mark dropdown for the editor: (none) / Red / Orange / Green
+    with coloured bullets. Standalone copy of the helper in browse.py
+    to avoid pulling browse.py (and Poppler etc.) into the editor."""
+    labels = marks_config.load()
+    items = [("(none)", None)]
+    for c, color in (("red",    "#cc3333"),
+                     ("orange", "#ee8800"),
+                     ("green",  "#33aa33"),
+                     ("cyan",   "#33aaaa")):
+        items.append((
+            marks_config.display_for(c, c.capitalize(), labels),
+            color,
+        ))
+    sl = Gtk.StringList()
+    for label, _ in items:
+        sl.append(label)
+    factory = Gtk.SignalListItemFactory()
+
+    def _setup(_f, li):
+        li.set_child(Gtk.Label(xalign=0.0))
+
+    def _bind(_f, li):
+        lbl = li.get_child()
+        label, color = items[li.get_position()]
+        if color:
+            lbl.set_markup(
+                '<span foreground="{}"><b>●</b></span>   {}'.format(
+                    color, GLib.markup_escape_text(label)))
+        else:
+            lbl.set_markup(GLib.markup_escape_text(label))
+
+    factory.connect("setup", _setup)
+    factory.connect("bind", _bind)
+    dd = Gtk.DropDown(model=sl, factory=factory)
+    dd.set_selected(initial_idx)
+    return dd
 
 
 def _textview_text(tv):
@@ -50,7 +89,7 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
 
     win = Gtk.Window(transient_for=parent, modal=True)
     win.set_title("Edit: " + os.path.basename(pdf_path))
-    win.set_default_size(640, 640)
+    win.set_default_size(640, 720)
 
     outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     outer.set_margin_start(12)
@@ -119,13 +158,12 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
     add_label("Tags\n(comma sep):", 5)
     grid.attach(tags_entry, 1, 5, 1, 1)
 
-    mark_choices = ["(none)", "● Red", "● Orange", "● Green"]
-    _MARK_VALUES = [None, "red", "orange", "green"]
-    mark_dropdown = Gtk.DropDown.new_from_strings(mark_choices)
+    _MARK_VALUES = [None, "red", "orange", "green", "cyan"]
     try:
-        mark_dropdown.set_selected(_MARK_VALUES.index(rec.get("mark")))
+        initial_idx = _MARK_VALUES.index(rec.get("mark"))
     except ValueError:
-        mark_dropdown.set_selected(0)
+        initial_idx = 0
+    mark_dropdown = _mark_dropdown(initial_idx)
     add_label("Mark:", 6)
     grid.attach(mark_dropdown, 1, 6, 1, 1)
 

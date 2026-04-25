@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""GTK4 browser for the PDF library.
+"""Alexandria — browser for the PDF library and OpenAlex
 
-Reads from the local SQLite index. Sidecars are the source of truth;
-this window is read-only for v1 (click → xdg-open the PDF)."""
+Reads from the local SQLite index; sidecar JSON files (next to each PDF)
+are the source of truth."""
 
 import json
 import os
@@ -18,7 +18,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gtk, Gdk, GLib, Gio, Pango
 
-from . import index, edit_dialog, importer, metrics, sidecar, extract
+from . import (index, edit_dialog, importer, metrics, sidecar, extract,
+               viewer, marks_config, watcher as watcher_mod, author_works)
 
 LIBRARY_ROOT = os.environ.get(
     "PDFORG_LIBRARY", os.path.expanduser("~/pdfs"))
@@ -126,16 +127,46 @@ def make_keyword_chip(text):
     return frame
 
 
+def make_mark_dropdown(items):
+    """items: list of (label, hex_color_or_None) tuples. Returns a
+    Gtk.DropDown whose visible items show a coloured ● before the
+    label when a color is given. The same factory is used for the
+    collapsed (selected) item and the popup list."""
+    sl = Gtk.StringList()
+    for label, _ in items:
+        sl.append(label)
+    factory = Gtk.SignalListItemFactory()
+
+    def _setup(_f, li):
+        li.set_child(Gtk.Label(xalign=0.0))
+
+    def _bind(_f, li):
+        lbl = li.get_child()
+        label, color = items[li.get_position()]
+        if color:
+            lbl.set_markup(
+                '<span foreground="{}"><b>●</b></span>   {}'.format(
+                    color, GLib.markup_escape_text(label)))
+        else:
+            lbl.set_markup(GLib.markup_escape_text(label))
+
+    factory.connect("setup", _setup)
+    factory.connect("bind", _bind)
+    return Gtk.DropDown(model=sl, factory=factory)
+
+
 _MARK_COLORS = {
     "red":    "#cc3333",
     "orange": "#ee8800",
     "green":  "#33aa33",
+    "cyan":   "#33aaaa",
 }
 
 
-def make_mark_badge(mark):
+def make_mark_badge(mark, labels=None):
     """A small framed coloured-circle chip for the user 'Mark' field.
-    Returns None when no mark is set."""
+    Returns None when no mark is set. `labels` is the marks-config
+    dict (color → user label); when set, the tooltip uses the label."""
     if not mark:
         return None
     color = _MARK_COLORS.get(mark)
@@ -149,7 +180,8 @@ def make_mark_badge(mark):
     lbl.set_margin_end(5)
     lbl.set_margin_top(1)
     lbl.set_margin_bottom(1)
-    lbl.set_tooltip_text("Mark: " + mark)
+    user_label = marks_config.label_for(mark, labels) if labels else ""
+    lbl.set_tooltip_text("Mark: " + (user_label or mark))
     frame.set_child(lbl)
     return frame
 
@@ -188,6 +220,56 @@ def citation_stars_markup(n):
     return ""
 
 
+def make_citation_sparkline(cby):
+    """Tiny per-year-citations bar chart, or None if not worth drawing.
+
+    `cby` is a list of {year, count} dicts (oldest-first), as produced
+    by metrics._openalex_metrics. Returns a Gtk.DrawingArea sized to
+    sit inline beside the 'cited Nx' label, or None if there's too
+    little data."""
+    if not cby or len(cby) < 2:
+        return None
+    peak = max(r.get("count") or 0 for r in cby)
+    if peak < 2:
+        return None
+
+    width, height = 90, 22
+    area = Gtk.DrawingArea()
+    area.set_content_width(width)
+    area.set_content_height(height)
+    area.set_valign(Gtk.Align.CENTER)
+
+    # Tooltip: "2018: 12  ·  2019: 24  ·  …"
+    tip = "  ·  ".join(
+        "{}: {}".format(r["year"], r.get("count") or 0) for r in cby)
+    area.set_tooltip_text(tip)
+
+    def _draw(_a, cr, w, h):
+        fg = area.get_style_context().get_color()
+        n = len(cby)
+        gap = 1
+        bw = max(1.5, (w - (n - 1) * gap) / n)
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.55)
+        for i, r in enumerate(cby):
+            c = r.get("count") or 0
+            if c <= 0:
+                continue
+            bh = (h - 2) * (c / peak)
+            x = i * (bw + gap)
+            y = h - 1 - bh
+            cr.rectangle(x, y, bw, bh)
+            cr.fill()
+        # Faint baseline.
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.25)
+        cr.set_line_width(1.0)
+        cr.move_to(0, h - 0.5)
+        cr.line_to(w, h - 0.5)
+        cr.stroke()
+
+    area.set_draw_func(_draw)
+    return area
+
+
 def authors_str(authors_json):
     try:
         a = json.loads(authors_json or "[]")
@@ -200,7 +282,7 @@ def authors_str(authors_json):
     return ", ".join(a)
 
 
-def make_card(row, parent_window, conn, on_saved):
+def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
     box.set_margin_start(8)
     box.set_margin_end(8)
@@ -232,9 +314,16 @@ def make_card(row, parent_window, conn, on_saved):
 
     btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
     open_btn = Gtk.Button.new_from_icon_name("document-open-symbolic")
-    open_btn.set_tooltip_text("Open PDF")
+    open_btn.set_tooltip_text("Open PDF (external viewer)")
     open_btn.connect("clicked", lambda _b: open_pdf(row["pdf_path"]))
     btn_row.append(open_btn)
+    view_btn = Gtk.Button.new_from_icon_name("view-paged-symbolic")
+    view_btn.set_tooltip_text("View PDF (built-in viewer)")
+    view_btn.connect(
+        "clicked",
+        lambda _b: viewer.open_viewer(parent_window, row["pdf_path"],
+                                      row["sidecar_path"]))
+    btn_row.append(view_btn)
     edit_btn = Gtk.Button.new_from_icon_name("document-properties-symbolic")
     edit_btn.set_tooltip_text("Edit metadata")
     edit_btn.connect(
@@ -264,7 +353,7 @@ def make_card(row, parent_window, conn, on_saved):
     text.append(btn_row)
 
     title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-    mark_badge = make_mark_badge(row["mark"])
+    mark_badge = make_mark_badge(row["mark"], labels=mark_labels)
     if mark_badge is not None:
         title_row.append(mark_badge)
     if is_preprint(row):
@@ -281,15 +370,41 @@ def make_card(row, parent_window, conn, on_saved):
     title_row.append(title)
     text.append(title_row)
 
+    # Authors row: clickable, opens a popover with the full list and
+    # per-author actions. Styled as a "link" so the user sees it's
+    # different from a plain label.
+    n_authors = 0
+    try:
+        n_authors = len(json.loads(row["authors_json"] or "[]"))
+    except (TypeError, ValueError):
+        pass
     auth_text = authors_str(row["authors_json"])
     if len(auth_text) > 120:
         auth_text = auth_text[:117] + "..."
-    auth = Gtk.Label()
-    auth.set_markup("<small>{}</small>".format(GLib.markup_escape_text(auth_text)))
-    auth.set_halign(Gtk.Align.START)
-    auth.set_ellipsize(Pango.EllipsizeMode.END)
-    auth.set_max_width_chars(80)
-    text.append(auth)
+    suffix = "  ▾"
+    if n_authors > 4 and "..." not in auth_text:
+        # Already showed everyone but there are >4 — keep the caret.
+        pass
+    if "..." in auth_text:
+        suffix = "  ({} authors)  ▾".format(n_authors)
+    auth_btn = Gtk.Button()
+    auth_btn.add_css_class("flat")
+    auth_btn.add_css_class("pdforg-author-link")
+    auth_btn.set_halign(Gtk.Align.START)
+    auth_btn.set_has_frame(False)
+    auth_btn.set_tooltip_text("Click for full author list and actions")
+    auth_inner = Gtk.Label()
+    auth_inner.set_markup(
+        "<small><span underline='single'>{}</span>{}</small>".format(
+            GLib.markup_escape_text(auth_text),
+            GLib.markup_escape_text(suffix)))
+    auth_inner.set_halign(Gtk.Align.START)
+    auth_inner.set_ellipsize(Pango.EllipsizeMode.END)
+    auth_inner.set_max_width_chars(80)
+    auth_btn.set_child(auth_inner)
+    auth_btn.connect("clicked",
+                     lambda b: parent_window._open_authors_popover(b, row))
+    text.append(auth_btn)
 
     yj_bits = []
     if row["year"]:
@@ -299,11 +414,24 @@ def make_card(row, parent_window, conn, on_saved):
     if row["citations"] is not None:
         yj_bits.append("cited {}×".format(row["citations"]))
     if yj_bits:
+        yj_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        yj_row.set_halign(Gtk.Align.START)
         yj = Gtk.Label()
         yj.set_markup("<small><i>{}</i></small>".format(
             GLib.markup_escape_text("  ·  ".join(yj_bits))))
         yj.set_halign(Gtk.Align.START)
-        text.append(yj)
+        yj_row.append(yj)
+        # Per-year citations sparkline, when we have OpenAlex data.
+        cby_json = (row["citations_by_year_json"]
+                    if "citations_by_year_json" in row.keys() else None)
+        try:
+            cby = json.loads(cby_json or "[]")
+        except (TypeError, ValueError):
+            cby = []
+        spark = make_citation_sparkline(cby)
+        if spark is not None:
+            yj_row.append(spark)
+        text.append(yj_row)
 
     stars = citation_stars_markup(row["citations"])
     if stars:
@@ -333,7 +461,7 @@ class BrowserWindow(Gtk.ApplicationWindow):
     def __init__(self, app, conn):
         super().__init__(application=app)
         self.conn = conn
-        self.set_title("PDF Organizer")
+        self.set_title("Alexandria")
         self.set_default_size(900, 700)
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -354,6 +482,21 @@ class BrowserWindow(Gtk.ApplicationWindow):
         self.search.set_placeholder_text("Search title / authors / DOI / journal")
         self.search.connect("search-changed", self._on_search)
         toolbar.append(self.search)
+
+        # Mark filter dropdown — built from the user's marks-config labels.
+        self.mark_labels = marks_config.load()
+        self._MARK_FILTER_VALUES = [None, "red", "orange", "green", "cyan",
+                                    index.MARK_FILTER_NONE]
+        self._toolbar_box = toolbar  # remember so we can rebuild the dropdown
+        self.mark_filter_dd = self._build_mark_filter_dd()
+        toolbar.append(self.mark_filter_dd)
+
+        marks_prefs_btn = Gtk.Button.new_from_icon_name(
+            "preferences-system-symbolic")
+        marks_prefs_btn.set_tooltip_text("Edit mark labels…")
+        marks_prefs_btn.connect("clicked", self._open_marks_prefs)
+        toolbar.append(marks_prefs_btn)
+
         self.status = Gtk.Label()
         self.status.set_halign(Gtk.Align.END)
         toolbar.append(self.status)
@@ -402,6 +545,15 @@ class BrowserWindow(Gtk.ApplicationWindow):
         self._cit_failed_session = set()
         threading.Thread(target=self._citation_refresher,
                          daemon=True).start()
+
+        # GFileMonitor-based library watcher: react to external file
+        # changes in LIBRARY_ROOT (drops via Files / cp / sync tools).
+        self.library_watcher = watcher_mod.LibraryWatcher(
+            self.conn, LIBRARY_ROOT,
+            on_change_cb=self._on_watcher_change)
+        self.library_watcher.start()
+        self.library_watcher.reconcile_startup()
+        self.connect("close-request", self._on_close_request)
 
         # Warn if pdfx isn't available — metadata extraction is much
         # weaker without it.
@@ -675,7 +827,7 @@ class BrowserWindow(Gtk.ApplicationWindow):
             doi = row.get("doi")
             if not doi:
                 continue
-            n, src, kw = metrics.fetch_metrics(doi)
+            n, src, kw, abstract, authorships, cby = metrics.fetch_metrics(doi)
             if n is None:
                 self._cit_failed_session.add(row["pdf_path"])
             else:
@@ -687,6 +839,15 @@ class BrowserWindow(Gtk.ApplicationWindow):
                     rec["citations_fetched"] = today
                     if kw:
                         rec["auto_keywords"] = kw
+                    if abstract:
+                        rec["abstract"] = abstract
+                    if authorships:
+                        rec["authorships"] = authorships
+                        oa_names = [a["name"] for a in authorships if a.get("name")]
+                        if oa_names:
+                            rec["authors"] = oa_names
+                    if cby:
+                        rec["citations_by_year"] = cby
                     sidecar.write(row["sidecar_path"], rec)
                     # Push the updated record into the index too so the
                     # next reload picks up the new keywords.
@@ -793,17 +954,260 @@ class BrowserWindow(Gtk.ApplicationWindow):
             nxt = child.get_next_sibling()
             self.results.remove(child)
             child = nxt
-        rows = index.search(self.conn, query)
+        mark_filter = self._MARK_FILTER_VALUES[
+            self.mark_filter_dd.get_selected()]
+        rows = index.search(self.conn, query, mark_filter=mark_filter)
         on_saved = lambda: self._reload(self.search.get_text() or None)
         for r in rows:
             self.results.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
-            self.results.append(make_card(r, self, self.conn, on_saved))
+            self.results.append(make_card(r, self, self.conn, on_saved,
+                                          mark_labels=self.mark_labels))
         self.status.set_text("{} entries".format(len(rows)))
+
+    def _on_mark_filter_changed(self, _dd, _pspec):
+        self._reload(self.search.get_text() or None)
+
+    # --- File-system watcher callbacks --------------------------------
+
+    def _on_watcher_change(self, status):
+        """Called on the GLib main thread after the watcher has applied
+        a change to the index (import / delete / rename / reconcile)."""
+        self._reload(self.search.get_text() or None)
+        self.status.set_text("Library updated ({})".format(status))
+        return False
+
+    def _on_close_request(self, _win):
+        # Stop the daemon-friendly bits cleanly so they don't keep
+        # writing to the SQLite handle as the window tears down.
+        try:
+            self._cit_stop.set()
+        except Exception:
+            pass
+        try:
+            self.library_watcher.stop()
+        except Exception:
+            pass
+        return False  # let the close proceed
+
+    # --- Authors popover ----------------------------------------------
+
+    def _open_authors_popover(self, anchor_widget, row):
+        """Show a popover anchored to the card's author line, listing
+        every author with click-to-filter and (when ORCID known) a
+        'find more by this author' button."""
+        try:
+            authorships = json.loads(row["authorships_json"] or "[]")
+        except (TypeError, ValueError):
+            authorships = []
+        if not authorships:
+            try:
+                flat = json.loads(row["authors_json"] or "[]")
+            except (TypeError, ValueError):
+                flat = []
+            authorships = [{"name": n} for n in flat]
+
+        pop = Gtk.Popover()
+        pop.set_parent(anchor_widget)
+        pop.set_has_arrow(True)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        outer.set_margin_start(12)
+        outer.set_margin_end(12)
+        outer.set_margin_top(10)
+        outer.set_margin_bottom(10)
+
+        title = Gtk.Label()
+        title.set_markup("<b>Authors</b>  <small>({})</small>".format(len(authorships)))
+        title.set_halign(Gtk.Align.START)
+        outer.append(title)
+
+        if not authorships:
+            empty = Gtk.Label(label="(no authors)")
+            empty.set_halign(Gtk.Align.START)
+            outer.append(empty)
+        else:
+            grid = Gtk.Grid()
+            grid.set_column_spacing(8)
+            grid.set_row_spacing(2)
+            for i, a in enumerate(authorships):
+                self._build_author_row(grid, i, a, pop)
+            outer.append(grid)
+
+        pop.set_child(outer)
+        pop.popup()
+
+    def _build_author_row(self, grid, row_idx, authorship, popover):
+        name = authorship.get("name") or "(unknown)"
+        position = (authorship.get("position") or "").lower()
+        orcid = authorship.get("orcid")
+        institution = authorship.get("institution")
+
+        # Filter button: click → set search to the surname, FTS picks up.
+        name_btn = Gtk.Button(label=name)
+        name_btn.add_css_class("flat")
+        name_btn.set_halign(Gtk.Align.START)
+        name_btn.set_hexpand(True)
+        name_btn.set_tooltip_text("Filter library by this author")
+        name_btn.connect("clicked",
+                         lambda _b, n=name: self._filter_by_author(n, popover))
+        grid.attach(name_btn, 0, row_idx, 1, 1)
+
+        # Position marker (subtle): "first" / "last" only.
+        if position in ("first", "last"):
+            pos_lbl = Gtk.Label()
+            pos_lbl.set_markup("<small><i>{}</i></small>".format(position))
+            pos_lbl.set_halign(Gtk.Align.START)
+            grid.attach(pos_lbl, 1, row_idx, 1, 1)
+
+        # ORCID / "more by author" button — only when we have something
+        # authoritative to query on (ORCID or OpenAlex ID).
+        if orcid or authorship.get("openalex_id"):
+            more_btn = Gtk.Button.new_from_icon_name("emblem-web-symbolic")
+            tip = "Find more by this author"
+            if orcid:
+                tip += "\nORCID: " + orcid
+            more_btn.set_tooltip_text(tip)
+            more_btn.add_css_class("flat")
+            more_btn.connect(
+                "clicked",
+                lambda _b, a=authorship: self._find_more_by_author(a, popover))
+            grid.attach(more_btn, 2, row_idx, 1, 1)
+
+        # Institution under the name, in small grey text (when known).
+        if institution:
+            inst_lbl = Gtk.Label()
+            inst_lbl.set_markup(
+                "<small><span foreground='#888888'>{}</span></small>".format(
+                    GLib.markup_escape_text(institution)))
+            inst_lbl.set_halign(Gtk.Align.START)
+            inst_lbl.set_margin_start(8)
+            grid.attach(inst_lbl, 0, row_idx + 100, 3, 1)
+
+    def _filter_by_author(self, name, popover):
+        # Use the surname (last whitespace-separated token); FTS prefix
+        # matching means partial surnames still match.
+        parts = (name or "").strip().split()
+        query = parts[-1] if parts else (name or "")
+        self.search.set_text(query)   # search-changed → _reload
+        if popover is not None:
+            popover.popdown()
+
+    def _find_more_by_author(self, authorship, popover):
+        if popover is not None:
+            popover.popdown()
+        if not (authorship.get("orcid") or authorship.get("openalex_id")):
+            self.status.set_text(
+                "No ORCID / OpenAlex ID for {}".format(
+                    authorship.get("name") or "this author"))
+            return
+        author_works.open_window(self, self.conn, authorship)
+
+    # --- Mark labels (user-assigned meanings for the four colours) ---
+
+    _MARK_FALLBACK_NAMES = {
+        "red": "Red", "orange": "Orange", "green": "Green", "cyan": "Cyan",
+    }
+
+    def _build_mark_filter_dd(self):
+        """Build the toolbar's mark-filter dropdown using the current
+        self.mark_labels for display strings."""
+        items = [("All marks", None)]
+        for c in ("red", "orange", "green", "cyan"):
+            items.append((
+                marks_config.display_for(c, self._MARK_FALLBACK_NAMES[c],
+                                         self.mark_labels),
+                _MARK_COLORS[c],
+            ))
+        items.append(("Unmarked", None))
+        dd = make_mark_dropdown(items)
+        dd.set_tooltip_text("Filter by Mark")
+        dd.connect("notify::selected", self._on_mark_filter_changed)
+        return dd
+
+    def _refresh_mark_filter_dd(self):
+        """Rebuild the toolbar dropdown after labels change."""
+        old = self.mark_filter_dd
+        selected = old.get_selected()
+        # Find old's position so we can re-insert at the same place.
+        new_dd = self._build_mark_filter_dd()
+        new_dd.set_selected(selected)
+        # Replace in the toolbar.
+        self._toolbar_box.insert_child_after(new_dd, old)
+        self._toolbar_box.remove(old)
+        self.mark_filter_dd = new_dd
+
+    def _open_marks_prefs(self, _btn):
+        win = Gtk.Window(transient_for=self, modal=True)
+        win.set_title("Mark labels")
+        win.set_default_size(420, 240)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        outer.set_margin_start(14)
+        outer.set_margin_end(14)
+        outer.set_margin_top(14)
+        outer.set_margin_bottom(14)
+
+        intro = Gtk.Label()
+        intro.set_xalign(0.0)
+        intro.set_markup(
+            "<small>Give each mark colour a meaning of your choice "
+            "(e.g. <i>Must read</i>, <i>My papers</i>, <i>Cool</i>). "
+            "Leave blank to use the colour name only.</small>")
+        intro.set_wrap(True)
+        outer.append(intro)
+
+        grid = Gtk.Grid()
+        grid.set_row_spacing(8)
+        grid.set_column_spacing(10)
+
+        entries = {}
+        for i, c in enumerate(("red", "orange", "green", "cyan")):
+            chip = Gtk.Label()
+            chip.set_markup(
+                '<span foreground="{}"><b>●</b></span>  {}'.format(
+                    _MARK_COLORS[c], self._MARK_FALLBACK_NAMES[c]))
+            chip.set_halign(Gtk.Align.START)
+            grid.attach(chip, 0, i, 1, 1)
+            e = Gtk.Entry()
+            e.set_text(self.mark_labels.get(c, "") or "")
+            e.set_hexpand(True)
+            grid.attach(e, 1, i, 1, 1)
+            entries[c] = e
+        outer.append(grid)
+
+        btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btns.set_halign(Gtk.Align.END)
+        cancel = Gtk.Button(label="Cancel")
+        save = Gtk.Button(label="Save")
+        save.add_css_class("suggested-action")
+        btns.append(cancel)
+        btns.append(save)
+        outer.append(btns)
+
+        cancel.connect("clicked", lambda _b: win.close())
+
+        def do_save(_b):
+            new_labels = {c: entries[c].get_text().strip()
+                          for c in ("red", "orange", "green", "cyan")}
+            try:
+                marks_config.save(new_labels)
+            except Exception as e:
+                self.status.set_text("Saving labels failed: " + str(e))
+                return
+            self.mark_labels = new_labels
+            self._refresh_mark_filter_dd()
+            self._reload(self.search.get_text() or None)
+            win.close()
+
+        save.connect("clicked", do_save)
+
+        win.set_child(outer)
+        win.present()
 
 
 def main(argv):
     conn = index.open_db()
-    app = Gtk.Application(application_id="org.coot.pdforg")
+    app = Gtk.Application(application_id="io.github.pemsley.Alexandria")
 
     def on_activate(app):
         win = BrowserWindow(app, conn)

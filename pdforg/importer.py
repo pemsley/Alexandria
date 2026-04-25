@@ -4,8 +4,18 @@ and upsert into the local index."""
 import hashlib
 import json
 import os
+import time
 
 from . import sidecar, thumbnail, extract, index, metrics
+
+# When a PDF is dropped into the library, our drop-handler runs
+# import_pdf and writes the sidecar + thumbnail. The GFileMonitor
+# watching the library directory then fires a CREATED event for the
+# same file and would call import_pdf a second time. To avoid
+# repeating the slow CrossRef / OpenAlex network calls, import_pdf
+# returns early ("recent" status) when it sees that either the
+# sidecar or the thumbnail was written within this many seconds.
+RECENT_THRESHOLD_SECONDS = 2.0
 
 
 def _sha256(path, chunk=1 << 20):
@@ -60,11 +70,32 @@ def refresh_pdf(conn, pdf_path):
     # Preserve user-curated and history fields.
     for key in ("tags", "notes", "mark", "hand_edited", "added_date",
                 "citations", "citations_source", "citations_fetched",
-                "auto_keywords"):
+                "citations_by_year",
+                "auto_keywords", "abstract", "authorships", "highlights"):
         if key in old:
             fresh[key] = old[key]
     if not fresh.get("sha256"):
         fresh["sha256"] = old.get("sha256") or _sha256(pdf_path)
+
+    # Re-fetch OpenAlex enrichment so newly-added fields (authorships /
+    # abstract / keywords) actually populate during --refresh.
+    if fresh.get("doi"):
+        n, src, kw, abstract, authorships, cby = metrics.fetch_metrics(fresh["doi"])
+        if n is not None:
+            fresh["citations"] = n
+            fresh["citations_source"] = src
+            fresh["citations_fetched"] = metrics.today_iso()
+        if kw:
+            fresh["auto_keywords"] = kw
+        if abstract:
+            fresh["abstract"] = abstract
+        if authorships:
+            fresh["authorships"] = authorships
+            oa_names = [a["name"] for a in authorships if a.get("name")]
+            if oa_names:
+                fresh["authors"] = oa_names
+        if cby:
+            fresh["citations_by_year"] = cby
 
     sidecar.write(sc_path, fresh)
     th_path = sidecar.thumb_path_for(pdf_path)
@@ -89,13 +120,29 @@ def import_pdf(conn, pdf_path):
         can report which file it duplicates).
     """
     sc_path = sidecar.sidecar_path_for(pdf_path)
+    th_path = sidecar.thumb_path_for(pdf_path)
+
+    # Recent-import guard: if the sidecar or thumbnail was written in
+    # the last RECENT_THRESHOLD_SECONDS seconds, this is almost
+    # certainly a duplicate trigger from the GFileMonitor watcher
+    # firing right after our own write. Skip to avoid the duplicate
+    # CrossRef / OpenAlex call.
+    now = time.time()
+    for p in (sc_path, th_path):
+        try:
+            age = now - os.path.getmtime(p)
+        except OSError:
+            continue
+        if 0 <= age < RECENT_THRESHOLD_SECONDS:
+            if os.path.isfile(sc_path):
+                return sidecar.read(sc_path), "recent"
+            return None, "recent"
 
     if os.path.isfile(sc_path):
         rec = sidecar.read(sc_path)
         if not rec.get("sha256"):
             rec["sha256"] = _sha256(pdf_path)
             sidecar.write(sc_path, rec)
-        th_path = sidecar.thumb_path_for(pdf_path)
         thumbnail.make_thumbnail(pdf_path, th_path)
         mtime = os.path.getmtime(sc_path)
         index.upsert(conn, pdf_path, sc_path,
@@ -119,19 +166,28 @@ def import_pdf(conn, pdf_path):
     if dup:
         return dup, "duplicate"
 
-    # Citation count + auto-keywords from OpenAlex (one HTTP, two outputs).
-    # Best-effort; failures leave fields None / [].
+    # OpenAlex enrichment (one HTTP, four outputs). Best-effort; failures
+    # leave fields untouched.
     if rec.get("doi"):
-        n, src, kw = metrics.fetch_metrics(rec["doi"])
+        n, src, kw, abstract, authorships, cby = metrics.fetch_metrics(rec["doi"])
         if n is not None:
             rec["citations"] = n
             rec["citations_source"] = src
             rec["citations_fetched"] = metrics.today_iso()
         if kw:
             rec["auto_keywords"] = kw
+        if abstract:
+            rec["abstract"] = abstract
+        if authorships:
+            rec["authorships"] = authorships
+            # Prefer OpenAlex display names for the flat authors list.
+            oa_names = [a["name"] for a in authorships if a.get("name")]
+            if oa_names:
+                rec["authors"] = oa_names
+        if cby:
+            rec["citations_by_year"] = cby
 
     sidecar.write(sc_path, rec)
-    th_path = sidecar.thumb_path_for(pdf_path)
     thumbnail.make_thumbnail(pdf_path, th_path)
     mtime = os.path.getmtime(sc_path)
     index.upsert(conn, pdf_path, sc_path,

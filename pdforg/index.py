@@ -5,6 +5,7 @@ DB lives on local disk (XDG state dir), never on NFS.
 
 import json
 import os
+import re
 import sqlite3
 from datetime import date, timedelta
 
@@ -32,7 +33,12 @@ CREATE TABLE IF NOT EXISTS papers (
     citations_source  TEXT,
     citations_fetched TEXT,
     mark         TEXT,
-    auto_keywords_json TEXT
+    auto_keywords_json TEXT,
+    abstract     TEXT,
+    first_author TEXT,
+    last_author  TEXT,
+    authorships_json TEXT,
+    citations_by_year_json TEXT
 );
 """
 
@@ -58,6 +64,64 @@ def _migrate(conn):
         conn.execute("ALTER TABLE papers ADD COLUMN mark TEXT")
     if "auto_keywords_json" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN auto_keywords_json TEXT")
+    if "abstract" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN abstract TEXT")
+    if "first_author" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN first_author TEXT")
+    if "last_author" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN last_author TEXT")
+    if "authorships_json" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN authorships_json TEXT")
+    if "citations_by_year_json" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN citations_by_year_json TEXT")
+    conn.commit()
+
+
+_FTS_SCHEMA = """
+CREATE VIRTUAL TABLE papers_fts USING fts5(
+    title, authors, journal, abstract, keywords, doi,
+    tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER papers_fts_ai AFTER INSERT ON papers BEGIN
+    INSERT INTO papers_fts(rowid, title, authors, journal, abstract, keywords, doi)
+    VALUES (new.id, new.title, new.authors_json, new.journal, new.abstract,
+            new.auto_keywords_json, new.doi);
+END;
+CREATE TRIGGER papers_fts_ad AFTER DELETE ON papers BEGIN
+    DELETE FROM papers_fts WHERE rowid = old.id;
+END;
+CREATE TRIGGER papers_fts_au AFTER UPDATE ON papers BEGIN
+    DELETE FROM papers_fts WHERE rowid = old.id;
+    INSERT INTO papers_fts(rowid, title, authors, journal, abstract, keywords, doi)
+    VALUES (new.id, new.title, new.authors_json, new.journal, new.abstract,
+            new.auto_keywords_json, new.doi);
+END;
+"""
+
+
+def _ensure_fts(conn):
+    """Create the FTS5 virtual table + sync triggers if absent, and
+    backfill from existing rows. If the existing FTS table is the
+    (now-deprecated) external-content variant, drop and recreate."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='papers_fts'"
+    ).fetchone()
+    if row:
+        sql = (row[0] or "").lower()
+        if "content=" not in sql:
+            return  # already on the current schema
+        # Migrate: drop the broken external-content table + its triggers.
+        for trig in ("papers_fts_ai", "papers_fts_ad", "papers_fts_au"):
+            conn.execute("DROP TRIGGER IF EXISTS {}".format(trig))
+        conn.execute("DROP TABLE papers_fts")
+        conn.commit()
+
+    conn.executescript(_FTS_SCHEMA)
+    conn.execute("""
+        INSERT INTO papers_fts(rowid, title, authors, journal, abstract, keywords, doi)
+        SELECT id, title, authors_json, journal, abstract, auto_keywords_json, doi
+        FROM papers
+    """)
     conn.commit()
 
 
@@ -73,6 +137,7 @@ def open_db(path=DEFAULT_DB_PATH):
     conn.executescript(CREATE_TABLE)
     _migrate(conn)
     conn.executescript(CREATE_INDEXES)
+    _ensure_fts(conn)
     return conn
 
 
@@ -109,17 +174,45 @@ def find_duplicate(conn, doi=None, sha256=None, exclude_path=None):
     return None
 
 
+def _derive_first_last_author(record):
+    """Pick first/last author names from the structured authorships if
+    available, else fall back to the flat authors list."""
+    authorships = record.get("authorships") or []
+    first = last = None
+    for a in authorships:
+        pos = (a.get("position") or "").lower()
+        name = a.get("name")
+        if name:
+            if pos == "first" and not first:
+                first = name
+            if pos == "last":
+                last = name
+    if first is None or last is None:
+        flat = [a for a in (record.get("authors") or []) if a]
+        if flat:
+            if first is None:
+                first = flat[0]
+            if last is None:
+                last = flat[-1] if len(flat) > 1 else flat[0]
+    return first, last
+
+
 def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
     authors_json = json.dumps(record.get("authors") or [])
     tags_json = json.dumps(record.get("tags") or [])
     auto_keywords_json = json.dumps(record.get("auto_keywords") or [])
+    authorships_json = json.dumps(record.get("authorships") or [])
+    cby_json = json.dumps(record.get("citations_by_year") or [])
+    first_author, last_author = _derive_first_last_author(record)
     conn.execute("""
         INSERT INTO papers
             (pdf_path, sidecar_path, thumb_path, title, authors_json,
              year, doi, journal, tags_json, added_date, sidecar_mtime, sha256,
              citations, citations_source, citations_fetched, mark,
-             auto_keywords_json)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             auto_keywords_json, abstract,
+             first_author, last_author, authorships_json,
+             citations_by_year_json)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(pdf_path) DO UPDATE SET
             sidecar_path=excluded.sidecar_path,
             thumb_path=excluded.thumb_path,
@@ -136,7 +229,12 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
             citations_source=excluded.citations_source,
             citations_fetched=excluded.citations_fetched,
             mark=excluded.mark,
-            auto_keywords_json=excluded.auto_keywords_json
+            auto_keywords_json=excluded.auto_keywords_json,
+            abstract=excluded.abstract,
+            first_author=excluded.first_author,
+            last_author=excluded.last_author,
+            authorships_json=excluded.authorships_json,
+            citations_by_year_json=excluded.citations_by_year_json
     """, (pdf_path, sidecar_path, thumb_path,
           record.get("title"), authors_json,
           record.get("year"), record.get("doi"), record.get("journal"),
@@ -146,7 +244,10 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
           record.get("citations_source"),
           record.get("citations_fetched"),
           record.get("mark"),
-          auto_keywords_json))
+          auto_keywords_json,
+          record.get("abstract"),
+          first_author, last_author, authorships_json,
+          cby_json))
     conn.commit()
 
 
@@ -177,19 +278,69 @@ def update_citations(conn, pdf_path, count, source, fetched_iso):
     conn.commit()
 
 
-def search(conn, query=None, limit=500):
-    """Substring search across title/authors/doi/journal. None = list all."""
+def _make_fts_query(query):
+    """Convert a free-text search box query into an FTS5 MATCH expression
+    with implicit prefix matching: 'Cro Will' → 'Cro* Will*'.
+    Returns None if no usable tokens."""
+    tokens = re.findall(r"\w+", query, re.UNICODE)
+    if not tokens:
+        return None
+    return " ".join(t + "*" for t in tokens)
+
+
+MARK_FILTER_NONE = "_none"   # sentinel for "unmarked papers only"
+
+
+def _mark_filter_clause(mark_filter):
+    """Return (sql_fragment, params) for a mark filter applied to the
+    `papers` table. mark_filter is None (no filter), "_none" (only
+    unmarked), or one of "red"/"orange"/"green"."""
+    if mark_filter is None:
+        return "", []
+    if mark_filter == MARK_FILTER_NONE:
+        return " AND (papers.mark IS NULL OR papers.mark = '')", []
+    if mark_filter in ("red", "orange", "green", "cyan"):
+        return " AND papers.mark = ?", [mark_filter]
+    return "", []  # ignore unknown values
+
+
+def search(conn, query=None, limit=500, mark_filter=None):
+    """Search across title/authors/abstract/keywords/journal/doi via FTS5.
+
+    Implicit prefix matching: each query token is treated as a prefix,
+    so 'Cro' matches 'Croll' / 'Crowfoot' / 'crystallography'.
+
+    `mark_filter` constrains by the user "Mark" colour."""
+    mark_sql, mark_params = _mark_filter_clause(mark_filter)
+
     if not query:
-        cur = conn.execute(
-            "SELECT * FROM papers ORDER BY year DESC, title LIMIT ?", (limit,))
+        sql = ("SELECT papers.* FROM papers"
+               " WHERE 1=1" + mark_sql +
+               " ORDER BY year DESC, title LIMIT ?")
+        cur = conn.execute(sql, tuple(mark_params + [limit]))
         return [dict(r) for r in cur.fetchall()]
+
+    fts_query = _make_fts_query(query)
+    if fts_query:
+        try:
+            sql = ("SELECT papers.* FROM papers"
+                   " JOIN papers_fts ON papers.id = papers_fts.rowid"
+                   " WHERE papers_fts MATCH ?" + mark_sql +
+                   " ORDER BY papers.year DESC, papers.title"
+                   " LIMIT ?")
+            cur = conn.execute(sql, tuple([fts_query] + mark_params + [limit]))
+            return [dict(r) for r in cur.fetchall()]
+        except sqlite3.OperationalError:
+            pass  # fall through to LIKE
+
+    # LIKE fallback for unusual queries.
     pat = "%" + query + "%"
-    cur = conn.execute("""
-        SELECT * FROM papers
-        WHERE title LIKE ? OR authors_json LIKE ? OR doi LIKE ? OR journal LIKE ?
-        ORDER BY year DESC, title
-        LIMIT ?
-    """, (pat, pat, pat, pat, limit))
+    sql = ("SELECT papers.* FROM papers"
+           " WHERE (title LIKE ? OR authors_json LIKE ? OR doi LIKE ?"
+           "        OR journal LIKE ? OR abstract LIKE ?"
+           "        OR auto_keywords_json LIKE ?)" + mark_sql +
+           " ORDER BY year DESC, title LIMIT ?")
+    cur = conn.execute(sql, tuple([pat]*6 + mark_params + [limit]))
     return [dict(r) for r in cur.fetchall()]
 
 

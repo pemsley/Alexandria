@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Alexandria
+GenericName=Research Library
+Comment=Personal library of scientific PDFs — search, annotate, track citations
+Exec=alexandria-browse
+Icon=io.github.pemsley.Alexandria
+Terminal=false
+Type=Application
+Categories=Office;Science;Education;Database;
+StartupNotify=true
+StartupWMClass=io.github.pemsley.Alexandria
+Keywords=pdf;papers;research;bibliography;crossref;openalex;reference manager;library;

@@ -31,14 +31,29 @@ def new_record(pdf_path):
         "journal": None,
         "tags": [],
         "notes": "",
-        "mark": None,           # "red" / "orange" / "green" / None
+        "mark": None,           # "red" / "orange" / "green" / "cyan" / None
         "hand_edited": False,
         "added_date": date.today().isoformat(),
         "sha256": None,
         "citations": None,
         "citations_source": None,
         "citations_fetched": None,
+        # OpenAlex per-year breakdown: list of {year, count}, oldest first.
+        "citations_by_year": [],
         "auto_keywords": [],
+        "abstract": None,
+        # Rich author info from OpenAlex: list of {name, position,
+        # orcid, openalex_id, institution} dicts. The flat 'authors'
+        # list above is kept in sync (display names, in publication
+        # order) for back-compat and display.
+        "authorships": [],
+        # User highlights / comments from the built-in viewer. Each entry:
+        #   {"id": uuid, "page": int (0-based),
+        #    "quads": [[x, y, w, h], ...]   (PDF points, y-down-from-top),
+        #    "text": str, "color": str,
+        #    "comment": str, "author": str,
+        #    "created": iso8601, "modified": iso8601}
+        "highlights": [],
         "raw": {},
     }
 

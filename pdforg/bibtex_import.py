@@ -280,28 +280,48 @@ def attach_pdf_to_ghost(conn, ghost_row, source_pdf_path, library_root):
     bibtex_key = ghost_rec.get("bibtex_key") or "ghost"
     target_path = _unique_target_path(library_root, bibtex_key)
 
+    # Drop the ghost FIRST. Otherwise importer.import_pdf below will
+    # match the new file's DOI against the ghost and return "duplicate"
+    # — exactly what we don't want. Snapshot ghost_rec is held in
+    # memory; we restore it if anything below fails.
+    try:
+        importer.delete_pdf(conn, ghost_pdf_path)
+    except Exception as e:
+        return None, "error", "Could not remove ghost: {}".format(e)
+
+    def _restore_ghost():
+        try:
+            sc = sidecar.ghost_sidecar_path(library_root, bibtex_key)
+            sidecar.write(sc, ghost_rec)
+            mtime = os.path.getmtime(sc)
+            index.upsert(conn, ghost_pdf_path, sc, None, ghost_rec, mtime)
+        except Exception as e:
+            print("attach_pdf_to_ghost: ghost restore failed: {}".format(e))
+
     # Copy the PDF in.
     try:
         os.makedirs(library_root, exist_ok=True)
         shutil.copy2(source_pdf_path, target_path)
     except OSError as e:
+        _restore_ghost()
         return None, "error", "Could not copy PDF: {}".format(e)
 
     # Standard import flow runs pdfx + OpenAlex enrichment.
     try:
         new_rec, status = importer.import_pdf(conn, target_path)
     except Exception as e:
-        # Roll back the copy so we don't leave a turd in LIBRARY_ROOT.
         try:
             os.remove(target_path)
         except OSError:
             pass
+        _restore_ghost()
         return None, "error", "import_pdf failed: {}".format(e)
     if new_rec is None or status in ("duplicate",):
         try:
             os.remove(target_path)
         except OSError:
             pass
+        _restore_ghost()
         return None, "error", "import_pdf returned status={}".format(status)
 
     # Merge ghost curation onto the new sidecar.
@@ -348,14 +368,8 @@ def attach_pdf_to_ghost(conn, ghost_row, source_pdf_path, library_root):
         return target_path, "error", \
             "merge succeeded but sidecar write failed: {}".format(e)
 
-    # Drop the ghost. Use the canonical delete to keep watcher / index
-    # tidy in one go (delete_pdf is ghost-aware: it removes the ghost
-    # sidecar from the hidden subdir and the index row).
-    try:
-        importer.delete_pdf(conn, ghost_pdf_path)
-    except Exception as e:
-        print("attach_pdf_to_ghost: ghost cleanup failed: {}".format(e))
-
+    # Ghost was already removed above (before import_pdf, to avoid the
+    # DOI-collision-with-self problem). Nothing more to do.
     return target_path, "merged", \
         "Attached PDF to «{}»".format(bibtex_key)
 

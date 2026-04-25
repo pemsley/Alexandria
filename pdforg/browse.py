@@ -17,7 +17,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Gdk, GLib, Gio, Pango, Adw
+from gi.repository import Gtk, Gdk, GLib, Gio, GObject, Pango, Adw
 
 from . import (index, edit_dialog, importer, metrics, sidecar, extract,
                viewer, marks_config, watcher as watcher_mod, author_works,
@@ -455,13 +455,30 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
         # (paywall, Cloudflare, no OA URL), fall back to opening the
         # DOI in the browser so the user can save and drag in.
         get_btn = Gtk.Button.new_from_icon_name("folder-download-symbolic")
-        get_btn.set_tooltip_text(
-            "Get PDF — try downloading an open-access copy via "
-            "OpenAlex; on failure, open the DOI in your browser.")
-        get_btn.connect(
-            "clicked",
-            lambda _b, r=row: parent_window._on_get_pdf(r))
+        if row["doi"]:
+            get_btn.set_tooltip_text(
+                "Get PDF — try downloading an open-access copy via "
+                "OpenAlex; on failure, open the DOI in your browser.")
+            get_btn.connect(
+                "clicked",
+                lambda _b, r=row: parent_window._on_get_pdf(r))
+        else:
+            get_btn.set_sensitive(False)
+            get_btn.set_tooltip_text(
+                "Get PDF — disabled: no DOI on this entry. "
+                "Search for one first, or edit metadata to add it.")
         btn_row.append(get_btn)
+
+        # On no-DOI ghosts, offer a "search OpenAlex for DOI" button.
+        if not row["doi"]:
+            find_btn = Gtk.Button.new_from_icon_name("system-search-symbolic")
+            find_btn.set_tooltip_text(
+                "Search OpenAlex for a DOI matching this entry's "
+                "title + authors + year.")
+            find_btn.connect(
+                "clicked",
+                lambda _b, r=row: parent_window._on_find_doi(r))
+            btn_row.append(find_btn)
     edit_btn = Gtk.Button.new_from_icon_name("document-properties-symbolic")
     edit_btn.set_tooltip_text("Edit metadata")
     edit_btn.connect(
@@ -494,6 +511,14 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
             "clicked",
             lambda b: parent_window._open_cited_by_popover(b, row))
         btn_row.append(cited_by_btn)
+        refs_btn = Gtk.Button.new_from_icon_name("mail-reply-all-symbolic")
+        refs_btn.set_tooltip_text(
+            "References — papers this one cites (OpenAlex)\n"
+            "Listed in publication order")
+        refs_btn.connect(
+            "clicked",
+            lambda b: parent_window._open_references_popover(b, row))
+        btn_row.append(refs_btn)
     if row["abstract"]:
         abstract_btn = Gtk.Button.new_from_icon_name(
             "format-justify-fill-symbolic")
@@ -630,6 +655,16 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
             text.append(kw_row)
 
     box.append(text)
+    box.pdforg_pdf_path = row["pdf_path"]
+
+    focus_click = Gtk.GestureClick.new()
+    focus_click.set_button(0)
+    focus_click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+    focus_click.connect(
+        "pressed",
+        lambda *_: parent_window._mark_focus(row["pdf_path"]))
+    box.add_controller(focus_click)
+
     return box
 
 
@@ -640,56 +675,74 @@ class BrowserWindow(Adw.ApplicationWindow):
         self.set_title("Alexandria")
         self.set_default_size(900, 700)
 
-        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        toolbar.set_margin_start(8)
-        toolbar.set_margin_end(8)
-        toolbar.set_margin_top(6)
-        toolbar.set_margin_bottom(6)
-        import_files_btn = Gtk.Button(label="Import Files…")
-        import_files_btn.connect("clicked", self._on_import_files)
-        toolbar.append(import_files_btn)
-        import_dir_btn = Gtk.Button(label="Import Folder…")
-        import_dir_btn.connect("clicked", self._on_import_folder)
-        toolbar.append(import_dir_btn)
-        import_bib_btn = Gtk.Button(label="Import BibTeX…")
-        import_bib_btn.connect("clicked", self._on_import_bibtex)
-        toolbar.append(import_bib_btn)
-        export_bib_btn = Gtk.Button(label="Export BibTeX…")
-        export_bib_btn.set_tooltip_text(
-            "Save the currently visible entries (search + mark filter) "
-            "as a .bib file")
-        export_bib_btn.connect("clicked", self._on_export_bibtex)
-        toolbar.append(export_bib_btn)
+        # ---- Window-scoped Gio actions (driven by menu items) -----
+        self._install_actions()
+
+        # ---- Search entry (lives inside a Gtk.SearchBar) ----------
         self.search = Gtk.SearchEntry()
         self.search.set_hexpand(True)
-        self.search.set_placeholder_text("Search title / authors / DOI / journal")
+        self.search.set_placeholder_text(
+            "Search title / authors / DOI / journal")
         self.search.connect("search-changed", self._on_search)
-        toolbar.append(self.search)
+        self.search_bar = Gtk.SearchBar()
+        self.search_bar.connect_entry(self.search)
+        self.search_bar.set_child(self.search)
+        # Modern GNOME pattern: typing anywhere in the window opens the
+        # search bar with the typed character.
+        self.search_bar.set_key_capture_widget(self)
+        self.search_bar.set_show_close_button(True)
 
-        # Mark filter dropdown — built from the user's marks-config labels.
+        # ---- Marks (used for the filter dropdown + popover) -------
         self.mark_labels = marks_config.load()
         self._MARK_FILTER_VALUES = [None, "red", "orange", "green", "cyan",
                                     index.MARK_FILTER_NONE]
-        self._toolbar_box = toolbar  # remember so we can rebuild the dropdown
         self.mark_filter_dd = self._build_mark_filter_dd()
-        toolbar.append(self.mark_filter_dd)
 
-        marks_prefs_btn = Gtk.Button.new_from_icon_name(
-            "preferences-system-symbolic")
-        marks_prefs_btn.set_tooltip_text("Edit mark labels…")
-        marks_prefs_btn.connect("clicked", self._open_marks_prefs)
-        toolbar.append(marks_prefs_btn)
+        # ---- HeaderBar --------------------------------------------
+        header = Adw.HeaderBar()
 
-        self.status = Gtk.Label()
-        self.status.set_halign(Gtk.Align.END)
-        self.status.set_use_markup(True)
-        # Custom URI scheme `alex:show-top` is intercepted in
-        # _on_status_link to scroll the cards list to the top
-        # (where freshly-imported entries sit, post-sort).
-        self.status.connect("activate-link", self._on_status_link)
-        toolbar.append(self.status)
+        # START: a single "+ Import" menu button covering all import
+        # paths and an Export entry. Saves three header slots.
+        import_menu = Gio.Menu()
+        import_section = Gio.Menu()
+        import_section.append("Import Files…",   "win.import-files")
+        import_section.append("Import Folder…",  "win.import-folder")
+        import_section.append("Import BibTeX…",  "win.import-bibtex")
+        import_menu.append_section(None, import_section)
+        export_section = Gio.Menu()
+        export_section.append("Export BibTeX…",  "win.export-bibtex")
+        import_menu.append_section(None, export_section)
+        import_btn = Gtk.MenuButton()
+        import_btn.set_label("Import")
+        import_btn.set_icon_name("list-add-symbolic")
+        import_btn.set_always_show_arrow(True)
+        import_btn.set_menu_model(import_menu)
+        import_btn.set_tooltip_text("Import / Export")
+        header.pack_start(import_btn)
 
-        # Progress strip (hidden when idle).
+        # END: hamburger first → far right; then mark filter; then
+        # search toggle. Order in pack_end is rightmost-first.
+        hamburger_menu = Gio.Menu()
+        hamburger_menu.append("Edit Mark Labels…", "win.edit-marks")
+        hamburger_btn = Gtk.MenuButton()
+        hamburger_btn.set_icon_name("open-menu-symbolic")
+        hamburger_btn.set_menu_model(hamburger_menu)
+        hamburger_btn.set_tooltip_text("Main menu")
+        header.pack_end(hamburger_btn)
+
+        header.pack_end(self.mark_filter_dd)
+
+        self.search_toggle = Gtk.ToggleButton()
+        self.search_toggle.set_icon_name("system-search-symbolic")
+        self.search_toggle.set_tooltip_text("Search (Ctrl-F)")
+        self.search_toggle.bind_property(
+            "active",
+            self.search_bar, "search-mode-enabled",
+            GObject.BindingFlags.BIDIRECTIONAL
+            | GObject.BindingFlags.SYNC_CREATE)
+        header.pack_end(self.search_toggle)
+
+        # ---- Progress strip (toolbar_view top bar) ----------------
         self.progress_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.progress_box.set_margin_start(8)
         self.progress_box.set_margin_end(8)
@@ -704,6 +757,20 @@ class BrowserWindow(Adw.ApplicationWindow):
         self.progress_box.set_visible(False)
         self._import_busy = False
 
+        # ---- Status bar (toolbar_view bottom bar) -----------------
+        # Stays for now; Phase 3 will replace with Adw.Toast.
+        self.status = Gtk.Label()
+        self.status.set_halign(Gtk.Align.START)
+        self.status.set_use_markup(True)
+        self.status.connect("activate-link", self._on_status_link)
+        status_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        status_bar.set_margin_start(8)
+        status_bar.set_margin_end(8)
+        status_bar.set_margin_top(2)
+        status_bar.set_margin_bottom(2)
+        status_bar.append(self.status)
+
+        # ---- Results list -----------------------------------------
         self.results_scrolled = Gtk.ScrolledWindow()
         self.results_scrolled.set_vexpand(True)
         self.results_scrolled.set_hexpand(True)
@@ -712,18 +779,25 @@ class BrowserWindow(Adw.ApplicationWindow):
         self.results = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.results_scrolled.set_child(self.results)
 
-        # Compose with Adw.ToolbarView: native HeaderBar + window
-        # controls on top, the actions toolbar as a secondary top
-        # bar, the progress strip below it (only when busy), and
-        # the cards scrolled-window as the main content.
+        # ---- Toast overlay wraps the results area -----------------
+        self.toast_overlay = Adw.ToastOverlay()
+        self.toast_overlay.set_child(self.results_scrolled)
+
+        # ---- Compose with Adw.ToolbarView -------------------------
         toolbar_view = Adw.ToolbarView()
-        header = Adw.HeaderBar()
         toolbar_view.add_top_bar(header)
-        toolbar_view.add_top_bar(toolbar)
+        toolbar_view.add_top_bar(self.search_bar)
         toolbar_view.add_top_bar(self.progress_box)
-        toolbar_view.set_content(self.results_scrolled)
+        toolbar_view.add_bottom_bar(status_bar)
+        toolbar_view.set_content(self.toast_overlay)
 
         self.set_content(toolbar_view)
+
+        # Last card the user interacted with (clicked thumbnail, button
+        # row, opened a popover…). Reloads scroll this card back into
+        # view so filter changes don't lose the user's place.
+        self._focus_pdf_path = None
+
         self._reload(None)
 
         # Drop target: accept files (Gdk.FileList) dragged in from the
@@ -766,28 +840,46 @@ class BrowserWindow(Adw.ApplicationWindow):
     def _warn_no_pdfx(self):
         dlg = Gtk.AlertDialog()
         dlg.set_modal(True)
-        dlg.set_message("pdfx not found")
+        dlg.set_message("pdfx not installed")
         dlg.set_detail(
-            "The 'pdfx' tool was not found on $PATH and the "
-            "PDFORG_PDFX environment variable is not set.\n\n"
+            "The 'pdfx' Python module is not importable in this "
+            "environment.\n\n"
             "Metadata extraction will be compromised — titles, authors, "
             "DOI and journal will be sourced only from the PDF's basic "
             "/Info dictionary (often empty), with CrossRef enrichment "
             "as a fallback.\n\n"
-            "To fix: install pdfx (pip install pdfx), or set "
-            "PDFORG_PDFX=/path/to/pdfx in your environment.")
+            "To fix: pip install pdfx")
         dlg.set_buttons(["OK"])
         dlg.set_default_button(0)
         dlg.show(self)
         return False
 
     def _focus_search(self, *_args):
+        # Reveal the search bar (if hidden) and put the cursor in it.
+        self.search_bar.set_search_mode(True)
         self.search.grab_focus()
         self.search.select_region(0, -1)
         return True
 
     def _on_search(self, entry):
         self._reload(entry.get_text() or None)
+
+    def _install_actions(self):
+        """Wire window-scoped Gio actions for menu items. Each action
+        delegates to the existing button-style handler (which takes a
+        button arg we ignore)."""
+        for name, handler in (
+            ("import-files",  self._on_import_files),
+            ("import-folder", self._on_import_folder),
+            ("import-bibtex", self._on_import_bibtex),
+            ("export-bibtex", self._on_export_bibtex),
+            ("edit-marks",    self._open_marks_prefs),
+        ):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect(
+                "activate",
+                lambda a, p, h=handler: h(None))
+            self.add_action(action)
 
     # --- Import (file dialog + background thread) -----------------------
 
@@ -898,7 +990,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         self._import_busy = False
         self._hide_progress()
         if counts is None:
-            self.status.set_text("BibTeX import failed (see terminal)")
+            self._toast("BibTeX import failed (see terminal)", timeout=6)
         else:
             msg = "BibTeX: {} imported, {} ghost, {} duplicate, {} errors".format(
                 counts["imported"], counts["ghost"],
@@ -951,14 +1043,14 @@ class BrowserWindow(Adw.ApplicationWindow):
             written, skipped = bibtex_export.export_rows_to_file(rows, path)
         except Exception as e:
             print("BibTeX export failed:", e)
-            self.status.set_text("Export failed: {}".format(e))
+            self._toast("Export failed: {}".format(e), timeout=6)
             return
 
         msg = "Exported {} entries to {}".format(
             written, os.path.basename(path))
         if skipped:
             msg += " ({} skipped — sidecar missing)".format(skipped)
-        self.status.set_text(msg)
+        self._toast(msg)
 
     def _start_import_paths(self, paths):
         self._show_progress("Importing {} file(s)...".format(len(paths)), 0.0)
@@ -1068,9 +1160,9 @@ class BrowserWindow(Adw.ApplicationWindow):
             importer.delete_pdf(self.conn, row["pdf_path"])
         except Exception as e:
             print("delete failed:", e)
-            self.status.set_text("Delete failed: {}".format(e))
+            self._toast("Delete failed: {}".format(e), timeout=6)
             return
-        self.status.set_text("Deleted: " + os.path.basename(row["pdf_path"]))
+        self._toast("Deleted: " + os.path.basename(row["pdf_path"]))
         self._reload(self.search.get_text() or None)
 
     def _open_rename_dialog(self, row):
@@ -1128,7 +1220,7 @@ class BrowserWindow(Adw.ApplicationWindow):
                     GLib.markup_escape_text(str(e))))
                 return
             win.close()
-            self.status.set_text("Renamed to " + new_basename)
+            self._toast("Renamed to " + new_basename)
             self._reload(self.search.get_text() or None)
 
         cancel.connect("clicked", lambda _b: win.close())
@@ -1215,7 +1307,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             if p and p.lower().endswith(".pdf") and os.path.isfile(p):
                 paths.append(p)
         if not paths:
-            self.status.set_text("Drop: no PDFs found")
+            self._toast("Drop: no PDFs found")
             return False
         self.status.set_text("Importing {} dropped file(s)...".format(len(paths)))
         threading.Thread(target=self._do_drop_import,
@@ -1239,7 +1331,7 @@ class BrowserWindow(Adw.ApplicationWindow):
                 src_path = p
                 break
         if not src_path:
-            self.status.set_text("Ghost-drop: not a PDF")
+            self._toast("Ghost-drop: not a PDF")
             return False
         self.status.set_text("Attaching {}...".format(os.path.basename(src_path)))
         threading.Thread(
@@ -1258,7 +1350,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         GLib.idle_add(self._on_ghost_drop_done, status, msg)
 
     def _on_ghost_drop_done(self, status, msg):
-        self.status.set_text(msg or status)
+        self._toast(msg or status, timeout=5)
         self._reload(self.search.get_text() or None)
         return False
 
@@ -1375,6 +1467,14 @@ class BrowserWindow(Adw.ApplicationWindow):
             print("drop duplicate: {} matches existing {}".format(src, existing))
         return False
 
+    # --- Toasts -------------------------------------------------------
+
+    def _toast(self, message, timeout=3):
+        """Show a transient Adw.Toast over the results area."""
+        t = Adw.Toast.new(message)
+        t.set_timeout(timeout)
+        self.toast_overlay.add_toast(t)
+
     # --- Status-line "show ↗" affordance ------------------------------
 
     def _set_status_with_show(self, message):
@@ -1417,9 +1517,90 @@ class BrowserWindow(Adw.ApplicationWindow):
             self.results.append(make_card(r, self, self.conn, on_saved,
                                           mark_labels=self.mark_labels))
         self.status.set_text("{} entries".format(len(rows)))
+        if self._focus_pdf_path:
+            GLib.idle_add(self._scroll_focus_into_view)
+
+    def _mark_focus(self, pdf_path):
+        self._focus_pdf_path = pdf_path
+
+    def _scroll_focus_into_view(self):
+        target = self._focus_pdf_path
+        if not target:
+            return False
+        child = self.results.get_first_child()
+        while child:
+            if getattr(child, "pdforg_pdf_path", None) == target:
+                a = child.get_allocation()
+                adj = self.results_scrolled.get_vadjustment()
+                page = adj.get_page_size()
+                upper = adj.get_upper()
+                adj.set_value(max(0, min(a.y, max(0, upper - page))))
+                return False
+            child = child.get_next_sibling()
+        return False
 
     def _on_mark_filter_changed(self, _dd, _pspec):
         self._reload(self.search.get_text() or None)
+
+    # --- Find DOI (no-DOI ghost) --------------------------------------
+
+    def _on_find_doi(self, row):
+        """Ghost-card "Search OpenAlex for DOI": run a background
+        title+author search; on a hit, write the DOI back to the ghost
+        sidecar and reload. Toast either way."""
+        try:
+            rec = sidecar.read(row["sidecar_path"])
+        except Exception as e:
+            self._toast("Could not read sidecar: {}".format(e), timeout=6)
+            return
+        title = rec.get("title")
+        if not title:
+            self._toast("No title to search on", timeout=5)
+            return
+        self._toast("Searching OpenAlex for «{}»…".format(title[:50]),
+                    timeout=2)
+        threading.Thread(
+            target=self._do_find_doi,
+            args=(row["sidecar_path"], rec),
+            daemon=True).start()
+
+    def _do_find_doi(self, sc_path, rec):
+        try:
+            doi = metrics.find_doi(
+                title=rec.get("title"),
+                year=rec.get("year"),
+                author_names=rec.get("authors") or [],
+                journal=rec.get("journal"))
+        except Exception as e:
+            GLib.idle_add(self._toast,
+                          "DOI search failed: {}".format(e), 6)
+            return
+        GLib.idle_add(self._on_find_doi_done, sc_path, doi)
+
+    def _on_find_doi_done(self, sc_path, doi):
+        if not doi:
+            self._toast("No DOI match found on OpenAlex", timeout=5)
+            return False
+        # Write DOI back to the ghost sidecar; refresh the index row.
+        try:
+            rec = sidecar.read(sc_path)
+            rec["doi"] = doi
+            sidecar.write(sc_path, rec)
+            # Find the ghost's pdf_path so we can re-upsert.
+            cur = self.conn.execute(
+                "SELECT pdf_path, thumb_path FROM papers "
+                "WHERE sidecar_path=?", (sc_path,)).fetchone()
+            if cur:
+                mtime = os.path.getmtime(sc_path)
+                index.upsert(self.conn, cur["pdf_path"], sc_path,
+                             cur["thumb_path"], rec, mtime)
+        except Exception as e:
+            self._toast("Found DOI {} but save failed: {}".format(doi, e),
+                        timeout=8)
+            return False
+        self._toast("Found DOI: {}".format(doi), timeout=5)
+        self._reload(self.search.get_text() or None)
+        return False
 
     # --- Preprint → published-version actions -------------------------
 
@@ -1513,13 +1694,14 @@ class BrowserWindow(Adw.ApplicationWindow):
         """No OA copy is downloadable; open DOI in browser and let the
         user save+drag the PDF in."""
         open_pdf("https://doi.org/" + doi)
-        self.status.set_text(
+        self._toast(
             "Direct download failed ({}) — opened DOI in browser; "
-            "save and drag the PDF onto the card".format(error_msg))
+            "save and drag the PDF onto the card".format(error_msg),
+            timeout=8)
         return False
 
     def _get_pdf_done(self, status, msg):
-        self.status.set_text(msg or status)
+        self._toast(msg or status, timeout=5)
         self._reload(self.search.get_text() or None)
         return False
 
@@ -1617,7 +1799,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         if ok:
             btn.set_label("✓ added")
             btn.set_sensitive(False)
-            self.status.set_text("Added published version")
+            self._toast("Added published version")
             # The watcher's reconcile or our own reload will update the
             # card on next refresh; force one now.
             self._reload(self.search.get_text() or None)
@@ -1721,6 +1903,67 @@ class BrowserWindow(Adw.ApplicationWindow):
         # after the popup; the label stays selectable for on-demand
         # copy-paste.
         GLib.idle_add(lambda: (body.select_region(0, 0), False)[1])
+
+    def _open_references_popover(self, anchor_widget, row):
+        """Show the references *of* this paper (the things it cites),
+        as a single list in publication order. Sourced from OpenAlex's
+        `referenced_works` field — no PDF parsing needed."""
+        pop = Gtk.Popover()
+        pop.set_parent(anchor_widget)
+        pop.set_has_arrow(True)
+        pop.set_size_request(620, 540)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        outer.set_margin_start(10)
+        outer.set_margin_end(10)
+        outer.set_margin_top(10)
+        outer.set_margin_bottom(10)
+
+        header = Gtk.Label()
+        header.set_markup(
+            "<b>References</b>"
+            "  <span size='small' alpha='65%'>(OpenAlex, "
+            "in publication order)</span>")
+        header.set_halign(Gtk.Align.START)
+        outer.append(header)
+
+        status = Gtk.Label(label="Loading…")
+        status.set_halign(Gtk.Align.START)
+        outer.append(status)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_vexpand(True)
+        scrolled.set_hexpand(True)
+        list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        scrolled.set_child(list_box)
+        outer.append(scrolled)
+
+        pop.set_child(outer)
+        pop.popup()
+
+        doi = row["doi"]
+
+        def _fetch():
+            refs = metrics.fetch_references(doi=doi, limit=50)
+            GLib.idle_add(self._fill_references_popover,
+                          status, list_box, refs)
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _fill_references_popover(self, status, list_box, refs):
+        if not refs:
+            status.set_text("No references known to OpenAlex.")
+            return False
+        status.set_markup(
+            "<small><span alpha='75%'>{} references</span></small>".format(
+                len(refs)))
+        existing = self._existing_dois_set()
+        for r in refs:
+            list_box.append(
+                self._build_related_row(
+                    r, existing,
+                    prefer_date=False, show_citations=True))
+        return False
 
     def _open_cited_by_popover(self, anchor_widget, row):
         """Show two short lists side-by-section in one popover: the
@@ -2101,15 +2344,26 @@ class BrowserWindow(Adw.ApplicationWindow):
         return dd
 
     def _refresh_mark_filter_dd(self):
-        """Rebuild the toolbar dropdown after labels change."""
+        """Rebuild the dropdown after labels change. Lives in the
+        HeaderBar's pack_end stack — we swap the widget in place by
+        unparenting/re-packing."""
         old = self.mark_filter_dd
         selected = old.get_selected()
-        # Find old's position so we can re-insert at the same place.
         new_dd = self._build_mark_filter_dd()
         new_dd.set_selected(selected)
-        # Replace in the toolbar.
-        self._toolbar_box.insert_child_after(new_dd, old)
-        self._toolbar_box.remove(old)
+        parent = old.get_parent()
+        if parent is not None and hasattr(parent, "remove"):
+            parent.remove(old)
+        if parent is not None and isinstance(parent, Adw.HeaderBar):
+            parent.pack_end(new_dd)
+            # The new widget appears at the rightmost end; we want it
+            # to sit where the old one did. The simplest fix: also
+            # repack the rightmost siblings so the order is restored.
+            # In practice this dropdown sits between the search toggle
+            # and the hamburger menu, both of which were packed earlier
+            # — so a fresh pack_end places `new_dd` to the LEFT of the
+            # already-packed siblings. That visually re-creates the
+            # original ordering. (Adw.HeaderBar has no insert-at-index.)
         self.mark_filter_dd = new_dd
 
     def _open_marks_prefs(self, _btn):
@@ -2188,6 +2442,18 @@ def main(argv):
     app = Adw.Application(application_id="io.github.pemsley.Alexandria")
 
     def on_activate(app):
+        # Libadwaita owns the dark/light decision via Adw.StyleManager.
+        # If the user has the legacy GtkSettings:gtk-application-prefer-
+        # dark-theme set (via ~/.config/gtk-4.0/settings.ini), libadwaita
+        # warns and refuses to honour it. Reset the legacy property so
+        # the warning goes away, then express our preference the
+        # supported way.
+        gs = Gtk.Settings.get_default()
+        if gs is not None:
+            gs.reset_property("gtk-application-prefer-dark-theme")
+        Adw.StyleManager.get_default().set_color_scheme(
+            Adw.ColorScheme.PREFER_DARK)
+
         win = BrowserWindow(app, conn)
         win.present()
 

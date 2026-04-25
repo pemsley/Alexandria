@@ -70,6 +70,11 @@ def _is_garbage_title(s):
         return True
     if low.endswith(".dvi") or low.endswith(".tex") or low.endswith(".docx"):
         return True
+    # Publisher placeholder titles — same string for every paper from
+    # the same imprint. Match leniently because em-dash / en-dash /
+    # hyphen variants all show up.
+    if low.startswith("science journals"):  # AAAS / Science magazine
+        return True
     # Typesetting placeholders / template tokens that the workflow
     # forgot to substitute (e.g. "TX_1~ABS:AT/TX_2~ABS~AT").
     if "~" in s_strip and " " not in s_strip:
@@ -281,19 +286,65 @@ def _first_page_text(pdf_path):
     return pages[0]
 
 
+def _scan_doi_in_pages(pdf_path, max_pages=4):
+    """Search for a DOI across the first `max_pages` of the PDF.
+    Used as a fallback when the page-1 scrape doesn't find one — some
+    journals (Science, PNAS, ...) put the DOI in a footer or near the
+    references rather than on page 1. Returns the first DOI found, or None."""
+    if not shutil.which("pdftotext"):
+        return None
+    try:
+        proc = subprocess.run(
+            ["pdftotext", "-f", "1", "-l", str(max_pages), pdf_path, "-"],
+            capture_output=True, text=True, timeout=30, errors="replace")
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return _scrape_doi(proc.stdout or "")
+
+
+# DOI prefixes used by data repositories — the paper's *publisher*
+# DOI is almost always more useful, so we prefer non-data DOIs when
+# both kinds appear in the body text. (Common in Methods / Data
+# Availability sections that link to deposited data.)
+_DATA_DOI_PREFIXES = (
+    "10.5281/zenodo.",
+    "10.6084/",          # figshare
+    "10.5061/dryad",     # Dryad
+    "10.17605/osf",      # OSF
+    "10.7910/dvn",       # Harvard Dataverse
+)
+
+
+def _is_data_doi(doi):
+    if not doi:
+        return False
+    low = doi.lower()
+    return any(low.startswith(p) for p in _DATA_DOI_PREFIXES)
+
+
 def _scrape_doi(text):
-    """Find a DOI in arbitrary text. Tries doi.org URLs first, then bare DOIs."""
+    """Find a DOI in arbitrary text. Returns the most likely publisher
+    DOI, or None. When both a publisher DOI and one or more data-repo
+    DOIs appear (Zenodo / figshare / Dryad / OSF / Dataverse), prefer
+    the publisher DOI."""
     if not text:
         return None
-    m = re.search(r"(?:doi(?:\.org)?[:/]\s*)?(10\.\d{4,9}/[-._;()/:A-Z0-9]+)",
-                  text, re.IGNORECASE)
-    if not m:
+    matches = re.findall(
+        r"(?:doi(?:\.org)?[:/]\s*)?(10\.\d{4,9}/[-._;()/:A-Z0-9]+)",
+        text, re.IGNORECASE)
+    if not matches:
         return None
-    doi = m.group(1).rstrip(".,;)]\"'")
-    # Sometimes the regex grabs trailing junk like "ThisarticleisaUSGov..."
-    # — strip at the first whitespace anyway.
-    doi = doi.split()[0]
-    return doi
+    seen = []
+    for raw in matches:
+        d = raw.rstrip(".,;)]\"'").split()[0]
+        if d and d not in seen:
+            seen.append(d)
+    if not seen:
+        return None
+    publisher = [d for d in seen if not _is_data_doi(d)]
+    return publisher[0] if publisher else seen[0]
 
 
 def _crossref_lookup(doi):
@@ -357,6 +408,14 @@ def _looks_like_title(line):
     alpha = sum(1 for c in s if c.isalpha())
     if alpha < max(8, int(0.5 * len(s))):
         return False
+    # Reject all-caps short lines: running headers ("RES EARCH",
+    # "ELECTRON MICROSCOPY") and section headings. Real titles
+    # have mixed case.
+    letters = [c for c in s if c.isalpha()]
+    if letters and len(s) < 40:
+        upper_frac = sum(1 for c in letters if c.isupper()) / len(letters)
+        if upper_frac >= 0.85:
+            return False
     return True
 
 
@@ -436,6 +495,10 @@ def _enrich(result, pdf_path):
     if not result.get("doi"):
         text = _first_page_text(pdf_path)
         doi = _scrape_doi(text)
+        if not doi:
+            # Some journals (e.g. Science) print the DOI on the references
+            # page rather than page 1. Cast a wider net before giving up.
+            doi = _scan_doi_in_pages(pdf_path, max_pages=4)
         if doi:
             result["doi"] = doi
 

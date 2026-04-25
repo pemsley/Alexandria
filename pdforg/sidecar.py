@@ -47,6 +47,10 @@ def new_record(pdf_path):
         # list above is kept in sync (display names, in publication
         # order) for back-compat and display.
         "authorships": [],
+        # If this PDF is a preprint and OpenAlex knows of a journal-
+        # published version: {doi, title, journal, year, openalex_id,
+        # checked}. None for non-preprints or when no match was found.
+        "published_version": None,
         # User highlights / comments from the built-in viewer. Each entry:
         #   {"id": uuid, "page": int (0-based),
         #    "quads": [[x, y, w, h], ...]   (PDF points, y-down-from-top),

@@ -5,14 +5,61 @@ Opened from the authors-popover "find more by author" button.
 """
 
 import os
+import shutil
 import subprocess
 import threading
+import urllib.error
+import urllib.request
 
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, GLib, Gdk, Pango
+from gi.repository import Gtk, GLib, Gdk, Gio, Pango
 
-from . import metrics, index
+from . import metrics, index, importer
+
+
+def _attach_copy_link_menu(button, url):
+    """Attach a right-click context menu with a 'Copy link' entry.
+    The button keeps its primary (left-click) action; right-click
+    pops up a small menu over the button."""
+    if not url:
+        return
+    action = Gio.SimpleAction.new("copy_url", None)
+
+    def do_copy(_a, _p):
+        clipboard = button.get_clipboard()
+        try:
+            clipboard.set(url)
+        except Exception:
+            pass
+
+    action.connect("activate", do_copy)
+    group = Gio.SimpleActionGroup()
+    group.add_action(action)
+    button.insert_action_group("ctx", group)
+
+    menu = Gio.Menu()
+    menu.append("Copy link", "ctx.copy_url")
+    popover = Gtk.PopoverMenu.new_from_model(menu)
+    popover.set_parent(button)
+
+    gesture = Gtk.GestureClick.new()
+    gesture.set_button(Gdk.BUTTON_SECONDARY)
+
+    def on_press(_g, _n, x, y):
+        rect = Gdk.Rectangle()
+        rect.x = int(x)
+        rect.y = int(y)
+        rect.width = 1
+        rect.height = 1
+        popover.set_pointing_to(rect)
+        popover.popup()
+
+    gesture.connect("pressed", on_press)
+    button.add_controller(gesture)
+
+LIBRARY_ROOT = os.environ.get(
+    "PDFORG_LIBRARY", os.path.expanduser("~/pdfs"))
 
 
 # Hide the histogram entirely if no year reaches this many citations.
@@ -31,6 +78,86 @@ def _open_url(url):
                          stderr=subprocess.DEVNULL)
     except OSError:
         pass
+
+
+def _filename_for(doi, oa_url):
+    """Pick a sensible filename for a downloaded OA PDF. Prefer the URL's
+    last path segment when it looks PDF-like; otherwise derive from DOI."""
+    if oa_url:
+        from urllib.parse import urlparse
+        leaf = os.path.basename(urlparse(oa_url).path or "")
+        if leaf.lower().endswith(".pdf") and len(leaf) > 4:
+            return leaf
+    if doi:
+        return doi.replace("/", "_") + ".pdf"
+    return None
+
+
+def _download_pdf(url, target_path, timeout=60):
+    """Download `url` to `target_path` atomically (.tmp + rename).
+    Returns (ok, msg). The returned msg is empty on success and
+    a short user-friendly explanation otherwise."""
+    tmp = target_path + ".tmp"
+    # Pretend to be a normal browser: many publishers (and Cloudflare-
+    # protected sites in particular) will 403 anything that doesn't
+    # look like one. This still won't get past a JS challenge — see
+    # the 403 handler below.
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/124.0.0.0 Safari/537.36"),
+        "Accept": "application/pdf,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+    }
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with open(tmp, "wb") as f:
+                shutil.copyfileobj(resp, f, 1 << 16)
+    except urllib.error.HTTPError as e:
+        try:
+            if os.path.isfile(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        if e.code == 403 and "cloudflare" in (
+                (e.headers.get("server") or "").lower()
+                if e.headers else ""):
+            return False, ("blocked by Cloudflare bot challenge — "
+                           "click View PDF to download in your browser")
+        if e.code == 403:
+            return False, ("HTTP 403 Forbidden — the publisher refused "
+                           "the download. Use View PDF in your browser.")
+        if e.code == 404:
+            return False, "HTTP 404 — the PDF URL is no longer valid"
+        return False, "HTTP {} {}".format(e.code, e.reason or "")
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        try:
+            if os.path.isfile(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return False, str(e)
+    # Sanity check: real PDFs start with %PDF and are at least a few KB.
+    try:
+        size = os.path.getsize(tmp)
+        with open(tmp, "rb") as f:
+            head = f.read(5)
+    except OSError as e:
+        return False, str(e)
+    if size < 1024 or head != b"%PDF-":
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        # Most likely we got an HTML challenge / login page.
+        if head[:5].lower().startswith(b"<htm") or head[:5] == b"<!DOC"[:5]:
+            return False, ("server returned HTML, not a PDF — likely "
+                           "an anti-bot challenge or login wall")
+        return False, "downloaded data isn't a PDF (size={}, head={!r})".format(
+            size, head)
+    os.rename(tmp, target_path)
+    return True, ""
 
 
 def _truncate_authors(names, max_n=4):
@@ -159,7 +286,6 @@ class AuthorWorksWindow(Gtk.Window):
         name_lbl.set_markup(
             "<span size='x-large' weight='bold'>{}</span>".format(
                 GLib.markup_escape_text(name)))
-        name_lbl.set_selectable(True)
         hleft.append(name_lbl)
 
         sub = []
@@ -392,18 +518,139 @@ class AuthorWorksWindow(Gtk.Window):
                 "clicked",
                 lambda _b, i=oa_id: _open_url("https://openalex.org/" + i))
             btn_row.append(b)
-        if w.get("is_oa") and w.get("oa_url"):
-            b = Gtk.Button(label="Open-access PDF")
-            b.add_css_class("suggested-action")
+        # OpenAlex disambiguates: pdf_url is the primary direct PDF
+        # (best OA location), pdf_urls is *all* known OA mirrors
+        # (PMC / repositories / preprint servers), landing_url is the
+        # publisher's HTML article page.
+        pdf_url = w.get("pdf_url")
+        pdf_urls = list(w.get("pdf_urls") or ([pdf_url] if pdf_url else []))
+        landing_url = w.get("landing_url") or w.get("oa_url")
+        view_target = pdf_url or landing_url
+        if w.get("is_oa") and view_target:
+            b = Gtk.Button(label="View PDF")
+            b.set_tooltip_text(view_target)
             b.connect(
                 "clicked",
-                lambda _b, u=w["oa_url"]: _open_url(u))
+                lambda _b, u=view_target: _open_url(u))
+            _attach_copy_link_menu(b, view_target)
             btn_row.append(b)
+
+            already_in_lib = (doi or "").lower() in self._existing
+            add_btn = Gtk.Button(label="Add to Archive")
+            add_btn.add_css_class("suggested-action")
+            if already_in_lib:
+                add_btn.set_label("In library")
+                add_btn.set_sensitive(False)
+                add_btn.remove_css_class("suggested-action")
+            elif not pdf_urls:
+                add_btn.set_sensitive(False)
+                add_btn.remove_css_class("suggested-action")
+                add_btn.set_tooltip_text(
+                    "No direct PDF link from OpenAlex (only a publisher "
+                    "landing page is available). Use 'View PDF' to open "
+                    "it in a browser, then drag the PDF into Alexandria.")
+            else:
+                tip_lines = ["Download the open-access PDF into your "
+                             "library and extract metadata"]
+                if len(pdf_urls) > 1:
+                    tip_lines.append(
+                        "({} mirror{} available)".format(
+                            len(pdf_urls),
+                            "" if len(pdf_urls) == 1 else "s"))
+                add_btn.set_tooltip_text("\n".join(tip_lines))
+                add_btn.connect(
+                    "clicked",
+                    lambda _b, urls=pdf_urls, d=doi, btn=add_btn:
+                        self._on_add_to_archive(urls, d, btn))
+            btn_row.append(add_btn)
         if btn_row.get_first_child() is not None:
             box.append(btn_row)
 
         frame.set_child(box)
         return frame
+
+    # ------------------------------------------------------------------
+    # Add to Archive: download an OA PDF and import it into the library.
+    # ------------------------------------------------------------------
+
+    def _on_add_to_archive(self, urls, doi, btn):
+        if not urls:
+            return
+        # Pick the filename from the first URL (or the DOI fallback).
+        fname = _filename_for(doi, urls[0])
+        if not fname:
+            btn.set_label("No filename")
+            btn.set_sensitive(False)
+            return
+
+        os.makedirs(LIBRARY_ROOT, exist_ok=True)
+        target = os.path.join(LIBRARY_ROOT, fname)
+
+        # Already present? Don't re-download.
+        if os.path.exists(target):
+            btn.set_label("Already present")
+            btn.set_sensitive(False)
+            btn.remove_css_class("suggested-action")
+            return
+
+        btn.set_sensitive(False)
+        btn.set_label("Downloading…")
+        threading.Thread(
+            target=self._do_add_to_archive,
+            args=(urls, target, doi, btn),
+            daemon=True,
+        ).start()
+
+    def _do_add_to_archive(self, urls, target, doi, btn):
+        # Try each candidate in order, falling back to the next on
+        # failure. Most papers succeed on the first; CF-protected
+        # bioRxiv etc. often have a PMC mirror that works.
+        last_msg = ""
+        last_url = ""
+        for i, url in enumerate(urls):
+            if i > 0:
+                GLib.idle_add(
+                    self._set_add_btn_label, btn,
+                    "Trying mirror {} / {}…".format(i + 1, len(urls)))
+            ok, msg = _download_pdf(url, target)
+            last_msg = msg
+            last_url = url
+            if ok:
+                break
+            print("Add to archive: download failed for {}: {}".format(
+                url, msg))
+        else:
+            n = len(urls)
+            tail = (" (tried {} mirrors)".format(n) if n > 1 else "")
+            GLib.idle_add(
+                self._add_to_archive_done, btn, False,
+                last_msg + tail, None)
+            return
+
+        try:
+            rec, status = importer.import_pdf(self.conn, target)
+        except Exception as e:
+            print("Add to archive: import failed for {}: {}".format(target, e))
+            GLib.idle_add(self._add_to_archive_done, btn, False, str(e), None)
+            return
+        if doi:
+            self._existing.add(doi.lower())
+        GLib.idle_add(self._add_to_archive_done, btn, True, status, rec)
+
+    def _set_add_btn_label(self, btn, text):
+        btn.set_label(text)
+        return False
+
+    def _add_to_archive_done(self, btn, ok, status_or_msg, _rec):
+        if ok:
+            btn.set_label("Added")
+            btn.remove_css_class("suggested-action")
+            # Already inactive; leave it that way as a record.
+        else:
+            btn.set_label("Failed — retry?")
+            btn.set_tooltip_text("Last error: " + str(status_or_msg))
+            btn.set_sensitive(True)
+        return False
 
 
 def open_window(parent, conn, authorship):

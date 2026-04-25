@@ -80,6 +80,7 @@ class PdfViewerWindow(Gtk.Window):
         # for visual feedback only.
         self.highlights = []
         self._drag_state = {}      # page_idx -> dict(start_x, start_y, cur_x, cur_y)
+        self._highlights_popover = None
         self._load_highlights()
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -407,6 +408,121 @@ class PdfViewerWindow(Gtk.Window):
                 self._set_zoom(self.zoom / _ZOOM_STEP)
             return True   # consumed
         return False      # ScrolledWindow does the actual scrolling
+
+    # --- Highlights index ----------------------------------------------
+
+    def _on_sidebar_toggled(self, btn):
+        """Show or hide a popover listing all highlights for this PDF."""
+        if not btn.get_active():
+            if self._highlights_popover is not None:
+                self._highlights_popover.popdown()
+            return
+
+        pop = Gtk.Popover()
+        pop.set_parent(btn)
+        pop.set_has_arrow(True)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        outer.set_margin_start(10)
+        outer.set_margin_end(10)
+        outer.set_margin_top(10)
+        outer.set_margin_bottom(10)
+
+        header = Gtk.Label()
+        header.set_markup("<b>Highlights</b>  <small>({})</small>".format(
+            len(self.highlights)))
+        header.set_halign(Gtk.Align.START)
+        outer.append(header)
+
+        if not self.highlights:
+            empty = Gtk.Label(label="(no highlights yet)")
+            empty.set_halign(Gtk.Align.START)
+            empty.add_css_class("dim-label")
+            outer.append(empty)
+        else:
+            scrolled = Gtk.ScrolledWindow()
+            scrolled.set_min_content_width(380)
+            scrolled.set_min_content_height(min(420, 40 + 50 * len(self.highlights)))
+            scrolled.set_policy(Gtk.PolicyType.NEVER,
+                                Gtk.PolicyType.AUTOMATIC)
+            list_box = Gtk.ListBox()
+            list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+            for h in self.highlights:
+                list_box.append(self._build_highlight_row(h, pop))
+            scrolled.set_child(list_box)
+            outer.append(scrolled)
+
+        pop.set_child(outer)
+        pop.connect("closed", self._on_highlights_popover_closed)
+        self._highlights_popover = pop
+        pop.popup()
+
+    def _on_highlights_popover_closed(self, _pop):
+        self._highlights_popover = None
+        # Sync the toggle so it un-presses when the user clicks outside.
+        if self.sidebar_toggle.get_active():
+            self.sidebar_toggle.set_active(False)
+
+    def _build_highlight_row(self, h, pop):
+        page = h.get("page", 0)
+        text = h.get("text") or ""
+        comment = h.get("comment") or ""
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        row.set_margin_start(4)
+        row.set_margin_end(4)
+        row.set_margin_top(4)
+        row.set_margin_bottom(4)
+
+        info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        info.set_hexpand(True)
+
+        snippet = _truncate(text, 120) if text else "(no text captured)"
+        head = Gtk.Label()
+        head.set_markup(
+            "<small><b>p.{}</b></small>  {}".format(
+                page + 1, GLib.markup_escape_text(snippet)))
+        head.set_xalign(0.0)
+        head.set_wrap(True)
+        head.set_max_width_chars(60)
+        info.append(head)
+        if comment:
+            cmt = Gtk.Label()
+            cmt.set_markup("<small><i>{}</i></small>".format(
+                GLib.markup_escape_text(_truncate(comment, 200))))
+            cmt.set_xalign(0.0)
+            cmt.set_wrap(True)
+            cmt.set_max_width_chars(60)
+            info.append(cmt)
+        row.append(info)
+
+        goto_btn = Gtk.Button.new_from_icon_name("go-next-symbolic")
+        goto_btn.set_tooltip_text("Jump to highlight")
+        goto_btn.add_css_class("flat")
+        goto_btn.connect(
+            "clicked",
+            lambda _b, hh=h: self._scroll_to_highlight(hh, pop))
+        row.append(goto_btn)
+        return row
+
+    def _scroll_to_highlight(self, h, pop=None):
+        page = h.get("page", 0)
+        if page < 0 or page >= self.n_pages:
+            return
+        quads = h.get("quads") or []
+        # Use the topmost (smallest y) quad for the scroll target.
+        if quads:
+            y_pdf = min(q[1] for q in quads if len(q) >= 4)
+        else:
+            y_pdf = 0
+        target_doc_y = self.page_y[page] + y_pdf * self.zoom
+        adj = self.scrolled.get_vadjustment()
+        new_y = max(0, target_doc_y - adj.get_page_size() / 3)
+        GLib.idle_add(lambda: (adj.set_value(new_y), False)[1])
+        self.current_page = page
+        self._update_page_indicator()
+        if pop is not None:
+            pop.popdown()
 
     # --- Find in PDF ---------------------------------------------------
 

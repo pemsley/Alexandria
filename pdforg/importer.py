@@ -71,7 +71,8 @@ def refresh_pdf(conn, pdf_path):
     for key in ("tags", "notes", "mark", "hand_edited", "added_date",
                 "citations", "citations_source", "citations_fetched",
                 "citations_by_year",
-                "auto_keywords", "abstract", "authorships", "highlights"):
+                "auto_keywords", "abstract", "authorships", "highlights",
+                "published_version"):
         if key in old:
             fresh[key] = old[key]
     if not fresh.get("sha256"):
@@ -96,6 +97,14 @@ def refresh_pdf(conn, pdf_path):
                 fresh["authors"] = oa_names
         if cby:
             fresh["citations_by_year"] = cby
+
+    # Preprint → published-version lookup (refresh re-checks too;
+    # OpenAlex may have indexed the journal version since last time).
+    if metrics.is_preprint_doi(fresh.get("doi")):
+        pv = metrics.find_published_version(
+            fresh.get("title"), fresh.get("authors") or [], fresh["doi"])
+        if pv:
+            fresh["published_version"] = pv
 
     sidecar.write(sc_path, fresh)
     th_path = sidecar.thumb_path_for(pdf_path)
@@ -186,6 +195,14 @@ def import_pdf(conn, pdf_path):
                 rec["authors"] = oa_names
         if cby:
             rec["citations_by_year"] = cby
+
+    # Preprint → published-version lookup. One extra OpenAlex call,
+    # only for preprint DOIs.
+    if metrics.is_preprint_doi(rec.get("doi")):
+        pv = metrics.find_published_version(
+            rec.get("title"), rec.get("authors") or [], rec["doi"])
+        if pv:
+            rec["published_version"] = pv
 
     sidecar.write(sc_path, rec)
     thumbnail.make_thumbnail(pdf_path, th_path)

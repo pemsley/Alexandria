@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Scan a directory tree of PDFs; create sidecars + thumbnails;
-populate the local SQLite index.
+"""Scan a directory tree of PDFs (or a single PDF); create sidecars +
+thumbnails; populate the local SQLite index.
 
-Usage:  pdforg-import.py [--refresh] <directory>
+Usage:  pdforg-import.py [--refresh] <directory-or-pdf>
 
   --refresh   Re-extract metadata into existing sidecars (skipping ones
-              flagged hand_edited=true). Preserves tags, notes, and
-              cached citation counts.
+              flagged hand_edited=true). Preserves tags, notes, mark,
+              and cached citation counts / authorships / abstract.
+
+When the argument is a single .pdf file, only that file is processed
+(useful for refreshing metadata on one paper at a time).
 """
 
+import os
 import sys
 
 from . import importer, index
@@ -21,9 +25,12 @@ def main(argv):
         refresh = True
         args = args[1:]
     if len(args) != 1:
-        print("usage: {} [--refresh] <pdf-directory>".format(argv[0]))
+        print("usage: {} [--refresh] <directory-or-pdf>".format(argv[0]))
         return 1
-    root = args[0]
+    target = args[0]
+    if not os.path.exists(target):
+        print("not found: {}".format(target))
+        return 1
     conn = index.open_db()
 
     def progress(i, n, path, rec, status):
@@ -54,7 +61,27 @@ def main(argv):
         suffix = "  -  " + " ".join(bits) if bits else ""
         print("[{}/{}] {}{}".format(i, n, path, suffix))
 
-    n = importer.import_tree(conn, root, on_progress=progress, refresh=refresh)
+    if os.path.isfile(target) and target.lower().endswith(".pdf"):
+        # Single-file mode.
+        rec, status = (None, "error")
+        try:
+            if refresh:
+                rec, status = importer.refresh_pdf(conn, target)
+                if status == "no_sidecar":
+                    rec, status = importer.import_pdf(conn, target)
+            else:
+                rec, status = importer.import_pdf(conn, target)
+        except Exception as e:
+            print("import failed for {}: {}".format(target, e))
+        progress(1, 1, target, rec, status)
+        print("{} 1 PDF".format("Refreshed" if refresh else "Imported"))
+        return 0
+
+    if not os.path.isdir(target):
+        print("not a PDF or directory: {}".format(target))
+        return 1
+
+    n = importer.import_tree(conn, target, on_progress=progress, refresh=refresh)
     print("{} {} PDFs".format("Refreshed" if refresh else "Imported", n))
     return 0
 

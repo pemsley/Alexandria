@@ -6,6 +6,7 @@ on any failure so the caller can decide whether to retry later.
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -232,6 +233,27 @@ def fetch_works_by_author(orcid=None, openalex_id=None, since=None, limit=50):
         primary = w.get("primary_location") or {}
         source = primary.get("source") or {}
         oa = w.get("open_access") or {}
+        # `oa.oa_url` is sometimes a direct PDF, sometimes a landing
+        # page — useless for "Add to Archive". `best_oa_location` has
+        # the disambiguated fields; `locations` lists *all* known
+        # copies (publisher, PMC, repository, preprint server, ...) so
+        # we can fall back when the primary fetch is blocked.
+        bol = w.get("best_oa_location") or {}
+        pdf_url = bol.get("pdf_url")
+        landing_url = bol.get("landing_page_url") or oa.get("oa_url")
+
+        # All known OA PDF URLs, best_oa_location first, then any
+        # additional mirrors. De-duplicated, order preserved.
+        pdf_urls = []
+        if pdf_url:
+            pdf_urls.append(pdf_url)
+        for loc in (w.get("locations") or []):
+            if not loc.get("is_oa"):
+                continue
+            u = loc.get("pdf_url")
+            if u and u not in pdf_urls:
+                pdf_urls.append(u)
+
         results.append({
             "openalex_id": _strip_openalex_id(w.get("id")),
             "doi": _normalize_doi(w.get("doi")),
@@ -245,7 +267,10 @@ def fetch_works_by_author(orcid=None, openalex_id=None, since=None, limit=50):
             "authorships": authorships,
             "abstract": _reconstruct_abstract(w.get("abstract_inverted_index")),
             "is_oa": oa.get("is_oa"),
-            "oa_url": oa.get("oa_url"),
+            "oa_url": oa.get("oa_url"),     # back-compat
+            "pdf_url": pdf_url,             # primary direct PDF (or None)
+            "pdf_urls": pdf_urls,           # all OA mirrors, primary first
+            "landing_url": landing_url,     # HTML article page (or None)
         })
     return results
 
@@ -372,3 +397,198 @@ def _crossref_count(doi):
     msg = data.get("message", {}) or {}
     n = msg.get("is-referenced-by-count")
     return int(n) if isinstance(n, int) else None
+
+
+# DOI prefixes used by preprint servers. Used to decide whether to
+# bother looking up a "published version".
+PREPRINT_DOI_PREFIXES = (
+    "10.1101/",       # bioRxiv / medRxiv
+    "10.48550/",      # arXiv
+    "10.26434/",      # chemRxiv
+    "10.21203/rs",    # Research Square
+    "10.22541/au",    # Authorea
+    "10.2139/ssrn",   # SSRN
+    "10.31234/",      # PsyArXiv
+    "10.31219/",      # OSF Preprints
+    "10.20944/",      # Preprints.org
+    "10.36227/",      # TechRxiv
+)
+
+
+def _author_first_last(authorships):
+    """Pick first/last author display names from an OpenAlex authorships
+    list. Falls back to first/last in publication order when position
+    tags are missing."""
+    first = last = None
+    for a in (authorships or []):
+        pos = (a.get("author_position") or "").lower()
+        name = (a.get("author") or {}).get("display_name")
+        if not name:
+            continue
+        if pos == "first" and not first:
+            first = name
+        elif pos == "last":
+            last = name
+    if first and last:
+        return first, last
+    names = [
+        (a.get("author") or {}).get("display_name")
+        for a in (authorships or [])
+    ]
+    names = [n for n in names if n]
+    if not first and names:
+        first = names[0]
+    if not last and names:
+        last = names[-1] if len(names) > 1 else names[0]
+    return first, last
+
+
+def fetch_related_works(doi=None, openalex_id=None, limit=12):
+    """Return OpenAlex's `related_works` for a paper, resolved to
+    [{openalex_id, doi, title, year, journal, first_author, last_author},
+    ...] in the original order. Returns [] on failure."""
+    if not doi and not openalex_id:
+        return []
+
+    # Step 1: fetch the work itself to get its related_works ids.
+    if openalex_id:
+        url = ("https://api.openalex.org/works/"
+               + urllib.parse.quote(openalex_id, safe=""))
+    else:
+        url = ("https://api.openalex.org/works/doi:"
+               + urllib.parse.quote(doi, safe=""))
+    if OPENALEX_MAILTO:
+        url += "?mailto=" + urllib.parse.quote(OPENALEX_MAILTO)
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
+        timeout=15)
+    if data is None:
+        return []
+    rel_ids = []
+    for r in (data.get("related_works") or []):
+        sid = _strip_openalex_id(r) or r
+        if sid and sid not in rel_ids:
+            rel_ids.append(sid)
+    if not rel_ids:
+        return []
+    rel_ids = rel_ids[:limit]
+
+    # Step 2: one batched fetch using ids.openalex:W1|W2|...
+    filt = "ids.openalex:" + "|".join(rel_ids)
+    params = [
+        ("filter", filt),
+        ("per_page", str(len(rel_ids))),
+        ("select",
+         "id,doi,title,publication_year,authorships,primary_location"),
+    ]
+    if OPENALEX_MAILTO:
+        params.append(("mailto", OPENALEX_MAILTO))
+    url2 = "https://api.openalex.org/works?" + urllib.parse.urlencode(params)
+    data2 = _http_get_json(
+        url2,
+        headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
+        timeout=20)
+    if data2 is None:
+        return []
+
+    by_id = {}
+    for w in (data2.get("results") or []):
+        wid = _strip_openalex_id(w.get("id")) or w.get("id")
+        first, last = _author_first_last(w.get("authorships"))
+        primary = w.get("primary_location") or {}
+        src = primary.get("source") or {}
+        by_id[wid] = {
+            "openalex_id": wid,
+            "doi": _normalize_doi(w.get("doi")),
+            "title": w.get("title"),
+            "year": w.get("publication_year"),
+            "journal": src.get("display_name"),
+            "first_author": first,
+            "last_author": last,
+        }
+    return [by_id[r] for r in rel_ids if r in by_id]
+
+
+def is_preprint_doi(doi):
+    if not doi:
+        return False
+    low = doi.lower()
+    return any(low.startswith(p) for p in PREPRINT_DOI_PREFIXES)
+
+
+def _surname(name):
+    """Last whitespace-separated token of a name. Imperfect for
+    compound surnames ("van der Waals" → "Waals") but fine for
+    set-overlap matching."""
+    if not name:
+        return ""
+    parts = name.strip().split()
+    return parts[-1] if parts else ""
+
+
+def find_published_version(title, author_names, preprint_doi=None):
+    """Search OpenAlex for a journal-published version of a preprint by
+    title + author overlap. Returns a dict {doi, title, journal, year,
+    openalex_id, checked} or None.
+
+    `author_names` is a list of full names (we only use the surnames
+    for cross-checking)."""
+    if not title or not author_names:
+        return None
+    # OpenAlex's title.search wants a clean phrase; strip punctuation.
+    q_title = re.sub(r"\W+", " ", title).strip()
+    if len(q_title) < 8:
+        return None
+    q_title = q_title[:200]
+
+    params = [
+        ("filter", "title.search:" + q_title + ",type:article"),
+        ("per_page", "10"),
+    ]
+    if OPENALEX_MAILTO:
+        params.append(("mailto", OPENALEX_MAILTO))
+    url = "https://api.openalex.org/works?" + urllib.parse.urlencode(params)
+
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
+        timeout=15)
+    if data is None:
+        return None
+
+    pre_surnames_lc = {_surname(n).lower()
+                       for n in author_names if n and _surname(n)}
+    if not pre_surnames_lc:
+        return None
+    pre_doi_lc = (preprint_doi or "").lower()
+
+    for w in (data.get("results") or []):
+        cand_doi = _normalize_doi(w.get("doi"))
+        if not cand_doi:
+            continue
+        if cand_doi.lower() == pre_doi_lc:
+            continue                                    # the preprint itself
+        if is_preprint_doi(cand_doi):
+            continue                                    # another preprint
+        if w.get("type") != "article":
+            continue                                    # dataset / book / ...
+        cand_surnames = set()
+        for a in (w.get("authorships") or []):
+            n = (a.get("author") or {}).get("display_name") or ""
+            sn = _surname(n).lower()
+            if sn:
+                cand_surnames.add(sn)
+        if not (pre_surnames_lc & cand_surnames):
+            continue                                    # no author overlap
+        pl = w.get("primary_location") or {}
+        src = pl.get("source") or {}
+        return {
+            "doi": cand_doi,
+            "title": w.get("title"),
+            "journal": src.get("display_name"),
+            "year": w.get("publication_year"),
+            "openalex_id": _strip_openalex_id(w.get("id")),
+            "checked": today_iso(),
+        }
+    return None

@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS papers (
     first_author TEXT,
     last_author  TEXT,
     authorships_json TEXT,
-    citations_by_year_json TEXT
+    citations_by_year_json TEXT,
+    published_version_json TEXT
 );
 """
 
@@ -74,6 +75,8 @@ def _migrate(conn):
         conn.execute("ALTER TABLE papers ADD COLUMN authorships_json TEXT")
     if "citations_by_year_json" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN citations_by_year_json TEXT")
+    if "published_version_json" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN published_version_json TEXT")
     conn.commit()
 
 
@@ -203,6 +206,8 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
     auto_keywords_json = json.dumps(record.get("auto_keywords") or [])
     authorships_json = json.dumps(record.get("authorships") or [])
     cby_json = json.dumps(record.get("citations_by_year") or [])
+    pv = record.get("published_version")
+    pv_json = json.dumps(pv) if pv else None
     first_author, last_author = _derive_first_last_author(record)
     conn.execute("""
         INSERT INTO papers
@@ -211,8 +216,8 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
              citations, citations_source, citations_fetched, mark,
              auto_keywords_json, abstract,
              first_author, last_author, authorships_json,
-             citations_by_year_json)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             citations_by_year_json, published_version_json)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(pdf_path) DO UPDATE SET
             sidecar_path=excluded.sidecar_path,
             thumb_path=excluded.thumb_path,
@@ -234,7 +239,8 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
             first_author=excluded.first_author,
             last_author=excluded.last_author,
             authorships_json=excluded.authorships_json,
-            citations_by_year_json=excluded.citations_by_year_json
+            citations_by_year_json=excluded.citations_by_year_json,
+            published_version_json=excluded.published_version_json
     """, (pdf_path, sidecar_path, thumb_path,
           record.get("title"), authors_json,
           record.get("year"), record.get("doi"), record.get("journal"),
@@ -247,7 +253,7 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
           auto_keywords_json,
           record.get("abstract"),
           first_author, last_author, authorships_json,
-          cby_json))
+          cby_json, pv_json))
     conn.commit()
 
 

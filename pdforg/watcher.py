@@ -1,13 +1,17 @@
 """GFileMonitor-driven library watcher.
 
-v1: monitors the LIBRARY_ROOT directory (flat — no subdirs) for *.pdf
-file events. CREATED / CHANGES_DONE_HINT / MOVED_IN → import the file
-in a background thread. DELETED / MOVED_OUT → drop the index row.
-RENAMED in-place → re-import the new name; SHA-256 detection in
-import_pdf adopts the existing record.
+Monitors the LIBRARY_ROOT directory (flat — no subdirs) for two kinds
+of events:
 
-External edits to .meta.json or thumbnail PNGs are ignored (filtered
-by file extension), so our own writes don't echo back as events.
+* PDF files: CREATED / CHANGES_DONE_HINT / MOVED_IN → import in a
+  background thread. DELETED / MOVED_OUT → drop the index row.
+  RENAMED in-place → re-import; SHA-256 detection adopts the row.
+
+* Sidecar files (`*.meta.json`): CHANGED / CHANGES_DONE_HINT /
+  CREATED → re-read the sidecar and refresh the index row. This is
+  what makes `pdforg-import --refresh` invisibly update the running
+  browser — the CLI rewrites the JSON, the watcher sees it, the row
+  is upserted, the GUI redraws.
 """
 
 import os
@@ -17,7 +21,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib
 
-from . import importer
+from . import importer, index, sidecar
 
 
 # How long to wait between batched events from the OS. Lets a
@@ -28,6 +32,10 @@ RATE_LIMIT_MS = 1500
 
 def _is_pdf(path):
     return bool(path) and path.lower().endswith(".pdf")
+
+
+def _is_sidecar(path):
+    return bool(path) and path.endswith(sidecar.SIDECAR_SUFFIX)
 
 
 class LibraryWatcher:
@@ -98,11 +106,22 @@ class LibraryWatcher:
                   Gio.FileMonitorEvent.MOVED_IN):
             if _is_pdf(path):
                 self._spawn(self._do_import, path)
+            elif _is_sidecar(path):
+                self._spawn(self._do_resync_sidecar, path)
+
+        elif et == Gio.FileMonitorEvent.CHANGED:
+            # PDFs aren't usually edited in place; sidecars are
+            # (e.g. by `pdforg-import --refresh` or hand-edits).
+            if _is_sidecar(path):
+                self._spawn(self._do_resync_sidecar, path)
 
         elif et in (Gio.FileMonitorEvent.DELETED,
                     Gio.FileMonitorEvent.MOVED_OUT):
             if _is_pdf(path):
                 self._spawn(self._do_delete, path)
+            # Sidecar deletions are ignored: most are our own atomic-
+            # write temporaries; a real sidecar removal will resolve
+            # next time the PDF is imported.
 
         elif et == Gio.FileMonitorEvent.RENAMED:
             # Re-import at the new path; import_pdf's SHA-256 detection
@@ -136,3 +155,31 @@ class LibraryWatcher:
             return
         if self.on_change:
             GLib.idle_add(self.on_change, "deleted")
+
+    def _do_resync_sidecar(self, sc_path):
+        """A sidecar was written externally (e.g. by `--refresh`).
+        Re-read it and update the index row from the new contents."""
+        if not os.path.isfile(sc_path):
+            return
+        suffix = sidecar.SIDECAR_SUFFIX
+        if not sc_path.endswith(suffix):
+            return
+        pdf_path = sc_path[:-len(suffix)]
+        if not os.path.isfile(pdf_path):
+            return
+        try:
+            rec = sidecar.read(sc_path)
+        except Exception as e:
+            print("watcher: sidecar read failed for {}: {}".format(sc_path, e))
+            return
+        th_path = sidecar.thumb_path_for(pdf_path)
+        try:
+            mtime = os.path.getmtime(sc_path)
+            index.upsert(self.conn, pdf_path, sc_path,
+                         th_path if os.path.isfile(th_path) else None,
+                         rec, mtime)
+        except Exception as e:
+            print("watcher: index upsert failed for {}: {}".format(sc_path, e))
+            return
+        if self.on_change:
+            GLib.idle_add(self.on_change, "sidecar")

@@ -187,7 +187,8 @@ def make_mark_badge(mark, labels=None):
 
 
 def make_preprint_badge():
-    """A small 'PRE' chip to flag preprint entries."""
+    """A small 'PRE' chip to flag preprint entries (no published
+    version known)."""
     frame = Gtk.Frame()
     frame.set_valign(Gtk.Align.CENTER)
     lbl = Gtk.Label()
@@ -199,6 +200,78 @@ def make_preprint_badge():
     lbl.set_tooltip_text("Preprint")
     frame.set_child(lbl)
     return frame
+
+
+def _published_in_library(conn, doi):
+    """Return the indexed row whose `doi` matches (case-insensitive),
+    or None."""
+    if not doi:
+        return None
+    try:
+        cur = conn.execute(
+            "SELECT pdf_path, title FROM papers WHERE LOWER(doi)=? LIMIT 1",
+            (doi.lower(),))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def make_preprint_status(row, conn, parent_window):
+    """Build the preprint chip(s) for a card. Returns one widget — a
+    bare PRE badge, or a clickable button reflecting the published-
+    version state. Returns None if not a preprint."""
+    if not is_preprint(row):
+        return None
+
+    pv = None
+    pv_json = row["published_version_json"] if "published_version_json" in row.keys() else None
+    if pv_json:
+        try:
+            pv = json.loads(pv_json)
+        except (TypeError, ValueError):
+            pv = None
+
+    if not pv:
+        return make_preprint_badge()
+
+    pub_doi = (pv.get("doi") or "").lower()
+    journal = pv.get("journal") or "(journal)"
+    year = pv.get("year")
+    in_lib = _published_in_library(conn, pub_doi)
+
+    btn = Gtk.Button()
+    btn.add_css_class("flat")
+    btn.set_valign(Gtk.Align.CENTER)
+    inner = Gtk.Label()
+    label_year = " {}".format(year) if year else ""
+    if in_lib:
+        # Green: we have it.
+        inner.set_markup(
+            '<span foreground="#33aa33" weight="bold"><small>'
+            '✓ in library</small></span>')
+        btn.set_tooltip_text(
+            "Published as «{}» in {}{}.\n"
+            "Click to navigate.".format(
+                pv.get("title") or "(untitled)", journal, label_year))
+        btn.connect(
+            "clicked",
+            lambda _b, d=pub_doi: parent_window._navigate_to_doi(d))
+    else:
+        # Orange: we know about it but don't have it.
+        inner.set_markup(
+            '<span foreground="#cc6600" weight="bold"><small>'
+            '📰 published — Add</small></span>')
+        btn.set_tooltip_text(
+            "Published as «{}» in {}{}.\n"
+            "Click to download into the library.".format(
+                pv.get("title") or "(untitled)", journal, label_year))
+        btn.connect(
+            "clicked",
+            lambda _b, p=pv, b=btn:
+                parent_window._add_published_version(p, b))
+    btn.set_child(inner)
+    return btn
 
 
 def citation_stars_markup(n):
@@ -218,6 +291,26 @@ def citation_stars_markup(n):
     if n >= 50:
         return '<span foreground="#888888">★</span>'
     return ""
+
+
+# Colour-coded sparkline tiers, indexed by peak citations-per-year.
+# Saturated hues mixed roughly half-and-half with mid-grey so they stay
+# visually quiet on the card. Below 10/yr we just use the theme's
+# foreground colour (no signal to communicate).
+_SPARKLINE_TIERS = (
+    (10, None),                  # < 10  → theme grey
+    (20, (0x44, 0xaa, 0xaa)),    # < 20  → muted cyan
+    (40, (0x44, 0xaa, 0x44)),    # < 40  → muted green
+    (None, (0xaa, 0xaa, 0x44)),  # else  → muted yellow
+)
+
+
+def _sparkline_colour(peak):
+    """Return (r, g, b) ints in 0..255 for a peak yearly count, or None
+    to mean "use the theme foreground"."""
+    for threshold, rgb in _SPARKLINE_TIERS:
+        if threshold is None or peak < threshold:
+            return rgb
 
 
 def make_citation_sparkline(cby):
@@ -244,12 +337,17 @@ def make_citation_sparkline(cby):
         "{}: {}".format(r["year"], r.get("count") or 0) for r in cby)
     area.set_tooltip_text(tip)
 
+    rgb = _sparkline_colour(peak)
+
     def _draw(_a, cr, w, h):
-        fg = area.get_style_context().get_color()
         n = len(cby)
         gap = 1
         bw = max(1.5, (w - (n - 1) * gap) / n)
-        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.55)
+        if rgb is None:
+            fg = area.get_style_context().get_color()
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.55)
+        else:
+            cr.set_source_rgba(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, 0.85)
         for i, r in enumerate(cby):
             c = r.get("count") or 0
             if c <= 0:
@@ -259,7 +357,9 @@ def make_citation_sparkline(cby):
             y = h - 1 - bh
             cr.rectangle(x, y, bw, bh)
             cr.fill()
-        # Faint baseline.
+        # Faint baseline (always theme-coloured so it sits well on
+        # both light and dark backgrounds).
+        fg = area.get_style_context().get_color()
         cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.25)
         cr.set_line_width(1.0)
         cr.move_to(0, h - 0.5)
@@ -302,10 +402,13 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     frame.set_size_request(130, 160)
     frame.set_child(img)
     frame.set_cursor_from_name("pointer")
-    frame.set_tooltip_text("Open PDF")
+    frame.set_tooltip_text("View PDF")
     click = Gtk.GestureClick.new()
     click.set_button(1)
-    click.connect("released", lambda *_: open_pdf(row["pdf_path"]))
+    click.connect(
+        "released",
+        lambda *_: viewer.open_viewer(parent_window, row["pdf_path"],
+                                      row["sidecar_path"]))
     frame.add_controller(click)
     box.append(frame)
 
@@ -314,16 +417,12 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
 
     btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
     open_btn = Gtk.Button.new_from_icon_name("document-open-symbolic")
-    open_btn.set_tooltip_text("Open PDF (external viewer)")
-    open_btn.connect("clicked", lambda _b: open_pdf(row["pdf_path"]))
-    btn_row.append(open_btn)
-    view_btn = Gtk.Button.new_from_icon_name("view-paged-symbolic")
-    view_btn.set_tooltip_text("View PDF (built-in viewer)")
-    view_btn.connect(
+    open_btn.set_tooltip_text("View PDF")
+    open_btn.connect(
         "clicked",
         lambda _b: viewer.open_viewer(parent_window, row["pdf_path"],
                                       row["sidecar_path"]))
-    btn_row.append(view_btn)
+    btn_row.append(open_btn)
     edit_btn = Gtk.Button.new_from_icon_name("document-properties-symbolic")
     edit_btn.set_tooltip_text("Edit metadata")
     edit_btn.connect(
@@ -337,6 +436,16 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     rename_btn.connect("clicked",
                        lambda _b: parent_window._open_rename_dialog(row))
     btn_row.append(rename_btn)
+    if row["doi"]:
+        related_btn = Gtk.Button.new_from_icon_name("view-more-symbolic")
+        related_btn.set_tooltip_text(
+            "Related works (OpenAlex)\n"
+            "Note: similarity is fuzzy and topic-based, "
+            "results can be loose")
+        related_btn.connect(
+            "clicked",
+            lambda b: parent_window._open_related_popover(b, row))
+        btn_row.append(related_btn)
     delete_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
     delete_btn.set_tooltip_text("Delete PDF from library")
     delete_btn.connect("clicked",
@@ -356,8 +465,9 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     mark_badge = make_mark_badge(row["mark"], labels=mark_labels)
     if mark_badge is not None:
         title_row.append(mark_badge)
-    if is_preprint(row):
-        title_row.append(make_preprint_badge())
+    pre_chip = make_preprint_status(row, conn, parent_window)
+    if pre_chip is not None:
+        title_row.append(pre_chip)
     title = Gtk.Label()
     title.set_markup("<b>{}</b>".format(
         safe_pango_markup(row["title"] or "(untitled)")))
@@ -547,7 +657,10 @@ class BrowserWindow(Gtk.ApplicationWindow):
                          daemon=True).start()
 
         # GFileMonitor-based library watcher: react to external file
-        # changes in LIBRARY_ROOT (drops via Files / cp / sync tools).
+        # changes in LIBRARY_ROOT (drops via Files / cp / sync tools,
+        # plus sidecar rewrites from `pdforg-import --refresh`).
+        self._reload_timer_id = None
+        self._pending_reload_status = ""
         self.library_watcher = watcher_mod.LibraryWatcher(
             self.conn, LIBRARY_ROOT,
             on_change_cb=self._on_watcher_change)
@@ -967,14 +1080,135 @@ class BrowserWindow(Gtk.ApplicationWindow):
     def _on_mark_filter_changed(self, _dd, _pspec):
         self._reload(self.search.get_text() or None)
 
+    # --- Preprint → published-version actions -------------------------
+
+    def _navigate_to_doi(self, doi):
+        """Filter the visible list to the given DOI (FTS prefix-matches it)."""
+        if not doi:
+            return
+        self.search.set_text(doi)
+        self.search.grab_focus()
+
+    def _add_published_version(self, pv, btn):
+        """Download the published-version PDF (using OpenAlex to resolve
+        OA URLs for the journal DOI) and import it into the library."""
+        doi = pv.get("doi")
+        if not doi:
+            return
+        # Already in library? (race against the user clicking twice.)
+        if _published_in_library(self.conn, doi):
+            btn.set_label("✓ in library")
+            btn.set_sensitive(False)
+            return
+        btn.set_sensitive(False)
+        btn.set_label("Looking up…")
+        threading.Thread(
+            target=self._do_add_published_version,
+            args=(doi, btn),
+            daemon=True,
+        ).start()
+
+    def _do_add_published_version(self, doi, btn):
+        # Need the OpenAlex Work to get OA pdf URLs.
+        import urllib.parse as _up
+        url = ("https://api.openalex.org/works/doi:"
+               + _up.quote(doi, safe="")
+               + "?mailto=" + _up.quote(metrics.OPENALEX_MAILTO))
+        data = metrics._http_get_json(
+            url,
+            headers={"User-Agent": metrics.OPENALEX_UA,
+                     "Accept": "application/json"},
+            timeout=15)
+        if not data:
+            GLib.idle_add(self._add_pv_done, btn, False,
+                          "OpenAlex lookup failed")
+            return
+        # Collect all known OA pdf URLs (best first, then mirrors).
+        bol = data.get("best_oa_location") or {}
+        pdf_urls = []
+        if bol.get("pdf_url"):
+            pdf_urls.append(bol["pdf_url"])
+        for loc in (data.get("locations") or []):
+            if not loc.get("is_oa"):
+                continue
+            u = loc.get("pdf_url")
+            if u and u not in pdf_urls:
+                pdf_urls.append(u)
+        if not pdf_urls:
+            GLib.idle_add(self._add_pv_done, btn, False,
+                          "no OA PDF URL available")
+            return
+
+        os.makedirs(LIBRARY_ROOT, exist_ok=True)
+        # Filename: derive from DOI.
+        fname = doi.replace("/", "_") + ".pdf"
+        target = os.path.join(LIBRARY_ROOT, fname)
+        if os.path.exists(target):
+            GLib.idle_add(self._add_pv_done, btn, False, "filename clash")
+            return
+
+        # Use the same downloader the author-works dialog does — it
+        # already handles atomic write, %PDF- magic-byte check, and
+        # the Cloudflare 403 case.
+        from . import author_works as _aw
+        last_msg = ""
+        for i, u in enumerate(pdf_urls):
+            if i > 0:
+                GLib.idle_add(
+                    btn.set_label,
+                    "Trying mirror {}/{}…".format(i + 1, len(pdf_urls)))
+            ok, msg = _aw._download_pdf(u, target)
+            last_msg = msg
+            if ok:
+                break
+        else:
+            GLib.idle_add(self._add_pv_done, btn, False, last_msg)
+            return
+
+        try:
+            rec, status = importer.import_pdf(self.conn, target)
+        except Exception as e:
+            GLib.idle_add(self._add_pv_done, btn, False, str(e))
+            return
+        GLib.idle_add(self._add_pv_done, btn, True, status)
+
+    def _add_pv_done(self, btn, ok, status_or_msg):
+        if ok:
+            btn.set_label("✓ added")
+            btn.set_sensitive(False)
+            self.status.set_text("Added published version")
+            # The watcher's reconcile or our own reload will update the
+            # card on next refresh; force one now.
+            self._reload(self.search.get_text() or None)
+        else:
+            btn.set_label("📰 published — Add (failed)")
+            btn.set_tooltip_text("Last error: " + str(status_or_msg))
+            btn.set_sensitive(True)
+        return False
+
     # --- File-system watcher callbacks --------------------------------
 
     def _on_watcher_change(self, status):
         """Called on the GLib main thread after the watcher has applied
-        a change to the index (import / delete / rename / reconcile)."""
-        self._reload(self.search.get_text() or None)
-        self.status.set_text("Library updated ({})".format(status))
+        a change to the index (import / delete / rename / reconcile /
+        sidecar-resync). Debounced so a bulk refresh of N rows produces
+        one redraw rather than N."""
+        self._pending_reload_status = status
+        if getattr(self, "_reload_timer_id", None):
+            try:
+                GLib.source_remove(self._reload_timer_id)
+            except Exception:
+                pass
+        self._reload_timer_id = GLib.timeout_add(
+            300, self._do_debounced_reload)
         return False
+
+    def _do_debounced_reload(self):
+        self._reload_timer_id = None
+        self._reload(self.search.get_text() or None)
+        self.status.set_text("Library updated ({})".format(
+            getattr(self, "_pending_reload_status", "")))
+        return False  # don't repeat
 
     def _on_close_request(self, _win):
         # Stop the daemon-friendly bits cleanly so they don't keep
@@ -990,6 +1224,150 @@ class BrowserWindow(Gtk.ApplicationWindow):
         return False  # let the close proceed
 
     # --- Authors popover ----------------------------------------------
+
+    def _open_related_popover(self, anchor_widget, row):
+        """Show OpenAlex's related_works for this paper. Fetches in a
+        background thread so the UI doesn't freeze."""
+        pop = Gtk.Popover()
+        pop.set_parent(anchor_widget)
+        pop.set_has_arrow(True)
+        pop.set_size_request(560, 500)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        outer.set_margin_start(10)
+        outer.set_margin_end(10)
+        outer.set_margin_top(10)
+        outer.set_margin_bottom(10)
+
+        header = Gtk.Label()
+        header.set_markup(
+            "<b>Related works</b>  "
+            "<span size='small' alpha='65%'>(OpenAlex similarity)</span>")
+        header.set_halign(Gtk.Align.START)
+        outer.append(header)
+
+        status = Gtk.Label(label="Loading…")
+        status.set_halign(Gtk.Align.START)
+        outer.append(status)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_vexpand(True)
+        scrolled.set_hexpand(True)
+        list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        scrolled.set_child(list_box)
+        outer.append(scrolled)
+
+        pop.set_child(outer)
+        pop.popup()
+
+        doi = row["doi"]
+
+        def _fetch():
+            rels = metrics.fetch_related_works(doi=doi, limit=12)
+            GLib.idle_add(self._fill_related_popover,
+                          status, list_box, rels)
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _fill_related_popover(self, status, list_box, rels):
+        if not rels:
+            status.set_text("No related works found.")
+            return False
+        status.set_text("{} works".format(len(rels)))
+        existing = self._existing_dois_set()
+        for r in rels:
+            list_box.append(self._build_related_row(r, existing))
+        return False
+
+    def _existing_dois_set(self):
+        out = set()
+        try:
+            cur = self.conn.execute(
+                "SELECT doi FROM papers "
+                "WHERE doi IS NOT NULL AND doi <> ''")
+            for row in cur:
+                d = (row[0] or "").lower()
+                if d:
+                    out.add(d)
+        except Exception:
+            pass
+        return out
+
+    def _build_related_row(self, r, existing_dois):
+        """One related-work row: title (bold) on top; first author —
+        last author · year · journal underneath; DOI/OpenAlex/in-library
+        badges to the right."""
+        frame = Gtk.Frame()
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+        box.set_margin_top(6)
+        box.set_margin_bottom(6)
+
+        info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        info.set_hexpand(True)
+
+        title_lbl = Gtk.Label(xalign=0.0)
+        title_lbl.set_wrap(True)
+        title_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        title_lbl.set_max_width_chars(70)
+        title_lbl.set_markup("<b>{}</b>".format(
+            safe_pango_markup(r.get("title") or "(untitled)")))
+        info.append(title_lbl)
+
+        meta_bits = []
+        fa = r.get("first_author")
+        la = r.get("last_author")
+        if fa and la and fa != la:
+            meta_bits.append("{} → {}".format(fa, la))
+        elif fa:
+            meta_bits.append(fa)
+        if r.get("year"):
+            meta_bits.append(str(r["year"]))
+        if r.get("journal"):
+            meta_bits.append(r["journal"])
+        if meta_bits:
+            meta = Gtk.Label(xalign=0.0)
+            meta.set_wrap(True)
+            meta.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            meta.set_max_width_chars(70)
+            meta.set_markup(
+                "<small><span alpha='75%'>{}</span></small>".format(
+                    GLib.markup_escape_text("  ·  ".join(meta_bits))))
+            info.append(meta)
+        box.append(info)
+
+        # Right side: DOI button (open in browser) + in-library tag.
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        right.set_valign(Gtk.Align.CENTER)
+        doi = (r.get("doi") or "").lower()
+        if doi and doi in existing_dois:
+            in_lib = Gtk.Label()
+            in_lib.set_markup(
+                '<span foreground="#33aa33" weight="bold">'
+                '<small>✓ in library</small></span>')
+            in_lib.set_tooltip_text("Already in your library — "
+                                    "click to filter")
+            in_lib_btn = Gtk.Button()
+            in_lib_btn.add_css_class("flat")
+            in_lib_btn.set_child(in_lib)
+            in_lib_btn.connect(
+                "clicked",
+                lambda _b, d=doi: self._navigate_to_doi(d))
+            right.append(in_lib_btn)
+        if r.get("doi"):
+            doi_btn = Gtk.Button(label="DOI")
+            doi_btn.add_css_class("flat")
+            doi_btn.set_tooltip_text("https://doi.org/" + r["doi"])
+            doi_btn.connect(
+                "clicked",
+                lambda _b, d=r["doi"]:
+                    open_pdf("https://doi.org/" + d))
+            right.append(doi_btn)
+        box.append(right)
+
+        frame.set_child(box)
+        return frame
 
     def _open_authors_popover(self, anchor_widget, row):
         """Show a popover anchored to the card's author line, listing
@@ -1036,11 +1414,18 @@ class BrowserWindow(Gtk.ApplicationWindow):
         pop.set_child(outer)
         pop.popup()
 
-    def _build_author_row(self, grid, row_idx, authorship, popover):
+    def _build_author_row(self, grid, idx, authorship, popover):
         name = authorship.get("name") or "(unknown)"
         position = (authorship.get("position") or "").lower()
         orcid = authorship.get("orcid")
         institution = authorship.get("institution")
+
+        # Each author occupies two grid rows: the first carries the name
+        # button + position label + search button; the second carries
+        # the institution underneath. This keeps each author's
+        # affiliation visually attached to that author.
+        name_row = idx * 2
+        inst_row = idx * 2 + 1
 
         # Filter button: click → set search to the surname, FTS picks up.
         name_btn = Gtk.Button(label=name)
@@ -1050,19 +1435,19 @@ class BrowserWindow(Gtk.ApplicationWindow):
         name_btn.set_tooltip_text("Filter library by this author")
         name_btn.connect("clicked",
                          lambda _b, n=name: self._filter_by_author(n, popover))
-        grid.attach(name_btn, 0, row_idx, 1, 1)
+        grid.attach(name_btn, 0, name_row, 1, 1)
 
         # Position marker (subtle): "first" / "last" only.
         if position in ("first", "last"):
             pos_lbl = Gtk.Label()
             pos_lbl.set_markup("<small><i>{}</i></small>".format(position))
             pos_lbl.set_halign(Gtk.Align.START)
-            grid.attach(pos_lbl, 1, row_idx, 1, 1)
+            grid.attach(pos_lbl, 1, name_row, 1, 1)
 
         # ORCID / "more by author" button — only when we have something
         # authoritative to query on (ORCID or OpenAlex ID).
         if orcid or authorship.get("openalex_id"):
-            more_btn = Gtk.Button.new_from_icon_name("emblem-web-symbolic")
+            more_btn = Gtk.Button.new_from_icon_name("system-search-symbolic")
             tip = "Find more by this author"
             if orcid:
                 tip += "\nORCID: " + orcid
@@ -1071,17 +1456,18 @@ class BrowserWindow(Gtk.ApplicationWindow):
             more_btn.connect(
                 "clicked",
                 lambda _b, a=authorship: self._find_more_by_author(a, popover))
-            grid.attach(more_btn, 2, row_idx, 1, 1)
+            grid.attach(more_btn, 2, name_row, 1, 1)
 
-        # Institution under the name, in small grey text (when known).
+        # Institution directly under the name, in small grey text.
         if institution:
             inst_lbl = Gtk.Label()
             inst_lbl.set_markup(
                 "<small><span foreground='#888888'>{}</span></small>".format(
                     GLib.markup_escape_text(institution)))
             inst_lbl.set_halign(Gtk.Align.START)
-            inst_lbl.set_margin_start(8)
-            grid.attach(inst_lbl, 0, row_idx + 100, 3, 1)
+            inst_lbl.set_margin_start(12)
+            inst_lbl.set_margin_bottom(2)
+            grid.attach(inst_lbl, 0, inst_row, 3, 1)
 
     def _filter_by_author(self, name, popover):
         # Use the surname (last whitespace-separated token); FTS prefix

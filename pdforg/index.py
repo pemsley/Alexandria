@@ -78,6 +78,55 @@ def _migrate(conn):
     if "published_version_json" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN published_version_json TEXT")
     conn.commit()
+    _reencode_unicode_columns(conn)
+
+
+def _reencode_unicode_columns(conn):
+    """One-time fix-up: rows written by older versions of the importer
+    used `json.dumps(default ensure_ascii=True)`, escaping any non-
+    ASCII character to `\\uXXXX`. The FTS5 unicode61 tokenizer can't
+    see through that escape, so author surnames with diacritics
+    (Müller, Casañal, Łukasz, ...) couldn't be searched.
+
+    Walk every row, decode and re-encode the affected JSON columns
+    with `ensure_ascii=False`. If any row needed rewriting, drop
+    `papers_fts` so `_ensure_fts` rebuilds it from the cleaned rows."""
+    affected_cols = ("authors_json", "auto_keywords_json",
+                     "authorships_json", "tags_json",
+                     "citations_by_year_json", "published_version_json")
+    rows_changed = 0
+    cur = conn.execute(
+        "SELECT id, " + ", ".join(affected_cols) + " FROM papers")
+    rows = cur.fetchall()
+    for row in rows:
+        updates = {}
+        for col in affected_cols:
+            v = row[col]
+            if not v or "\\u" not in v:
+                continue
+            try:
+                data = json.loads(v)
+            except Exception:
+                continue
+            new = json.dumps(data, ensure_ascii=False)
+            if new != v:
+                updates[col] = new
+        if updates:
+            sets = ", ".join("{} = ?".format(c) for c in updates)
+            params = list(updates.values()) + [row["id"]]
+            conn.execute(
+                "UPDATE papers SET " + sets + " WHERE id = ?", params)
+            rows_changed += 1
+    if rows_changed:
+        # Force FTS rebuild from the cleaned rows. _ensure_fts() runs
+        # right after _migrate() and will recreate from scratch when
+        # it sees the table is gone.
+        for trig in ("papers_fts_ai", "papers_fts_ad", "papers_fts_au"):
+            conn.execute("DROP TRIGGER IF EXISTS {}".format(trig))
+        conn.execute("DROP TABLE IF EXISTS papers_fts")
+        conn.commit()
+        print("index: re-encoded {} row(s) for Unicode-correct FTS; "
+              "rebuilt papers_fts.".format(rows_changed))
 
 
 _FTS_SCHEMA = """
@@ -201,13 +250,23 @@ def _derive_first_last_author(record):
 
 
 def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
-    authors_json = json.dumps(record.get("authors") or [])
-    tags_json = json.dumps(record.get("tags") or [])
-    auto_keywords_json = json.dumps(record.get("auto_keywords") or [])
-    authorships_json = json.dumps(record.get("authorships") or [])
-    cby_json = json.dumps(record.get("citations_by_year") or [])
+    # ensure_ascii=False so non-ASCII characters (Müller, Casañal,
+    # Łukasz, ...) are stored literally rather than as \uXXXX escapes.
+    # The FTS5 unicode61 tokenizer normalises diacritics on real
+    # Unicode characters but can't see through JSON escapes — without
+    # this, searching "Müller" returns 0 hits.
+    authors_json = json.dumps(
+        record.get("authors") or [], ensure_ascii=False)
+    tags_json = json.dumps(
+        record.get("tags") or [], ensure_ascii=False)
+    auto_keywords_json = json.dumps(
+        record.get("auto_keywords") or [], ensure_ascii=False)
+    authorships_json = json.dumps(
+        record.get("authorships") or [], ensure_ascii=False)
+    cby_json = json.dumps(
+        record.get("citations_by_year") or [], ensure_ascii=False)
     pv = record.get("published_version")
-    pv_json = json.dumps(pv) if pv else None
+    pv_json = json.dumps(pv, ensure_ascii=False) if pv else None
     first_author, last_author = _derive_first_last_author(record)
     conn.execute("""
         INSERT INTO papers

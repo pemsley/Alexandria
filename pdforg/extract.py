@@ -12,18 +12,6 @@ import subprocess
 import urllib.parse
 import urllib.request
 
-def _resolve_pdfx_bin():
-    """Locate the pdfx executable. Order: $PDFORG_PDFX env var (if set),
-    then $PATH lookup. Returns None if not found, in which case the
-    extractor falls back to pypdf and the page-1 scrape."""
-    override = os.environ.get("PDFORG_PDFX")
-    if override:
-        return override
-    return shutil.which("pdfx")
-
-
-PDFX_BIN = _resolve_pdfx_bin()
-
 from .identity import maintainer_email
 
 CROSSREF_USER_AGENT = os.environ.get(
@@ -36,9 +24,19 @@ try:
 except ImportError:
     HAVE_PYPDF = False
 
+# pdfx is optional; when present, it gives us much richer XMP parsing
+# than pypdf's /Info dict. We use it as a Python library (no
+# subprocess) — pdf.summary returns the same shape as `pdfx -j` did.
+try:
+    import pdfx as _pdfx
+    HAVE_PDFX = True
+except ImportError:
+    _pdfx = None
+    HAVE_PDFX = False
+
 
 def _have_pdfx():
-    return bool(PDFX_BIN) and os.path.isfile(PDFX_BIN) and os.access(PDFX_BIN, os.X_OK)
+    return HAVE_PDFX
 
 
 _DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
@@ -134,19 +132,19 @@ def _split_authors(s):
     return [s.strip()] if s.strip() else []
 
 
-def _run_pdfx_json(pdf_path):
-    """Shell out to pdfx -j and return the parsed dict, or None."""
-    try:
-        proc = subprocess.run(
-            [PDFX_BIN, "-j", pdf_path],
-            capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode != 0 or not proc.stdout.strip():
+def _run_pdfx(pdf_path):
+    """Open `pdf_path` via the pdfx library and return its summary
+    dict (same shape `pdfx -j <pdf>` produced on stdout: keys
+    `source`, `metadata`, `references`). Returns None on any error."""
+    if not HAVE_PDFX:
         return None
     try:
-        return json.loads(proc.stdout)
-    except (ValueError, TypeError):
+        pdf = _pdfx.PDFx(pdf_path)
+    except Exception:
+        return None
+    try:
+        return pdf.summary
+    except Exception:
         return None
 
 
@@ -167,7 +165,7 @@ def _first_str(v):
 
 
 def _extract_from_pdfx(pdf_path):
-    data = _run_pdfx_json(pdf_path)
+    data = _run_pdfx(pdf_path)
     if not data:
         return None
     md = data.get("metadata", {}) or {}

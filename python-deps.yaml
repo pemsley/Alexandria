@@ -1,0 +1,53 @@
+# Generated with flatpak-pip-generator --requirements-file requirements-flatpak.txt --output python-deps --yaml
+name: python-deps
+buildsystem: simple
+build-commands: []
+modules:
+  - name: python3-bibtexparser
+    buildsystem: simple
+    build-commands:
+      - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
+        --prefix=${FLATPAK_DEST} "bibtexparser==2.0.0b9" --no-build-isolation
+    sources:
+      - type: file
+        url: https://files.pythonhosted.org/packages/60/8e/5a3726bd421d4977262cee94a3660da4b9ca94397f951499c7d31ec0e863/bibtexparser-2.0.0b9-py3-none-any.whl
+        sha256: c30c73a9b4e2e8a4669c8c4d726e2d285990553f60612d8c952786af3cf766ca
+      - type: file
+        url: https://files.pythonhosted.org/packages/5d/ab/34ec41718af73c00119d0351b7a2531d2ebddb51833a36448fc7b862be60/pylatexenc-2.10.tar.gz
+        sha256: 3dd8fd84eb46dc30bee1e23eaab8d8fb5a7f507347b23e5f38ad9675c84f40d3
+  - name: python3-pypdf
+    buildsystem: simple
+    build-commands:
+      - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
+        --prefix=${FLATPAK_DEST} "pypdf>=4.0" --no-build-isolation
+    sources:
+      - type: file
+        url: https://files.pythonhosted.org/packages/0c/d6/1d5c60cc17bbdf37c1552d9c03862fc6d32c5836732a0415b2d637edc2d0/pypdf-6.10.2-py3-none-any.whl
+        sha256: aa53be9826655b51c96741e5d7983ca224d898ac0a77896e64636810517624aa
+  - name: python3-pdfx
+    buildsystem: simple
+    build-commands:
+      - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
+        --prefix=${FLATPAK_DEST} "pdfx>=1.4" --no-build-isolation
+    sources:
+      - type: file
+        url: https://files.pythonhosted.org/packages/eb/56/b1ba7935a17738ae8453301356628e8147c79dbb825bcbc73dc7401f9846/cffi-2.0.0.tar.gz
+        sha256: 44d1b5909021139fe36001ae048dbdde8214afa20200eda0f64c068cac5d5529
+      - type: file
+        url: https://files.pythonhosted.org/packages/19/c7/fa589626997dd07bd87d9269342ccb74b1720384a4d739a1872bd84fbe68/chardet-4.0.0-py2.py3-none-any.whl
+        sha256: f864054d66fd9118f2e67044ac8981a54775ec5b67aed0441892edb553d21da5
+      - type: file
+        url: https://files.pythonhosted.org/packages/9f/a9/db8f313fdcd85d767d4973515e1db101f9c71f95fced83233de224673757/cryptography-48.0.0.tar.gz
+        sha256: 5c3932f4436d1cccb036cb0eaef46e6e2db91035166f1ad6505c3c9d5a635920
+      - type: file
+        url: https://files.pythonhosted.org/packages/93/f3/4fec7dabe8802ebec46141345bf714cd1fc7d93cb74ddde917e4b6d97d88/pdfminer.six-20201018-py3-none-any.whl
+        sha256: d78877ba8d8bf957f3bb636c4f73f4f6f30f56c461993877ac22c39c20837509
+      - type: file
+        url: https://files.pythonhosted.org/packages/4b/40/dad6848bf9886be5b3a297a57401f5e0ab04e0b81e158bbe74db62f1d377/pdfx-1.4.1-py2.py3-none-any.whl
+        sha256: f4a1cd631a105150f4938428b836d9e5102fbf77504e349f05404ad9cbb26e38
+      - type: file
+        url: https://files.pythonhosted.org/packages/0c/c3/44f3fbbfa403ea2a7c779186dc20772604442dde72947e7d01069cbe98e3/pycparser-3.0-py3-none-any.whl
+        sha256: b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
+      - type: file
+        url: https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl
+        sha256: a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0

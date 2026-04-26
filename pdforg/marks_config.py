@@ -2,8 +2,8 @@
 
 The user assigns meanings (e.g. "Must Read!", "Harvard group") to the
 red / orange / green / cyan circles. Stored in a small JSON file under
-$XDG_CONFIG_HOME/pdforg/marks.json. Per-paper data still lives in the
-sidecars; this is purely UI presentation."""
+$XDG_CONFIG_HOME/Alexandria/marks.json. Per-paper data still lives in
+the sidecars; this is purely UI presentation."""
 
 import json
 import os
@@ -12,7 +12,7 @@ MARK_COLORS = ("red", "orange", "green", "cyan")
 
 _XDG_CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
     os.path.expanduser("~"), ".config")
-DEFAULT_PATH = os.path.join(_XDG_CONFIG, "pdforg", "marks.json")
+DEFAULT_PATH = os.path.join(_XDG_CONFIG, "Alexandria", "marks.json")
 
 
 def load(path=DEFAULT_PATH):

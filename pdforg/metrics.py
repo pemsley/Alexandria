@@ -879,3 +879,200 @@ def find_published_version(title, author_names, preprint_doi=None):
             "checked": today_iso(),
         }
     return None
+
+
+# ----------------------------------------------------------------------
+# Discovery: free-form OpenAlex search by author / topic.
+# ----------------------------------------------------------------------
+
+def resolve_institution(query, limit=5):
+    """Resolve an institution name (free text, e.g. "Stanford") to one
+    or more OpenAlex Institution dicts, ordered by relevance. Caller
+    can present these to the user when ambiguous, or just take the top
+    hit. Returns [] on failure."""
+    if not query:
+        return []
+    params = [
+        ("search", query),
+        ("per_page", str(max(1, min(int(limit), 25)))),
+        ("select", "id,display_name,country_code,type,works_count,cited_by_count"),
+    ]
+    if OPENALEX_MAILTO:
+        params.append(("mailto", OPENALEX_MAILTO))
+    url = "https://api.openalex.org/institutions?" + urllib.parse.urlencode(params)
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
+        timeout=15)
+    if not data:
+        return []
+    out = []
+    for i in (data.get("results") or []):
+        out.append({
+            "openalex_id": _strip_openalex_id(i.get("id")) or i.get("id"),
+            "display_name": i.get("display_name"),
+            "country_code": i.get("country_code"),
+            "type": i.get("type"),
+            "works_count": i.get("works_count") or 0,
+            "cited_by_count": i.get("cited_by_count") or 0,
+        })
+    return out
+
+
+def search_authors(name=None, institution=None, orcid=None, limit=15):
+    """Return a list of candidate authors for the Discover dialog.
+
+    `name` (free-text, e.g. "Clyde A. Smith") is the author search;
+    `institution` (free-text, e.g. "Stanford") narrows by an
+    institution appearing anywhere in the author's affiliation
+    history; `orcid` is a fast-path that bypasses name search and
+    fetches the single matching author. Returns [] on failure / no
+    matches.
+
+    Each result dict has the shape consumed by the Discover UI:
+    `{openalex_id, orcid, display_name, last_known_institution,
+    works_count, cited_by_count, top_topic, top_topic_id,
+    matched_institution}` (the last is set when an institution
+    constraint resolved to a specific OpenAlex Institution).
+
+    Implementation note: OpenAlex doesn't support free-text
+    filtering on affiliation display names, so an institution
+    string is first resolved to an OpenAlex Institution ID, and
+    the author search then filters on that ID. Top hit wins —
+    "Stanford" maps to Stanford University, not SLAC. A v1
+    follow-up would surface the multi-match case in the UI.
+
+    Filtering: callers should drop records with `works_count == 0`
+    if they want to hide OpenAlex's stub records.
+    """
+    select = ("id,display_name,orcid,works_count,cited_by_count,"
+              "last_known_institutions,topics")
+    matched_institution = None
+    if orcid:
+        # ORCID fast-path: single-author lookup. OpenAlex normalises
+        # ORCIDs internally; pass either bare digits or full URL.
+        params = [
+            ("filter", "orcid:" + orcid),
+            ("select", select),
+        ]
+    else:
+        if not name:
+            return []
+        filt = []
+        if institution:
+            inst_hits = resolve_institution(institution, limit=1)
+            if not inst_hits:
+                return []   # institution didn't resolve — empty result
+            matched_institution = inst_hits[0]
+            filt.append(
+                "affiliations.institution.id:"
+                + matched_institution["openalex_id"])
+        params = [
+            ("search", name),
+            ("per_page", str(max(1, min(int(limit), 50)))),
+            ("select", select),
+        ]
+        if filt:
+            params.append(("filter", ",".join(filt)))
+    if OPENALEX_MAILTO:
+        params.append(("mailto", OPENALEX_MAILTO))
+    url = "https://api.openalex.org/authors?" + urllib.parse.urlencode(params)
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
+        timeout=20)
+    if not data:
+        return []
+    out = []
+    for a in (data.get("results") or []):
+        insts = a.get("last_known_institutions") or []
+        topics = a.get("topics") or []
+        top = topics[0] if topics else {}
+        out.append({
+            "openalex_id": _strip_openalex_id(a.get("id")) or a.get("id"),
+            "orcid": _strip_orcid(a.get("orcid")),
+            "display_name": a.get("display_name"),
+            "last_known_institution":
+                ", ".join(i.get("display_name", "") for i in insts) or None,
+            "works_count": a.get("works_count") or 0,
+            "cited_by_count": a.get("cited_by_count") or 0,
+            "top_topic": top.get("display_name"),
+            "top_topic_id": _strip_openalex_id(top.get("id")) if top else None,
+            "matched_institution": matched_institution,
+        })
+    return out
+
+
+_WORKS_SEARCH_SORTS = {
+    "relevance": "relevance_score:desc",
+    "cited":     "cited_by_count:desc",
+    "recent":    "publication_date:desc",
+}
+
+
+def search_works(query, limit=25, sort="relevance", year_min=None):
+    """Free-text search across OpenAlex Works (title + abstract +
+    fulltext on indexed papers). Used by the Discover dialog's
+    "By topic" tab.
+
+    Result shape matches `fetch_cited_by` / `fetch_references` so
+    `_build_related_row` in browse.py renders them unchanged.
+    Returns [] on failure / no matches."""
+    if not query:
+        return []
+    sort_key = _WORKS_SEARCH_SORTS.get(sort, _WORKS_SEARCH_SORTS["relevance"])
+    filt = []
+    if year_min is not None:
+        # OpenAlex doesn't take `>=` on `publication_year`; use the
+        # `from_publication_date` cutoff instead (Jan 1 of year_min).
+        try:
+            filt.append("from_publication_date:{}-01-01".format(int(year_min)))
+        except (TypeError, ValueError):
+            pass
+    params = [
+        ("search", query),
+        ("sort", sort_key),
+        ("per_page", str(max(1, min(int(limit), 50)))),
+        ("select",
+         "id,doi,title,publication_year,publication_date,"
+         "authorships,primary_location,cited_by_count,open_access,"
+         "best_oa_location"),
+    ]
+    if filt:
+        params.append(("filter", ",".join(filt)))
+    if OPENALEX_MAILTO:
+        params.append(("mailto", OPENALEX_MAILTO))
+    url = "https://api.openalex.org/works?" + urllib.parse.urlencode(params)
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
+        timeout=20)
+    if not data:
+        return []
+    out = []
+    for w in (data.get("results") or []):
+        first, last = _author_first_last(w.get("authorships"))
+        primary = w.get("primary_location") or {}
+        src = primary.get("source") or {}
+        best_oa = w.get("best_oa_location") or {}
+        open_access = w.get("open_access") or {}
+        authors = []
+        for a in (w.get("authorships") or []):
+            n = (a.get("author") or {}).get("display_name") or ""
+            if n:
+                authors.append(n)
+        out.append({
+            "openalex_id": _strip_openalex_id(w.get("id")) or w.get("id"),
+            "doi": _normalize_doi(w.get("doi")),
+            "title": w.get("title"),
+            "year": w.get("publication_year"),
+            "publication_date": w.get("publication_date"),
+            "journal": src.get("display_name"),
+            "first_author": first,
+            "last_author": last,
+            "authors": authors,
+            "citations": w.get("cited_by_count") or 0,
+            "is_oa": bool(open_access.get("is_oa")),
+            "oa_url": best_oa.get("pdf_url") or best_oa.get("landing_page_url"),
+        })
+    return out

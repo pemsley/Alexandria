@@ -16,6 +16,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GLib, Gdk, Gio, Pango
 
 from . import metrics, index, importer, opener
+from .markup import safe_pango_markup
 
 
 def _attach_copy_link_menu(button, url):
@@ -524,7 +525,7 @@ class AuthorWorksWindow(Gtk.Window):
         title_lbl.set_selectable(True)
         title_lbl.set_hexpand(True)
         title_lbl.set_markup(
-            "<b>{}</b>".format(GLib.markup_escape_text(title)))
+            "<b>{}</b>".format(safe_pango_markup(title)))
         title_row.append(title_lbl)
 
         doi = w.get("doi")

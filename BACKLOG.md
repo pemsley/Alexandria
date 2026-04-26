@@ -197,18 +197,39 @@ Pending features, roughly grouped. Newest at the top of each section.
 
 ## Export
 - BibTeX export (single, filtered, whole library).
-- **"Cite this paper as…" — CSL formatting** via `citeproc-py`
-  (BSD-2, 179 KB, lxml dep). Right-click a card → submenu with a
-  few preferred styles (APA / Vancouver / Nature / Chicago) →
-  formatted citation copied to clipboard. CSL JSON sits in the
-  middle: sidecar record → CSL JSON → citeproc-py(style.csl) →
-  formatted text. The companion `citeproc-py-styles` bundle has
-  ~10k CSL style files (12 MB); we'd vendor only a handful and let
-  users drop additional `.csl` from the Zotero CSL repository into
-  a config dir.
+- **User-supplied CSL styles.** "Cite this paper as…" currently
+  ships APA / Vancouver / Nature / Chicago author-date in
+  `pdforg/styles/`. Add a Preferences entry that lets users drop
+  additional `.csl` files into `~/.config/Alexandria/styles/` and
+  have them picked up by `csl_format.list_styles()`.
+- **CSL JSON file export.** `csl.sidecar_to_csl_array(rec)` already
+  produces the right shape; just needs an "Export CSL JSON…" menu
+  item parallel to BibTeX/RIS. Useful for Zotero import (which
+  reads CSL JSON natively).
 
 ## Watcher
 - Recursive subdir watching (currently flat on `LIBRARY_ROOT`)
+- **Clean process shutdown on window close.** Symptom: closing
+  the browser window often leaves the Python process alive in the
+  background (`ps aux | grep pdforg-browse` shows zombies from
+  earlier sessions). They keep file descriptors open on
+  `~/.local/state/Alexandria/library.db`, which means the next
+  launch of Alexandria fails to acquire a WAL lock and aborts
+  with "disk I/O error" (now caught and surfaced as a friendly
+  dialog, but the underlying problem still requires `pkill -f
+  pdforg-browse` to recover). Likely cause: the
+  `LibraryWatcher.GFileMonitor` thread or one of the background
+  refresh threads (citation refresh, cited-by fetch, cache write)
+  is keeping the GLib main loop / Python interpreter alive after
+  the window's close-request fires. Fix candidates:
+    - Wire `BrowserWindow._on_close_request` to explicitly
+      `watcher.stop()` and join any short-lived background threads
+      with a small timeout before returning False.
+    - Mark all worker threads as `daemon=True` (some already are;
+      audit them all).
+    - On Adw.Application's `shutdown` signal, run a final
+      `conn.close()` so the DB lock is released cleanly even if a
+      thread is still finishing.
 
 ## Compatibility
 - GTK4 < 4.10 fallback (some widgets we use are 4.10+)

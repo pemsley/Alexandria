@@ -540,6 +540,23 @@ def parse_bibliography(pdf_path):
                 rec_out["suffix"] = suffix
                 rec_out["key"] = "{}{}{}".format(
                     surname.lower(), year, suffix)
+                # Journal: text between the year and the first volume
+                # digit. Acta Cryst entries have no title, so this
+                # journal field is what `find_doi_by_author_year`
+                # uses to disambiguate same-surname-same-year hits.
+                after = joined[ym.end():].lstrip(". ").strip()
+                vol_m = re.search(r"\d", after)
+                if vol_m:
+                    journal_raw = after[:vol_m.start()]
+                else:
+                    journal_raw = after
+                # Keep the trailing period — it marks the last token
+                # as an abbreviation, which `metrics._expand_
+                # journal_abbreviations` needs to match "Cryst." to
+                # "Crystallography". Stripping it produced "J. Appl.
+                # Cryst" which left "Cryst" unexpanded.
+                journal = journal_raw.strip().rstrip(",").strip()
+                rec_out["journal"] = journal or None
         out.append(rec_out)
     if style == "author-year":
         _disambiguate_author_year(out)
@@ -624,6 +641,282 @@ def bibliography_positions(pdf_path):
             page_h[pi] = h
         h = page_h[pi]
         out.append((r["n"], pi, h - y_pop))
+    return out
+
+
+# --- Author-year citation hit-testing in the body text ---------------
+#
+# Phase 2 of the Acta Cryst / IUCr support: walk each page's text for
+# `(Surname, YYYY)` and `Surname (YYYY)` citation patterns, look each
+# up against the parsed bibliography, and return citation_links in
+# the same shape `pdf_links.read_citation_links` produces.
+# `find_author_year_citations` is the entry point.
+
+# A capitalised, possibly multi-word, possibly accented surname.
+# Particles (de, del, von, van, der, …) are lowercase; main words
+# capitalise. "La Fortelle", "van der Berg", "de la Cruz" all match.
+_SURNAME = r"[A-Z][\wÀ-ſ''\-]+(?:\s+(?:[a-z][\wÀ-ſ''\-]+|[A-Z][\wÀ-ſ''\-]+))*"
+
+# A single (surname [+ et al. / and Other / & Other], year) piece
+# inside a parenthesised citation. Captures the leading surname
+# (group 1) and the year-with-optional-suffix (group 2). The piece
+# may continue past the end of the match (extra years on a multi-
+# year cite like "Smith, 2020a, 2020b" are picked up by a separate
+# all-years scan).
+_AY_PIECE_RE = re.compile(
+    r"^\s*(%s)"
+    r"(?:\s+et\s+al\.?|\s+and\s+%s|\s+&\s+%s)?"
+    r",?\s+(\d{4}[a-z]?)\b" % (_SURNAME, _SURNAME, _SURNAME))
+
+# Parenthetical citation: any `(...)` containing a 4-digit year. We
+# require no nested parens in the body so we don't wander into
+# `... (Smith (1999) ...)`. The 300-char body cap stops the regex
+# from greedily eating across columns when poppler's text reflow
+# accidentally elides a closing paren.
+_AY_PAREN_RE = re.compile(
+    r"\(([^()]{0,300}?\b\d{4}[a-z]?\b[^()]{0,300}?)\)")
+
+# Narrative citation: `Surname (YYYY)` / `Surname et al. (YYYY)` /
+# `Surname and Other (YYYY)`. The negative lookbehind keeps us off
+# of in-word matches like "Cabsmith (2020)" inside a longer word.
+_AY_NARRATIVE_RE = re.compile(
+    r"(?<![A-Za-zÀ-ſ])"
+    r"(%s(?:\s+et\s+al\.?|\s+and\s+%s|\s+&\s+%s)?)"
+    r"\s+\((\d{4}[a-z]?)\)" % (_SURNAME, _SURNAME, _SURNAME))
+
+# Extra year tokens within a piece, for multi-year cites like
+# "Smith, 2020a, 2020b" or "Smith 2020 and 2021".
+_AY_YEAR_RE = re.compile(r"\b(\d{4}[a-z]?)\b")
+
+
+def _spans_to_rect(rects, start, end, page_height):
+    """Compute a bounding rect over `rects[start:end]`, returned in
+    PDF user space (origin bottom-left, y up) — the convention
+    `pdf_links.read_citation_links` uses, so the viewer's
+    `_citation_at` hit-tester works on it unchanged. Returns None
+    when the span is empty or any rect is degenerate."""
+    if start >= end or end > len(rects):
+        return None
+    xs1, ys1, xs2, ys2 = [], [], [], []
+    for r in rects[start:end]:
+        xs1.append(r.x1)
+        xs2.append(r.x2)
+        ys1.append(r.y1)
+        ys2.append(r.y2)
+    if not xs1:
+        return None
+    x_lo = min(xs1)
+    x_hi = max(xs2)
+    # poppler coords have origin top-left, y growing down. Flip to
+    # PDF user-space (origin bottom-left, y up).
+    y_pop_top = min(ys1)
+    y_pop_bot = max(ys2)
+    return (x_lo, page_height - y_pop_bot, x_hi, page_height - y_pop_top)
+
+
+def _find_year_offsets(text, span_start, span_end):
+    """Yield (year_str, year_start, year_end) for each 4-digit year
+    inside `text[span_start:span_end]`. Offsets are absolute (into
+    `text`). Used to assign per-year rects on multi-year cites."""
+    for m in _AY_YEAR_RE.finditer(text, span_start, span_end):
+        yield m.group(1), m.start(), m.end()
+
+
+def _build_bib_lookup(bib_entries):
+    """Return `(by_key, by_surname_year)`.
+
+    `by_key` is keyed by the canonical `surname.lower()+year+suffix`
+    string — exact match against a citation's parsed key. Used when
+    the citation explicitly carries a suffix ("Smith, 2020a") that
+    matches the bibliography.
+
+    `by_surname_year` is keyed by `(surname.lower(), year)` with no
+    suffix; values are the list of entries sharing that base. Used
+    for plain-year citations ("Smith, 2020") that we can match
+    unambiguously when only one bib entry has that base."""
+    by_key = {}
+    by_surname_year = {}
+    for e in bib_entries:
+        key = e.get("key")
+        if not key:
+            continue
+        by_key[key] = e
+        base = (e["surname"].lower(), e["year"])
+        by_surname_year.setdefault(base, []).append(e)
+    return by_key, by_surname_year
+
+
+def _match_bib(surname, year, by_key, by_surname_year):
+    """Resolve a (surname, year) citation to a bibliography entry,
+    or None when the lookup is ambiguous or absent. Surname matching
+    folds to lowercase; year may carry an `a/b/c` suffix.
+
+    The first surname token wins on multi-author citations
+    ("Smith and Jones, 2020" → look up "smith"); that's how
+    `parse_bibliography` keys its entries too."""
+    surname_lc = surname.strip().lower()
+    # A citation like "Smith and Jones, 2020" arrives with surname
+    # already trimmed to "Smith" by _AY_PIECE_RE's first capturing
+    # group. Defensive: if the caller didn't trim, take the first
+    # whitespace-bounded token.
+    surname_lc = surname_lc.split()[0] if surname_lc else surname_lc
+    # Re-add particle support. parse_bibliography keeps multi-word
+    # surnames intact ("la fortelle"); fold the citation's surname
+    # the same way by recovering the raw form.
+    full_lc = surname.strip().lower()
+    # First: exact key match (citation has explicit suffix).
+    has_suffix = bool(year) and year[-1].isalpha()
+    if has_suffix:
+        key = "{}{}".format(full_lc, year)
+        e = by_key.get(key)
+        if e:
+            return e
+        # Try first-token only.
+        key2 = "{}{}".format(surname_lc, year)
+        e = by_key.get(key2)
+        if e:
+            return e
+        return None
+    # Plain year — match against (surname, year) base. If exactly
+    # one entry exists, use it (suffix or no suffix in the bib).
+    for sn in (full_lc, surname_lc):
+        candidates = by_surname_year.get((sn, year))
+        if candidates and len(candidates) == 1:
+            return candidates[0]
+    return None
+
+
+def find_author_year_citations(pdf_path, bib_entries):
+    """Find author-year citations in the body text of `pdf_path`
+    and return them in the same shape as
+    `pdf_links.read_citation_links`:
+    `{page_idx: [(rect, target_page, target_top, ref_n), ...]}`.
+
+    Hit-tests support both `(Surname, YYYY)` parenthetical and
+    `Surname (YYYY)` narrative forms, including `et al.`,
+    `and Other`, `&`, multi-citation tokens (`(Smith, 2020;
+    Jones, 2003)`) and multi-year tokens (`(Smith, 2020a, 2020b)`).
+
+    `bib_entries` is the list returned by `parse_bibliography`. Only
+    entries that carry a `key` (i.e. came out of the author-year
+    branch) are considered. Returns `{}` when the bibliography is
+    empty or numbered.
+
+    `ref_n` in the returned tuples is the entry's positional
+    integer `n`, so the viewer's existing
+    `_show_reference_popover` flow keeps working unchanged — it
+    consumes `ref_n` as a key into `_bibliography_by_n`."""
+    if not bib_entries:
+        return {}
+    by_key, by_surname_year = _build_bib_lookup(bib_entries)
+    if not by_key:
+        return {}
+    try:
+        doc = _open_doc(pdf_path)
+    except Exception:
+        return {}
+
+    out = {}
+    for pi in range(doc.get_n_pages()):
+        page = doc.get_page(pi)
+        text = page.get_text() or ""
+        if not text:
+            continue
+        res = page.get_text_layout()
+        if isinstance(res, tuple):
+            ok, rects = res
+        else:
+            rects = res
+            ok = rects is not None
+        if not ok or rects is None:
+            continue
+        # Length-align text to rects — same dance _page_lines does.
+        if len(rects) == len(text):
+            text_aligned = text
+        else:
+            no_nl = text.replace("\n", "")
+            if len(rects) == len(no_nl):
+                text_aligned = no_nl
+            else:
+                continue
+        _, page_h = page.get_size()
+        page_links = []
+
+        # Parenthetical: scan for `(...year...)` tokens, then split
+        # each one's inner content into per-piece sub-rects.
+        for m in _AY_PAREN_RE.finditer(text_aligned):
+            inner = m.group(1)
+            inner_start = m.start(1)  # absolute offset of inner text
+            # Split inner on `;` — each segment is one citation
+            # (multi-citation form). For each segment, find a
+            # leading (surname, [et al / and / &], year) and any
+            # additional years for multi-year cites.
+            seg_off = 0
+            for seg in inner.split(";"):
+                seg_abs_start = inner_start + seg_off
+                seg_off += len(seg) + 1  # +1 for the ';'
+                pm = _AY_PIECE_RE.match(seg)
+                if not pm:
+                    continue
+                surname = pm.group(1)
+                # Collect every year in this segment so multi-year
+                # cites ("Smith, 2020a, 2020b") emit one link per
+                # year, each scoped to its own rect.
+                seg_text = seg
+                for year, rel_y_start, rel_y_end in _find_year_offsets(
+                        seg_text, 0, len(seg_text)):
+                    entry = _match_bib(
+                        surname, year, by_key, by_surname_year)
+                    if entry is None:
+                        continue
+                    abs_start = seg_abs_start + pm.start(1)
+                    abs_end = seg_abs_start + rel_y_end
+                    rect = _spans_to_rect(
+                        rects, abs_start, abs_end, page_h)
+                    if rect is None:
+                        continue
+                    target_pi = entry.get("page")
+                    y_pop = entry.get("y_top_poppler")
+                    if target_pi is None or y_pop is None:
+                        continue
+                    try:
+                        _, target_h = doc.get_page(target_pi).get_size()
+                    except Exception:
+                        continue
+                    target_top = target_h - y_pop
+                    page_links.append(
+                        (rect, target_pi, target_top, entry["n"]))
+
+        # Narrative: `Surname (YYYY)` / `Surname et al. (YYYY)`.
+        for m in _AY_NARRATIVE_RE.finditer(text_aligned):
+            surname_part = m.group(1)
+            year = m.group(2)
+            # Pull out the leading surname only (before any "et al."
+            # or "and" / "&"), so plural-form cites still resolve.
+            sm = re.match(_SURNAME, surname_part)
+            if not sm:
+                continue
+            surname = sm.group(0)
+            entry = _match_bib(surname, year, by_key, by_surname_year)
+            if entry is None:
+                continue
+            rect = _spans_to_rect(rects, m.start(), m.end(), page_h)
+            if rect is None:
+                continue
+            target_pi = entry.get("page")
+            y_pop = entry.get("y_top_poppler")
+            if target_pi is None or y_pop is None:
+                continue
+            try:
+                _, target_h = doc.get_page(target_pi).get_size()
+            except Exception:
+                continue
+            target_top = target_h - y_pop
+            page_links.append(
+                (rect, target_pi, target_top, entry["n"]))
+
+        if page_links:
+            out[pi] = page_links
     return out
 
 

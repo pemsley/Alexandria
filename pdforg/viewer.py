@@ -210,6 +210,27 @@ class PdfViewerWindow(Gtk.Window):
         if bib_positions:
             self.citation_links = pdf_links.assign_ref_n_by_position(
                 self.citation_links, bib_positions)
+        # Path C: text-based hit-testing for author-year style
+        # bibliographies (Acta Cryst, IUCr, older crystallography
+        # papers in general). Publisher /Link annotations are absent
+        # on these, so we walk the body text for `(Surname, YYYY)`
+        # / `Surname (YYYY)` patterns and resolve them against the
+        # parsed bibliography. Only fires when parse_bibliography
+        # came back author-year (entries carry a `key` field); does
+        # nothing for numbered bibliographies, where Path A/B
+        # handle the work.
+        try:
+            ay_bib = references_pdf.parse_bibliography(pdf_path)
+        except Exception:
+            ay_bib = []
+        if ay_bib and any(e.get("key") for e in ay_bib):
+            try:
+                ay_links = references_pdf.find_author_year_citations(
+                    pdf_path, ay_bib)
+            except Exception:
+                ay_links = {}
+            for pi, plinks in ay_links.items():
+                self.citation_links.setdefault(pi, []).extend(plinks)
         # Per-page "is the cursor currently over a link?" cache, used
         # to avoid re-setting the cursor on every motion event.
         self._cursor_over_link = {}
@@ -1178,8 +1199,19 @@ class PdfViewerWindow(Gtk.Window):
         outer.set_margin_top(10)
         outer.set_margin_bottom(10)
 
+        # Author-year bibliographies get a "(Sheldrick, 2008)" label
+        # — what the user sees in the body text. Numbered keep the
+        # "[N]" label.
+        if entry.get("surname") and entry.get("year"):
+            ref_label = "({}, {}{})".format(
+                entry["surname"], entry["year"],
+                entry.get("suffix") or "")
+        else:
+            ref_label = "[{}]".format(ref_n)
         header = Gtk.Label(xalign=0.0)
-        header.set_markup("<b>Reference [{}]</b>".format(ref_n))
+        header.set_markup(
+            "<b>Reference {}</b>".format(
+                GLib.markup_escape_text(ref_label)))
         outer.append(header)
 
         entry_lbl = Gtk.Label(xalign=0.0)
@@ -1205,7 +1237,7 @@ class PdfViewerWindow(Gtk.Window):
         # MenuButton makes the button toggle it for free, and the
         # button stays visible so the user can re-open the popover
         # after dismissing it.
-        self.ref_btn.set_label("Reference [{}]".format(ref_n))
+        self.ref_btn.set_label("Reference {}".format(ref_label))
         self.ref_btn.set_visible(True)
         self.ref_btn.set_popover(pop)
         self.ref_btn.popup()
@@ -1229,11 +1261,22 @@ class PdfViewerWindow(Gtk.Window):
     def _resolve_reference_blocking(self, entry):
         """Background-thread resolution. If the parsed entry already
         has a DOI we go straight to OpenAlex by DOI; otherwise we
-        try `metrics.find_doi` with a heuristic title/author/year
-        split of the entry text and look up the result. Returns the
-        normalised metadata dict from `metrics.fetch_work_by_doi`,
-        or None if nothing matched."""
+        ask OpenAlex to resolve the entry by either:
+
+        - author-year search (Acta Cryst, IUCr, older crystallography
+          journals): the citation has no title, so we search by
+          first-author surname + year + a soft journal-name match.
+        - title-based search (numbered/Vancouver-style): the existing
+          `metrics.find_doi` path with the heuristic title/author/year
+          split of the entry text.
+
+        Returns the normalised metadata dict from
+        `metrics.fetch_work_by_doi`, or None if nothing matched."""
         doi = entry.get("doi")
+        if not doi and entry.get("surname") and entry.get("year"):
+            doi = metrics.find_doi_by_author_year(
+                entry["surname"], entry["year"],
+                journal=entry.get("journal"))
         if not doi:
             authors_str, year, title, journal = _split_entry_text(
                 entry.get("text") or "")

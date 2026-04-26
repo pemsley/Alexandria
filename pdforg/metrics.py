@@ -838,6 +838,275 @@ def find_doi(title, year=None, author_names=None, journal=None):
     return None
 
 
+# Cache for `_resolve_journal_source_ids` — a session of citation
+# resolution typically resolves dozens of "Acta Cryst. D" / "J. Mol.
+# Biol." / etc. references, and there's no point re-asking OpenAlex
+# every time. Keyed by the lowercase journal name.
+_SOURCE_ID_CACHE = {}
+
+
+# Common scientific-journal abbreviations, mapped to *every* full
+# form they're known to expand to. Multiple candidates because the
+# same abbreviation expands differently per journal: "Cryst." →
+# "Crystallographica" in `Acta Cryst.` but "Crystallography" in
+# `J. Appl. Cryst.`. OpenAlex's `/sources?search` is token-based
+# and won't match abbreviations, so we run the cartesian product
+# of expansions and union the source IDs.
+_JOURNAL_ABBREVIATIONS = {
+    "cryst": ["crystallographica", "crystallography"],
+    "crystallogr": ["crystallography"],
+    "j": ["journal"],
+    "mol": ["molecular"],
+    "biol": ["biology", "biological"],
+    "biochem": ["biochemistry"],
+    "chem": ["chemistry", "chemical"],
+    "phys": ["physical", "physics"],
+    "sci": ["science", "sciences"],
+    "natl": ["national"],
+    "acad": ["academy"],
+    "proc": ["proceedings"],
+    "comput": ["computational"],
+    "commun": ["communications"],
+    "newsl": ["newsletter"],
+    "appl": ["applied"],
+    "annu": ["annual"],
+    "rev": ["review", "reviews"],
+    "microbiol": ["microbiology"],
+    "photochem": ["photochemistry"],
+    "photobiol": ["photobiology"],
+    "struct": ["structural"],
+    "sect": ["section"],
+    "enzymol": ["enzymology"],
+    "med": ["medicine"],
+    "exp": ["experimental"],
+}
+
+
+def _expand_journal_abbreviations(name):
+    """Yield every expansion of `name` as a search-ready string —
+    one per combination of alternate expansions. "J. Appl. Cryst."
+    yields ["Journal Applied Crystallographica", "Journal Applied
+    Crystallography"]. Tokens not followed by a period stay verbatim."""
+    if not name:
+        return [name] if name else []
+    # Tokenise by whitespace, preserving the period-as-abbreviation marker.
+    tokens = name.split()
+    options = []  # list of [alt1, alt2, ...] per token
+    for tok in tokens:
+        bare = tok.rstrip(".,;:")
+        if tok.endswith("."):
+            alts = _JOURNAL_ABBREVIATIONS.get(bare.lower())
+            if alts:
+                options.append([a.title() for a in alts])
+                continue
+        options.append([bare])
+    # Cartesian product, joined with spaces.
+    out = [""]
+    for opts in options:
+        out = ["{} {}".format(prefix, alt).strip()
+               for prefix in out for alt in opts]
+    # Always include the original (token-stripped) too — sometimes
+    # OpenAlex carries the raw name verbatim.
+    raw = " ".join(tok.rstrip(".,;:") for tok in tokens).strip()
+    if raw and raw not in out:
+        out.append(raw)
+    return out
+
+
+def _resolve_journal_source_ids(journal_name):
+    """Look up OpenAlex source IDs for a citation-style journal name
+    abbreviation. Returns a (possibly empty) list of `S<id>` strings.
+
+    A journal can have several OpenAlex source records — Acta D
+    has two, one for "Biological Crystallography" (pre-2014) and
+    one for "Structural Biology" (post-2014). We use
+    `_journal_token_match` to keep only the sources whose printed
+    name shares the citation's tokens (so `Acta Cryst. D` doesn't
+    pull in section A / B / C / E / F)."""
+    if not journal_name:
+        return []
+    key = journal_name.lower().strip()
+    if key in _SOURCE_ID_CACHE:
+        return _SOURCE_ID_CACHE[key]
+    # OpenAlex's source search is token-based and full-text — it
+    # won't match "Acta Cryst" against "Acta Crystallographica", and
+    # the same abbreviation has multiple expansions ("J. Appl.
+    # Cryst." → "Journal of Applied Crystallography", "Acta Cryst."
+    # → "Acta Crystallographica"). Try each combination, union the
+    # source IDs, then post-filter by token match against the
+    # original journal name to drop unrelated sources.
+    queries = _expand_journal_abbreviations(journal_name)
+    seen_ids = set()
+    ids = []
+    for q in queries:
+        q = re.sub(r"\W+", " ", q).strip()
+        if not q:
+            continue
+        params = [("search", q), ("per_page", "10")]
+        if OPENALEX_MAILTO:
+            params.append(("mailto", OPENALEX_MAILTO))
+        url = ("https://api.openalex.org/sources?"
+               + urllib.parse.urlencode(params))
+        data = _http_get_json(
+            url,
+            headers={"User-Agent": OPENALEX_UA,
+                     "Accept": "application/json"},
+            timeout=15)
+        if data is None:
+            continue
+        for s in (data.get("results") or []):
+            oa_id = s.get("id") or ""
+            # OpenAlex IDs are full URLs; the filter wants the bare suffix.
+            oa_id = oa_id.rsplit("/", 1)[-1] if oa_id else ""
+            if not oa_id.startswith("S") or oa_id in seen_ids:
+                continue
+            if _journal_token_match(
+                    journal_name, s.get("display_name") or ""):
+                seen_ids.add(oa_id)
+                ids.append(oa_id)
+            if len(ids) >= 5:
+                break
+        if len(ids) >= 5:
+            break
+    _SOURCE_ID_CACHE[key] = ids
+    return ids
+
+
+def _journal_token_match(query, candidate):
+    """True if `candidate` (a full OpenAlex source name) is the same
+    journal as `query` (a citation-style abbreviation).
+
+    Acta Cryst-style citations write "Acta Cryst. D"; OpenAlex
+    stores "Acta Crystallographica Section D Biological
+    Crystallography". A naive substring check fails on the
+    abbreviation, so we tokenise both, then require every query
+    token to match an exact or prefix candidate token. Single-
+    character tokens (the section letter "D") must match exactly so
+    we don't merge sections A/B/C/D/E/F."""
+    if not query or not candidate:
+        return False
+    q_words = [w for w in re.split(r"[^a-z0-9]+", query.lower()) if w]
+    c_words = [w for w in re.split(r"[^a-z0-9]+", candidate.lower()) if w]
+    if not q_words or not c_words:
+        return False
+    # Common stop-words that shouldn't carry the match. "of", "and",
+    # "the" appear in too many journal names to be informative.
+    stops = {"of", "and", "the", "for", "in", "a", "an"}
+    informative = [w for w in q_words if w not in stops]
+    if not informative:
+        return False
+    c_set = set(c_words)
+    for qw in informative:
+        if qw in c_set:
+            continue
+        # Prefix-match against any candidate word, regardless of qw
+        # length. Lets short abbreviations like "J." match "Journal"
+        # (qw="j" prefix of "journal") while still keeping "Acta
+        # Cryst. D" away from "Acta Cryst. A" (qw="d" doesn't match
+        # "a" or "foundations").
+        if any(cw.startswith(qw) for cw in c_words):
+            continue
+        return False
+    return True
+
+
+def find_doi_by_author_year(surname, year, journal=None):
+    """Search OpenAlex for a Work by first-author surname + publication
+    year + journal token-match, returning the DOI string or None.
+
+    Used to resolve Acta-Cryst-style bibliography entries that carry
+    no title — citation format is `Surname, I. (YYYY). J. Vol, Pages.`
+    so `find_doi` (which is title-driven) has nothing to search on.
+
+    Returns None when no candidate matches BOTH surname-as-first-
+    author AND journal. Falling back to "first-author alone with no
+    journal check" picks unrelated papers (an unrelated psychology
+    paper with the same surname+year would win), which is worse than
+    returning None and surfacing "couldn't resolve" to the user."""
+    if not surname or not year:
+        return None
+    surname_clean = re.sub(r"\W+", " ", surname).strip()
+    if not surname_clean:
+        return None
+    # OpenAlex's `raw_author_name.search` matches the author name as
+    # printed on the paper, which is what citation surnames map to.
+    # `authorships.author.display_name.search` is *not* a valid
+    # filter (returns 400) — use this one instead.
+    # Year ± 1 because online-vs-print publication years often
+    # disagree by a year — Sheldrick's 2008 SHELX paper (Acta A vol
+    # 64, 2008) is `publication_year: 2007` in OpenAlex (online
+    # December 2007). Without the tolerance these "early/late
+    # online" cases all fail to resolve.
+    y = int(year)
+    year_filt = "publication_year:{}|{}|{}".format(y - 1, y, y + 1)
+    filt_parts = [
+        "raw_author_name.search:{}".format(surname_clean),
+        year_filt,
+    ]
+    # When the journal is known, resolve to its OpenAlex source ID(s)
+    # and filter on those. Without this, common surnames (Cohen,
+    # Smith) drown the right paper under hundreds of irrelevant
+    # same-year hits and the in-memory journal token check on the
+    # top-25 results misses the match. With it, we typically get
+    # 0–5 candidates and the right one's right there.
+    source_ids = _resolve_journal_source_ids(journal) if journal else []
+    if source_ids:
+        filt_parts.append(
+            "primary_location.source.id:" + "|".join(source_ids))
+    filt = ",".join(filt_parts)
+    params = [
+        ("filter", filt),
+        ("per_page", "25"),
+    ]
+    if OPENALEX_MAILTO:
+        params.append(("mailto", OPENALEX_MAILTO))
+    url = "https://api.openalex.org/works?" + urllib.parse.urlencode(params)
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
+        timeout=15)
+    if data is None:
+        return None
+
+    surname_lc = surname_clean.lower()
+    candidates = data.get("results") or []
+    if not candidates:
+        return None
+
+    def _surname_matches_first_author(w):
+        for a in (w.get("authorships") or []):
+            pos = a.get("author_position") or "middle"
+            if pos != "first":
+                continue
+            n = (a.get("author") or {}).get("display_name") or ""
+            sn = _surname(n).lower()
+            if sn == surname_lc:
+                return True
+            # `_surname` extracts the last whitespace-separated token,
+            # which works for "First Last" but not for hyphenated /
+            # particle-prefixed surnames ("Cohen-Luria", "Van Dijk")
+            # or all-caps display names. Fall back to a substring
+            # check on the first author's name only — keeps strict
+            # first-author scoping while tolerating display-name
+            # quirks.
+            if surname_lc in n.lower():
+                return True
+            return False
+        return False
+
+    for w in candidates:
+        if not _surname_matches_first_author(w):
+            continue
+        cand_journal = (((w.get("primary_location") or {}).get("source")
+                         or {}).get("display_name") or "")
+        if not _journal_token_match(journal, cand_journal):
+            continue
+        doi = _normalize_doi(w.get("doi"))
+        if doi:
+            return doi
+    return None
+
+
 def find_published_version(title, author_names, preprint_doi=None):
     """Search OpenAlex for a journal-published version of a preprint by
     title + author overlap. Returns a dict {doi, title, journal, year,

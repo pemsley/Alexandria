@@ -93,17 +93,10 @@ Pending features, roughly grouped. Newest at the top of each section.
 - Show ORCID / institution in the metadata editor
 
 ## Sorting & filtering
-- **Sort menu.** Currently the cards list is hard-coded to
-  `ORDER BY added_date DESC, sidecar_mtime DESC, title` in
-  `index.py:393`, so newly-imported papers always land at row 0 and
-  there's no UI to change it. Add a sort dropdown anchored next to
-  the search box on the header bar, with keys: added date, year,
-  title, first author, last author, citations, mark. Each key has an
-  asc/desc toggle; persist the choice (session-only is fine for v1,
-  settings entry later). Default stays `added_date DESC` so import-
-  flow ergonomics don't change.
 - Tag chips + filter sidebar
 - FTS to include mark labels
+- Persist sort choice across sessions (currently session-only —
+  default `added_date DESC` is restored on every launch).
 
 ## Export
 - BibTeX export (single, filtered, whole library).

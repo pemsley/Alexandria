@@ -376,7 +376,48 @@ def _mark_filter_clause(mark_filter):
     return "", []  # ignore unknown values
 
 
-def search(conn, query=None, limit=500, mark_filter=None):
+# Sort keys exposed in the UI. The value is the SQL expression used in
+# ORDER BY (already including any COLLATE clause). Add new entries here
+# and the dropdown in browse.py will pick them up via SORT_KEY_LABELS.
+SORT_KEYS = {
+    "added_date":   "added_date",
+    "year":         "year",
+    "title":        "title COLLATE NOCASE",
+    "first_author": "first_author COLLATE NOCASE",
+    "last_author":  "last_author COLLATE NOCASE",
+    "citations":    "citations",
+    "mark":         "mark",
+}
+
+
+def _order_clause(sort_key, sort_direction):
+    """Return the ORDER BY clause (with leading space).
+
+    The default — `added_date DESC` — preserves the import-flow
+    ergonomics (newly-imported paper at row 0). Other keys put NULL/
+    empty values at the end regardless of direction, then break ties
+    on added_date DESC so a stable secondary order survives."""
+    if sort_key not in SORT_KEYS:
+        sort_key = "added_date"
+    direction = (sort_direction or "DESC").upper()
+    if direction not in ("ASC", "DESC"):
+        direction = "DESC"
+
+    if sort_key == "added_date":
+        return " ORDER BY added_date {0}, sidecar_mtime {0}, title COLLATE NOCASE".format(
+            direction)
+
+    primary = SORT_KEYS[sort_key]
+    if sort_key == "mark":
+        nulls_last = "(papers.mark IS NULL OR papers.mark = '') ASC"
+    else:
+        nulls_last = "({} IS NULL) ASC".format(sort_key)
+    return " ORDER BY {}, {} {}, added_date DESC, sidecar_mtime DESC".format(
+        nulls_last, primary, direction)
+
+
+def search(conn, query=None, limit=500, mark_filter=None,
+           sort_key=None, sort_direction=None):
     """Search across title/authors/abstract/keywords/journal/doi via FTS5.
 
     Implicit prefix matching: each query token is treated as a prefix,
@@ -384,13 +425,12 @@ def search(conn, query=None, limit=500, mark_filter=None):
 
     `mark_filter` constrains by the user "Mark" colour.
 
-    Result order: most recently *added* first (date the file was first
-    imported, descending), then by sidecar mtime as a tie-break so a
-    single-day import batch keeps stable order, then title. This puts a
-    just-imported paper at row 0 — the user can find it without
-    knowing the title."""
+    `sort_key` / `sort_direction` drive ORDER BY — see SORT_KEYS for
+    valid keys. Default order is most recently *added* first, then by
+    sidecar mtime as a tie-break, then title; that keeps a just-
+    imported paper at row 0."""
     mark_sql, mark_params = _mark_filter_clause(mark_filter)
-    order_clause = (" ORDER BY added_date DESC, sidecar_mtime DESC, title")
+    order_clause = _order_clause(sort_key, sort_direction)
 
     if not query:
         sql = ("SELECT papers.* FROM papers"

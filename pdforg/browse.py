@@ -738,6 +738,21 @@ class BrowserWindow(Adw.ApplicationWindow):
                                     index.MARK_FILTER_NONE]
         self.mark_filter_dd = self._build_mark_filter_dd()
 
+        # ---- Sort (key dropdown + asc/desc toggle) ----------------
+        # Session-only state; default added_date DESC keeps newly-
+        # imported papers at row 0 (the import-flow ergonomic).
+        self._SORT_KEY_VALUES = [
+            ("added_date",   "Added"),
+            ("year",         "Year"),
+            ("title",        "Title"),
+            ("first_author", "First author"),
+            ("last_author",  "Last author"),
+            ("citations",    "Citations"),
+            ("mark",         "Mark"),
+        ]
+        self.sort_key_dd = self._build_sort_key_dd()
+        self.sort_dir_btn = self._build_sort_dir_btn()
+
         # ---- HeaderBar --------------------------------------------
         header = Adw.HeaderBar()
 
@@ -771,6 +786,11 @@ class BrowserWindow(Adw.ApplicationWindow):
         header.pack_end(hamburger_btn)
 
         header.pack_end(self.mark_filter_dd)
+
+        # Sort dir button is packed first (rightmost of the pair),
+        # then key dropdown — so the pair reads "key | dir" L→R.
+        header.pack_end(self.sort_dir_btn)
+        header.pack_end(self.sort_key_dd)
 
         self.search_toggle = Gtk.ToggleButton()
         self.search_toggle.set_icon_name("system-search-symbolic")
@@ -1077,7 +1097,9 @@ class BrowserWindow(Adw.ApplicationWindow):
         query = self.search.get_text() or None
         mark_filter = self._MARK_FILTER_VALUES[
             self.mark_filter_dd.get_selected()]
-        rows = index.search(self.conn, query, mark_filter=mark_filter)
+        sort_key, sort_direction = self._current_sort()
+        rows = index.search(self.conn, query, mark_filter=mark_filter,
+                            sort_key=sort_key, sort_direction=sort_direction)
 
         try:
             written, skipped = bibtex_export.export_rows_to_file(rows, path)
@@ -1550,7 +1572,9 @@ class BrowserWindow(Adw.ApplicationWindow):
             child = nxt
         mark_filter = self._MARK_FILTER_VALUES[
             self.mark_filter_dd.get_selected()]
-        rows = index.search(self.conn, query, mark_filter=mark_filter)
+        sort_key, sort_direction = self._current_sort()
+        rows = index.search(self.conn, query, mark_filter=mark_filter,
+                            sort_key=sort_key, sort_direction=sort_direction)
         on_saved = lambda: self._reload(self.search.get_text() or None)
         for r in rows:
             self.results.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
@@ -2516,6 +2540,46 @@ class BrowserWindow(Adw.ApplicationWindow):
         dd.set_tooltip_text("Filter by Mark")
         dd.connect("notify::selected", self._on_mark_filter_changed)
         return dd
+
+    # --- Sort dropdown + direction toggle ------------------------------
+
+    def _build_sort_key_dd(self):
+        sl = Gtk.StringList()
+        for _key, label in self._SORT_KEY_VALUES:
+            sl.append(label)
+        dd = Gtk.DropDown(model=sl)
+        dd.set_selected(0)  # added_date
+        dd.set_tooltip_text("Sort by")
+        dd.connect("notify::selected", self._on_sort_changed)
+        return dd
+
+    def _build_sort_dir_btn(self):
+        btn = Gtk.ToggleButton()
+        btn.set_icon_name("view-sort-descending-symbolic")
+        btn.set_active(True)  # default: DESC
+        btn.set_tooltip_text("Descending (click for ascending)")
+        btn.connect("toggled", self._on_sort_dir_toggled)
+        return btn
+
+    def _current_sort(self):
+        idx = self.sort_key_dd.get_selected()
+        if idx < 0 or idx >= len(self._SORT_KEY_VALUES):
+            idx = 0
+        key = self._SORT_KEY_VALUES[idx][0]
+        direction = "DESC" if self.sort_dir_btn.get_active() else "ASC"
+        return key, direction
+
+    def _on_sort_changed(self, _dd, _pspec):
+        self._reload(self.search.get_text() or None)
+
+    def _on_sort_dir_toggled(self, btn):
+        if btn.get_active():
+            btn.set_icon_name("view-sort-descending-symbolic")
+            btn.set_tooltip_text("Descending (click for ascending)")
+        else:
+            btn.set_icon_name("view-sort-ascending-symbolic")
+            btn.set_tooltip_text("Ascending (click for descending)")
+        self._reload(self.search.get_text() or None)
 
     def _refresh_mark_filter_dd(self):
         """Rebuild the dropdown after labels change. Lives in the

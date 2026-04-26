@@ -197,16 +197,6 @@ Pending features, roughly grouped. Newest at the top of each section.
 
 ## Export
 - BibTeX export (single, filtered, whole library).
-- **RIS export** (single, filtered, whole library). Same shape as
-  BibTeX export but RIS — used by EndNote, RefWorks, Mendeley, Zotero
-  and most journals' "Cite this paper" widgets. The data layer
-  largely overlaps with BibTeX (we already capture title / authors /
-  year / journal / doi / volume / number / pages / abstract /
-  keywords). Tag mapping: `TY  - JOUR/CHAP/CONF/...`, `AU  - Last,
-  First`, `TI  -`, `PY  -`, `JO  -` or `T2  -`, `DO  -`, `VL  -`,
-  `IS  -`, `SP  -`/`EP  -`, `AB  -`, `KW  -`, `ER  - `. No external
-  dep needed; trivial line-format. Round-trip-test the way we did
-  for BibTeX.
 - **"Cite this paper as…" — CSL formatting** via `citeproc-py`
   (BSD-2, 179 KB, lxml dep). Right-click a card → submenu with a
   few preferred styles (APA / Vancouver / Nature / Chicago) →

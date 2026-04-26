@@ -21,8 +21,8 @@ from gi.repository import Gtk, Gdk, GLib, Gio, GObject, Pango, Adw
 
 from . import (index, edit_dialog, importer, metrics, sidecar, extract,
                viewer, marks_config, prefs, watcher as watcher_mod,
-               author_works, bibtex_import, bibtex_export, opener,
-               references_pdf, discover)
+               author_works, bibtex_import, bibtex_export, ris_export,
+               opener, references_pdf, discover)
 
 LIBRARY_ROOT = prefs.get_library_root()
 
@@ -719,6 +719,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         import_menu.append_section(None, import_section)
         export_section = Gio.Menu()
         export_section.append("Export BibTeX…",  "win.export-bibtex")
+        export_section.append("Export RIS…",     "win.export-ris")
         import_menu.append_section(None, export_section)
         import_btn = Gtk.MenuButton()
         import_btn.set_label("Import")
@@ -889,6 +890,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             ("import-folder", self._on_import_folder),
             ("import-bibtex", self._on_import_bibtex),
             ("export-bibtex", self._on_export_bibtex),
+            ("export-ris",    self._on_export_ris),
             ("discover",      self._open_discover),
             ("preferences",   self._open_preferences),
         ):
@@ -1062,6 +1064,56 @@ class BrowserWindow(Adw.ApplicationWindow):
             written, skipped = bibtex_export.export_rows_to_file(rows, path)
         except Exception as e:
             print("BibTeX export failed:", e)
+            self._toast("Export failed: {}".format(e), timeout=6)
+            return
+
+        msg = "Exported {} entries to {}".format(
+            written, os.path.basename(path))
+        if skipped:
+            msg += " ({} skipped — sidecar missing)".format(skipped)
+        self._toast(msg)
+
+    # --- Export RIS (mirror of BibTeX export) ---------------------------
+
+    def _on_export_ris(self, _btn):
+        dlg = Gtk.FileDialog()
+        dlg.set_title("Export RIS")
+        dlg.set_initial_name("alexandria-export.ris")
+        ris_filter = Gtk.FileFilter()
+        ris_filter.set_name("RIS (*.ris)")
+        ris_filter.add_pattern("*.ris")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(ris_filter)
+        dlg.set_filters(filters)
+        dlg.set_default_filter(ris_filter)
+        dlg.save(self, None, self._on_ris_save_chosen)
+
+    def _on_ris_save_chosen(self, dlg, result):
+        try:
+            f = dlg.save_finish(result)
+        except GLib.Error:
+            return
+        if f is None:
+            return
+        path = f.get_path()
+        if not path:
+            return
+        if not path.lower().endswith(".ris"):
+            path += ".ris"
+
+        # Same as BibTeX: export the *currently visible rows* — the
+        # user's search + mark + sort filters are honoured.
+        query = self.search.get_text() or None
+        mark_filter = self._MARK_FILTER_VALUES[
+            self.mark_filter_dd.get_selected()]
+        sort_key, sort_direction = self._current_sort()
+        rows = index.search(self.conn, query, mark_filter=mark_filter,
+                            sort_key=sort_key, sort_direction=sort_direction)
+
+        try:
+            written, skipped = ris_export.export_rows_to_file(rows, path)
+        except Exception as e:
+            print("RIS export failed:", e)
             self._toast("Export failed: {}".format(e), timeout=6)
             return
 

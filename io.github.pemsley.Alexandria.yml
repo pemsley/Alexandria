@@ -10,7 +10,7 @@ finish-args:
   - --socket=wayland
   - --socket=fallback-x11
   - --device=dri             # GPU acceleration
-  - --filesystem=home        # PDF library (default ~/pdfs) + sidecar JSON files
+  - --filesystem=xdg-documents   # PDF library (default ~/Documents/Alexandria) + sidecar JSON files
 
 build-options:
   env:
@@ -55,30 +55,20 @@ modules:
     sources:
       - type: archive
         url: https://poppler.freedesktop.org/poppler-24.11.0.tar.xz
-        sha256: FILL_IN  # run: curl -sL <url> | sha256sum
+        sha256: 7723d880565211740c13649d24a300257b86ddd7fa2d208187ff7e5cc8dfbd58
 
   # ── Python runtime dependencies ─────────────────────────────────────────
-  # For local development builds, run flatpak-builder with --allow-net:
-  #
-  #   flatpak-builder --allow-net --force-clean build-dir \
-  #                   io.github.pemsley.Alexandria.yml
-  #
-  # For Flathub submission, replace this module with the output of
-  # flatpak-pip-generator (https://github.com/flatpak/flatpak-pip-generator):
+  # Offline-buildable wheels + sha256s, generated from
+  # requirements-flatpak.txt by flatpak-pip-generator. To regenerate
+  # (e.g. after bumping a pinned version):
   #
   #   python3 flatpak-pip-generator \
   #       --requirements-file requirements-flatpak.txt \
-  #       --output python-deps
+  #       --output python-deps --yaml
   #
-  # then add:
-  #   - python-deps.json
-  # to the top of the modules list and remove this module.
-  - name: python-deps
-    buildsystem: simple
-    build-commands:
-      - pip3 install --prefix=/app --no-build-isolation
-            bibtexparser pypdf pdfx
-    sources: []
+  # flatpak-pip-generator:
+  #   https://github.com/flatpak/flatpak-builder-tools/tree/master/pip
+  - python-deps.yaml
 
   # ── Alexandria ───────────────────────────────────────────────────────────
   - name: alexandria

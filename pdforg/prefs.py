@@ -8,9 +8,26 @@ import os
 
 _XDG_CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
     os.path.expanduser("~"), ".config")
-DEFAULT_PATH = os.path.join(_XDG_CONFIG, "pdforg", "config.json")
+DEFAULT_PATH = os.path.join(_XDG_CONFIG, "Alexandria", "config.json")
 
-_DEFAULT_LIBRARY = os.path.expanduser("~/pdfs")
+
+def _default_library():
+    """Default library root for fresh installs.
+
+    Uses `$XDG_DOCUMENTS_DIR` (per the user's locale and any custom
+    user-dirs.dirs setup) so this works under a Flatpak with only
+    `--filesystem=xdg-documents` granted. The folder name is
+    `Alexandria` — explicit ownership is clearer than a generic
+    `Papers` name when the user opens their Documents folder."""
+    try:
+        from gi.repository import GLib
+        docs = GLib.get_user_special_dir(
+            GLib.UserDirectory.DIRECTORY_DOCUMENTS)
+    except Exception:
+        docs = None
+    if not docs:
+        docs = os.path.expanduser("~/Documents")
+    return os.path.join(docs, "Alexandria")
 
 
 def load(path=DEFAULT_PATH):
@@ -35,11 +52,11 @@ def save(data, path=DEFAULT_PATH):
 
 
 def get_library_root():
-    """Env var > config file > ~/pdfs."""
+    """Env var > stored config > XDG-Documents/Alexandria."""
     env = os.environ.get("PDFORG_LIBRARY")
     if env:
         return env
     stored = load().get("library_root")
     if stored and isinstance(stored, str):
         return stored
-    return _DEFAULT_LIBRARY
+    return _default_library()

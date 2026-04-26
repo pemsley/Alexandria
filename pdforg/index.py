@@ -11,7 +11,7 @@ from datetime import date, timedelta
 
 XDG_STATE = os.environ.get("XDG_STATE_HOME") or os.path.join(
     os.path.expanduser("~"), ".local", "state")
-DEFAULT_DB_PATH = os.path.join(XDG_STATE, "pdforg", "library.db")
+DEFAULT_DB_PATH = os.path.join(XDG_STATE, "Alexandria", "library.db")
 
 
 CREATE_TABLE = """

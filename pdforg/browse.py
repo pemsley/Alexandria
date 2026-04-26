@@ -22,7 +22,7 @@ from gi.repository import Gtk, Gdk, GLib, Gio, GObject, Pango, Adw
 from . import (index, edit_dialog, importer, metrics, sidecar, extract,
                viewer, marks_config, prefs, watcher as watcher_mod,
                author_works, bibtex_import, bibtex_export, opener,
-               references_pdf)
+               references_pdf, discover)
 
 LIBRARY_ROOT = prefs.get_library_root()
 
@@ -38,54 +38,7 @@ def open_pdf(path):
         print("open failed:", path)
 
 
-_SAFE_INLINE_TAGS = ("i", "b", "u", "s", "em", "strong",
-                     "sub", "sup", "small", "tt")
-_SAFE_TAG_RE = re.compile(
-    r"</?(?:" + "|".join(_SAFE_INLINE_TAGS) + r")\s*/?>", re.IGNORECASE)
-
-# Pad missing spaces around inline tags: when a tag butts up against a
-# word character, insert a single space. Handles both opening tags
-# preceded by a word ("the<i>X") and closing tags followed by one
-# ("X</i>foo"). Punctuation is left alone.
-_PAD_OPEN_RE = re.compile(
-    r"(\w)(<(?:" + "|".join(_SAFE_INLINE_TAGS) + r")\b[^>]*>)", re.IGNORECASE)
-_PAD_CLOSE_RE = re.compile(
-    r"(</(?:" + "|".join(_SAFE_INLINE_TAGS) + r")\s*>)(\w)", re.IGNORECASE)
-
-
-def _pad_inline_tags(text):
-    text = _PAD_OPEN_RE.sub(r"\1 \2", text)
-    text = _PAD_CLOSE_RE.sub(r"\1 \2", text)
-    return text
-
-
-_PLACEHOLDER_OPEN = ""   # private-use Unicode, won't appear in real text
-_PLACEHOLDER_CLOSE = ""
-_PLACEHOLDER_RE = re.compile(_PLACEHOLDER_OPEN + r"(\d+)" + _PLACEHOLDER_CLOSE)
-
-
-def safe_pango_markup(text):
-    """Escape `text` for Pango markup, preserving a whitelist of inline
-    formatting tags (<i>, <b>, <sub>, <sup>, ...). Everything else —
-    stray '<', '>', '&', etc. — is escaped. Returns a string that's
-    safe to pass to Gtk.Label.set_markup()."""
-    if not text:
-        return ""
-    text = _pad_inline_tags(text)
-    placeholders = []
-
-    def _capture(m):
-        placeholders.append(m.group(0))
-        return "{}{}{}".format(
-            _PLACEHOLDER_OPEN, len(placeholders) - 1, _PLACEHOLDER_CLOSE)
-
-    protected = _SAFE_TAG_RE.sub(_capture, text)
-    escaped = GLib.markup_escape_text(protected)
-
-    def _restore(m):
-        return placeholders[int(m.group(1))]
-
-    return _PLACEHOLDER_RE.sub(_restore, escaped)
+from .markup import safe_pango_markup  # noqa: E402,F401  (re-export)
 
 
 _PREPRINT_DOI_PREFIXES = (
@@ -280,10 +233,10 @@ def citation_stars_markup(n):
     if n is None:
         return ""
     if n >= 800:
-        return ('<span foreground="#e89b00" weight="bold">'
+        return ('<span foreground="#b8860b" weight="bold">'
                 '★★★★★ Citation Classic Double</span>')
     if n >= 400:
-        return ('<span foreground="#6bbe23" weight="bold">'
+        return ('<span foreground="#2e8b2e" weight="bold">'
                 '★★★★ Citation Classic</span>')
     if n >= 200:
         return '<span foreground="#888888">★★★</span>'
@@ -778,6 +731,9 @@ class BrowserWindow(Adw.ApplicationWindow):
         # END: hamburger first → far right; then mark filter; then
         # search toggle. Order in pack_end is rightmost-first.
         hamburger_menu = Gio.Menu()
+        discover_section = Gio.Menu()
+        discover_section.append("Discover (OpenAlex)…", "win.discover")
+        hamburger_menu.append_section(None, discover_section)
         hamburger_menu.append("Preferences…", "win.preferences")
         hamburger_btn = Gtk.MenuButton()
         hamburger_btn.set_icon_name("open-menu-symbolic")
@@ -933,6 +889,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             ("import-folder", self._on_import_folder),
             ("import-bibtex", self._on_import_bibtex),
             ("export-bibtex", self._on_export_bibtex),
+            ("discover",      self._open_discover),
             ("preferences",   self._open_preferences),
         ):
             action = Gio.SimpleAction.new(name, None)
@@ -2810,6 +2767,9 @@ class BrowserWindow(Adw.ApplicationWindow):
             # original ordering. (Adw.HeaderBar has no insert-at-index.)
         self.mark_filter_dd = new_dd
 
+    def _open_discover(self, _btn):
+        discover.open_window(self, self.conn)
+
     def _open_preferences(self, _btn):
         dlg = Adw.PreferencesDialog()
         dlg.set_title("Preferences")
@@ -2930,7 +2890,7 @@ def main(argv):
         if gs is not None:
             gs.reset_property("gtk-application-prefer-dark-theme")
         Adw.StyleManager.get_default().set_color_scheme(
-            Adw.ColorScheme.PREFER_DARK)
+            Adw.ColorScheme.PREFER_LIGHT)
 
         win = BrowserWindow(app, conn)
         win.present()

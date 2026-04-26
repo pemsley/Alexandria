@@ -30,6 +30,13 @@
 
   <launchable type="desktop-id">io.github.pemsley.Alexandria.desktop</launchable>
 
+  <screenshots>
+    <screenshot type="default">
+      <caption>Browsing the library</caption>
+      <image>https://raw.githubusercontent.com/pemsley/Alexandria/main/data/screenshots/screenshot.png</image>
+    </screenshot>
+  </screenshots>
+
   <url type="homepage">https://github.com/pemsley/Alexandria</url>
   <url type="bugtracker">https://github.com/pemsley/Alexandria/issues</url>
 

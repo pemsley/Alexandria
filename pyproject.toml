@@ -15,6 +15,11 @@ dependencies = [
     "PyGObject>=3.42",
     "pdfx",
     "pypdf",
+    # bibtexparser v2 has the parse_string / middlewares API that
+    # bibtex.py uses; v1 doesn't. v2 is still pre-release on PyPI,
+    # so pin explicitly — pip otherwise refuses pre-releases.
+    # bibtexparser prior to v2 is not maintained.
+    "bibtexparser==2.0.0b9",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

@@ -78,24 +78,39 @@ Pending features, roughly grouped. Newest at the top of each section.
   Nature). What's still missing is the parser-driven fallback for
   PDFs without those annotations — see "Citation hit-testing
   fallback" below.)*
-- **Citation hit-testing fallback for un-annotated `[N]` PDFs.**
-  Click-to-jump and the resolved-reference popover currently work
-  on PDFs with publisher-embedded `/Link` annotations + named
-  destinations (Springer's `:CR<N>:`, Nature's `bm_CR<N>`). PDFs
-  without those — older / iText-reprocessed Wiley files, AUSPEX-
-  shaped Acta Cryst D papers — get the popover-fallback for the
-  References panel but no in-page click-to-jump. Path B from the
-  Step-2 design notes: walk each page's `get_text_layout()` rects,
-  find `\[\d+\]` (and `[N-M]` ranges via `expand_citation_token`)
-  in the body, find the `[N]` markers at the start of bibliography
-  entries, synthesise the same `(rect, target_page, target_top,
-  ref_n)` records `pdf_links.read_citation_links` produces, and
-  pour them into `self.citation_links` only on pages where Path A
-  produced nothing. The existing click handler / hover cursor /
-  `_jump_to` / reference popover all keep working unchanged
-  because they consume the index, not its source. Numbered-only;
-  author-year is a separate problem (see memory:
-  `project_acta_cryst_author_year`).
+- **Citation hit-testing fallback for un-annotated `[N]` PDFs
+  (numbered).** Click-to-jump and the resolved-reference popover
+  currently work on PDFs with publisher-embedded `/Link`
+  annotations + named destinations (Springer's `:CR<N>:`,
+  Nature's `bm_CR<N>`). PDFs without those — older /
+  iText-reprocessed Wiley files — get the popover-fallback for
+  the References panel but no in-page click-to-jump. Path B from
+  the Step-2 design notes: walk each page's `get_text_layout()`
+  rects, find `\[\d+\]` (and `[N-M]` ranges via
+  `expand_citation_token`) in the body, find the `[N]` markers at
+  the start of bibliography entries, synthesise the same `(rect,
+  target_page, target_top, ref_n)` records
+  `pdf_links.read_citation_links` produces, and pour them into
+  `self.citation_links` only on pages where Path A produced
+  nothing. The existing click handler / hover cursor / `_jump_to`
+  / reference popover all keep working unchanged because they
+  consume the index, not its source.
+- **Author-year citation hit-testing (Acta Cryst, IUCr).**
+  *Phase 1 done:* `references_pdf.parse_bibliography` now detects
+  author-year style and returns entries with `surname` / `year` /
+  `suffix` / `key` fields alongside `n`; the References popover
+  renders them with a `(Sheldrick, 2008)` chip. *Phase 2 still
+  open:* in-page click-to-jump from `(Surname, YYYY)` /
+  `Surname (YYYY)` patterns. Walk each page's text layout, regex
+  `\(([A-Z]\S+(?:\s+et\s+al\.)?,?\s+\d{4}[a-z]?(?:,?\s*\d{4}[a-z]?)*)\)`
+  for parenthetical and `[A-Z]\S+(?:\s+et\s+al\.)?\s+\(\d{4}[a-z]?\)`
+  for narrative form, look up `(surname_lower, year)` in the
+  parsed bibliography (tolerating "et al." → first-author
+  surname), synthesise the same `(rect, target_page, target_top,
+  ref_key)` records `pdf_links.read_citation_links` produces but
+  with `ref_key` repurposed as the canonical `key` string.
+  Multi-cite tokens like `(Smith, 2020; Jones, 2003)` and
+  `(Smith, 2020a, 2020b)` expand to multiple refs.
 - Page thumbnails sidebar.
 
 ## Discovery

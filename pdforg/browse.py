@@ -2374,9 +2374,11 @@ class BrowserWindow(Adw.ApplicationWindow):
 
     def _build_pdf_ref_row(self, r, existing_dois):
         """Render a bibliography entry parsed straight from the PDF.
-        Shape is `{n, text, doi}`: a `[N]` chip on the left, the raw
-        entry text wrapped in the middle, and a DOI button + in-
-        library marker on the right when we extracted a DOI."""
+        Shape is `{n, text, doi, ?key, ?surname, ?year, ?suffix}`:
+        a chip on the left (numbered as `[N]`, or author-year as
+        `(Surname, YYYY)`), the entry text wrapped in the middle,
+        and a DOI button + in-library marker on the right when a
+        DOI was extracted."""
         frame = Gtk.Frame()
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         box.set_margin_start(8)
@@ -2384,12 +2386,25 @@ class BrowserWindow(Adw.ApplicationWindow):
         box.set_margin_top(6)
         box.set_margin_bottom(6)
 
+        # Author-year entries get a `(Sheldrick, 2008)`-shape chip so
+        # the user can match it against the citations they see in the
+        # body text. Numbered entries keep the `[N]` chip. Width
+        # widened for the longer label (numbered chips remain compact
+        # within it).
+        if r.get("surname") and r.get("year"):
+            chip_text = "({}, {}{})".format(
+                r["surname"], r["year"], r.get("suffix") or "")
+            chip_chars = 18
+        else:
+            chip_text = "[{}]".format(r["n"])
+            chip_chars = 5
         n_lbl = Gtk.Label()
         n_lbl.set_markup(
-            "<small><span alpha='65%'>[{}]</span></small>".format(r["n"]))
+            "<small><span alpha='65%'>{}</span></small>".format(
+                GLib.markup_escape_text(chip_text)))
         n_lbl.set_valign(Gtk.Align.START)
         n_lbl.set_xalign(0.0)
-        n_lbl.set_width_chars(5)
+        n_lbl.set_width_chars(chip_chars)
         box.append(n_lbl)
 
         text_lbl = Gtk.Label(xalign=0.0)

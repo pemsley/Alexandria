@@ -68,6 +68,32 @@ _NOISE_RE = re.compile(
 # so the body part is allowed to be empty.
 _ENTRY_RE = re.compile(r"^\s*(?:\[(\d{1,3})\]|(\d{1,3})[\.\)])\s*(.*)$")
 
+# Author-year entry marker: `<Surname>, <I>.` at line start, where the
+# surname can be multi-word ("La Fortelle"), hyphenated ("Sheldrick-
+# Smith") or carry diacritics ("Müller"), and is followed by a comma
+# and an upper-case initial with its trailing period.
+#
+# This regex is the *gate* — it only decides "is this line the start
+# of a new bibliography entry?". Surname/year extraction happens in a
+# second pass on the joined entry text.
+_AUTHOR_YEAR_ENTRY_RE = re.compile(
+    r"^\s*"
+    # Multi-word capitalised surname. Allows "La Fortelle", "van der
+    # Berg", "de la Cruz" etc. — particles must be lowercase so we
+    # don't accidentally match things like "Materials and Methods".
+    r"[A-Z][a-zA-ZÀ-ſ''\-]+"
+    r"(?:\s+(?:[a-z][a-zA-ZÀ-ſ''\-]+|[A-Z][a-zA-ZÀ-ſ''\-]+))*"
+    r"\s*,\s+"
+    # Initial: at least one uppercase letter with trailing period.
+    r"[A-Z]\.")
+
+# Surname / year extraction from the joined entry text. The surname
+# is everything up to (but not including) the first comma; the year
+# is the first 4-digit `(YYYY[a-z]?)` parenthesised in the entry.
+_AUTHOR_YEAR_SURNAME_RE = re.compile(
+    r"^\s*([A-Z][a-zA-ZÀ-ſ''\- ]+?)\s*,")
+_AUTHOR_YEAR_YEAR_RE = re.compile(r"\((\d{4})([a-z])?\)")
+
 _DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 
 # Stitches DOI fragments split across lines (e.g. "10.1234/abc def"
@@ -183,14 +209,16 @@ def _doc_lines(doc):
 def _column_edges(lines):
     """Cluster line-x1 values to recover column left edges.
 
-    Returns a sorted list — one entry for single-column, two for
-    double-column. We bin x-coordinates and keep only well-populated
-    bins, so stray page-numbers and centred headers (which sit at
-    odd x positions) don't manufacture a fake gutter. The largest
-    gap among popular bins must be both wide (>80pt) and clearly
-    bigger than any within-column gap (>3x) before we call it a
-    two-column layout — otherwise a typical hanging indent of
-    15-20pt could masquerade as a column boundary."""
+    Bins x-coordinates to 10pt buckets, keeps the well-populated
+    bins, and groups them into clusters separated by gaps > 80pt.
+    Returns the leftmost bin of each cluster — one entry for a
+    single-column paper, two for a double-column paper, three or
+    more when there's also a sidebar / page-side label column.
+
+    Hanging-indent continuations sit ~10–20pt right of their marker
+    line, so they fall in the same cluster as the marker and don't
+    inflate the edge count. The 80pt gap threshold is large enough
+    to clear that, small enough to detect any real gutter."""
     if not lines:
         return []
     if len(lines) < 5:
@@ -203,17 +231,15 @@ def _column_edges(lines):
     popular = sorted(k for k, c in bins.items() if c >= threshold)
     if not popular:
         return [min(rec[2] for rec in lines)]
-    if len(popular) < 2:
-        return [popular[0]]
-    gaps = sorted(
-        ((popular[i + 1] - popular[i], i) for i in range(len(popular) - 1)),
-        reverse=True,
-    )
-    biggest, idx = gaps[0]
-    second = gaps[1][0] if len(gaps) > 1 else 0.0
-    if biggest > 80.0 and biggest > 3.0 * max(second, 1.0):
-        return [popular[0], popular[idx + 1]]
-    return [popular[0]]
+    edges = [popular[0]]
+    for i in range(1, len(popular)):
+        # Compare against the immediately-previous bin so a wide
+        # cluster (40, 50, 60, 80, 100, 150) stays one cluster —
+        # comparing against edges[-1] would let small in-cluster
+        # gaps eventually exceed 80pt and spuriously split.
+        if popular[i] - popular[i - 1] > 80:
+            edges.append(popular[i])
+    return edges
 
 
 def _column_index(x, edges):
@@ -410,22 +436,43 @@ def parse_bibliography(pdf_path):
     if not bib:
         return []
 
+    # Detect the bibliography style by sampling entry-shaped lines.
+    # Numbered ("[12]" or "12.") wins by default; author-year fires
+    # when entries look like "Surname, I.…(YYYY)." (Acta Cryst, IUCr,
+    # most older crystallography journals). Sampling avoids
+    # mis-detecting on a paper with body-text noise above.
+    style = _detect_bib_style(bib, edges)
+
+    def _is_marker(rec):
+        if style == "author-year":
+            if not _AUTHOR_YEAR_ENTRY_RE.match(rec[1]):
+                return False
+            # Position-aware: marker lines sit at a column-left edge;
+            # hanging-indent continuation lines (which often start with
+            # a co-author surname like "Wüthrich, K. & Wilson, I. A.")
+            # are indented further and must NOT be treated as new
+            # entries. Tolerance of 10pt covers normal x rounding plus
+            # the 10pt-binned edge values from `_column_edges` (a
+            # marker at x=44.8 lands in the bin labelled 40).
+            return any(abs(rec[2] - e) <= 10.0 for e in edges)
+        return bool(_ENTRY_RE.match(rec[1]))
+
     # Running headers ("Carbery et al. Journal of Cheminformatics")
     # and journal-issue strings appear at the top of each page. They
-    # don't match _ENTRY_RE, so without filtering they'd attach as
-    # continuation lines to whichever entry was current when the page
-    # broke. Drop any non-marker line on a page that sits *above* the
-    # first marker on that page.
+    # don't match the marker regex, so without filtering they'd
+    # attach as continuation lines to whichever entry was current
+    # when the page broke. Drop any non-marker line on a page that
+    # sits *above* the first marker on that page.
     page_first_marker_y = {}
     for rec in bib:
-        pi, text, _, y1, _, _ = rec
-        if _ENTRY_RE.match(text):
+        pi, _, _, y1, _, _ = rec
+        if _is_marker(rec):
             prev = page_first_marker_y.get(pi)
             if prev is None or y1 < prev:
                 page_first_marker_y[pi] = y1
     bib = [
         rec for rec in bib
-        if _ENTRY_RE.match(rec[1])
+        if _is_marker(rec)
         or rec[0] not in page_first_marker_y
         or rec[3] >= page_first_marker_y[rec[0]]
     ]
@@ -441,14 +488,20 @@ def parse_bibliography(pdf_path):
     # against.
     entries = []
     current = None
+    n_counter = 0
     for rec in bib:
         pi, text, _, y1, _, _ = rec
-        m = _ENTRY_RE.match(text)
-        if m:
+        if _is_marker(rec):
             if current is not None:
                 entries.append(current)
-            n = int(m.group(1) or m.group(2))
-            tail = m.group(3).strip()
+            if style == "author-year":
+                n_counter += 1
+                n = n_counter
+                tail = text.strip()  # whole line is the entry's first chunk
+            else:
+                m = _ENTRY_RE.match(text)
+                n = int(m.group(1) or m.group(2))
+                tail = m.group(3).strip()
             current = (n, [tail] if tail else [], pi, y1)
         elif current is not None:
             stripped = text.strip()
@@ -468,15 +521,72 @@ def parse_bibliography(pdf_path):
             continue
         joined = _stitch_wrapped(joined)
         m = _DOI_RE.search(joined)
-        out.append({
+        rec_out = {
             "n": n,
             "text": joined,
             "doi": _normalize_doi(m.group(0)) if m else None,
             "page": pi,
             "y_top_poppler": y_top,
-        })
+        }
+        if style == "author-year":
+            sm = _AUTHOR_YEAR_SURNAME_RE.match(joined)
+            ym = _AUTHOR_YEAR_YEAR_RE.search(joined)
+            if sm and ym:
+                surname = sm.group(1).strip()
+                year = ym.group(1)
+                suffix = ym.group(2) or ""
+                rec_out["surname"] = surname
+                rec_out["year"] = year
+                rec_out["suffix"] = suffix
+                rec_out["key"] = "{}{}{}".format(
+                    surname.lower(), year, suffix)
+        out.append(rec_out)
+    if style == "author-year":
+        _disambiguate_author_year(out)
     out.sort(key=lambda r: r["n"])
     return out
+
+
+def _detect_bib_style(bib, edges):
+    """Decide whether `bib` is a numbered or author-year bibliography,
+    based on how many sample entry-shaped lines match each pattern.
+    Sampling rather than first-match because publishers occasionally
+    sneak a stray line at the top that fits the wrong style. Defaults
+    to 'numbered' on a tie or when neither matches."""
+    n_numbered = 0
+    n_author_year = 0
+    for rec in bib[:60]:
+        text = rec[1]
+        if _ENTRY_RE.match(text):
+            n_numbered += 1
+            continue
+        if _AUTHOR_YEAR_ENTRY_RE.match(text):
+            # Position-aware: only count column-edge lines, so we
+            # don't over-count hanging-indent continuations.
+            if any(abs(rec[2] - e) <= 10.0 for e in edges):
+                n_author_year += 1
+    return "author-year" if n_author_year > n_numbered else "numbered"
+
+
+def _disambiguate_author_year(entries):
+    """When several entries share the same (surname, year) without an
+    explicit a/b/c suffix in the parenthesised year, assign suffixes
+    in document order. Mutates `entries` in place. Entries whose year
+    already carries a suffix from the source PDF are left alone."""
+    by_base = {}
+    for e in entries:
+        if "surname" not in e or e.get("suffix"):
+            continue
+        base = (e["surname"].lower(), e["year"])
+        by_base.setdefault(base, []).append(e)
+    for base, group in by_base.items():
+        if len(group) < 2:
+            continue
+        group.sort(key=lambda r: (r.get("page", 0), r.get("y_top_poppler", 0)))
+        for i, e in enumerate(group):
+            e["suffix"] = chr(ord("a") + i)
+            e["key"] = "{}{}{}".format(
+                e["surname"].lower(), e["year"], e["suffix"])
 
 
 def bibliography_positions(pdf_path):

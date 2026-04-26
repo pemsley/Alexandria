@@ -897,6 +897,15 @@ class BrowserWindow(Adw.ApplicationWindow):
 
         self._reload(None)
 
+        # Toast a warning if the SQLite DB landed on a network
+        # filesystem. WAL files don't survive NFS-style locking
+        # quirks intact and the cache is regeneratable, so the right
+        # call is to nudge the user to set XDG_STATE_HOME somewhere
+        # local. Defer with idle_add so the toast appears after the
+        # window has finished mapping.
+        if index.is_network_filesystem(index.DEFAULT_DB_PATH):
+            GLib.idle_add(self._toast_network_db)
+
         # Drop target: accept files (Gdk.FileList) dragged in from the
         # file manager. Copy each PDF into LIBRARY_ROOT and import it;
         # duplicates are detected and the copy discarded.
@@ -1230,12 +1239,39 @@ class BrowserWindow(Adw.ApplicationWindow):
         self._run_import(paths)
 
     def _run_import(self, paths):
+        # Stage each picked PDF into the library root before indexing.
+        # This makes Import a *copy* operation: the user's source file
+        # stays untouched and the sidecar JSON / thumbnail are written
+        # alongside the in-library copy. Required inside Flatpak (the
+        # FileChooser portal hands us a transient bind-mount that
+        # disappears once the app stops referencing it) and a
+        # quality-of-life win outside it (no scattered .meta.json
+        # files on the user's Desktop / Downloads).
+        library_root = prefs.get_library_root()
         n = len(paths)
         for i, p in enumerate(paths, 1):
             try:
-                rec, status = importer.import_pdf(self.conn, p)
+                staged, stage_status = importer.stage_into_library(
+                    p, library_root, conn=self.conn)
             except Exception as e:
-                print("import failed for {}: {}".format(p, e))
+                print("stage failed for {}: {}".format(p, e))
+                GLib.idle_add(self._update_progress, i, n, p, None, "error")
+                continue
+            if stage_status == "duplicate":
+                # SHA hit against an already-indexed file. Skip the
+                # full import; just report what we matched against so
+                # the progress line says "DUP of <existing.pdf>".
+                try:
+                    rec = sidecar.read(sidecar.sidecar_path_for(staged))
+                except Exception:
+                    rec = {"pdf_path": staged}
+                rec.setdefault("pdf_path", staged)
+                GLib.idle_add(self._update_progress, i, n, p, rec, "duplicate")
+                continue
+            try:
+                rec, status = importer.import_pdf(self.conn, staged)
+            except Exception as e:
+                print("import failed for {}: {}".format(staged, e))
                 rec, status = None, "error"
             GLib.idle_add(self._update_progress, i, n, p, rec, status)
         GLib.idle_add(self._end_progress, None)
@@ -1625,6 +1661,23 @@ class BrowserWindow(Adw.ApplicationWindow):
         t = Adw.Toast.new(message)
         t.set_timeout(timeout)
         self.toast_overlay.add_toast(t)
+
+    def _toast_network_db(self):
+        """Surface a one-shot warning when the SQLite cache lives on
+        NFS / SMB / sshfs. Fired from the constructor via
+        GLib.idle_add. See docs/design/database-and-nfs.md for why
+        this matters."""
+        msg = ("Warning: library.db is on a network filesystem. "
+               "Set XDG_STATE_HOME to a local-disk path.")
+        t = Adw.Toast.new(msg)
+        t.set_timeout(10)
+        self.toast_overlay.add_toast(t)
+        # Mirror to stderr — terminal users see it without waiting
+        # for the toast and have a record after dismissal.
+        print("Alexandria: " + msg + " (db at {})".format(
+            index.DEFAULT_DB_PATH),
+              file=sys.stderr)
+        return False
 
     # --- Status-line "show ↗" affordance ------------------------------
 

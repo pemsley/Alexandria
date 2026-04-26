@@ -7,19 +7,19 @@ Pending features, roughly grouped. Newest at the top of each section.
 (Nothing pinned here right now — see sections below.)
 
 ## Import / ingestion
-- **Importing PDFs from outside `~/Documents/Alexandria` (Flatpak).**
-  Under `--filesystem=xdg-documents`, only the library tree is
-  directly readable. Files picked via `Gtk.FileDialog` get transient
-  access via the document portal (paths like
-  `/run/user/<uid>/doc/<id>/foo.pdf`) — `shutil.copy2(src, target)`
-  in `_start_import_paths` (browse.py:1480) reads from the portal
-  mount and writes into the library. That should work, but needs
-  end-to-end verification on a real Flatpak install. Drag-and-drop
-  and any CLI-handed paths from outside the library tree will *not*
-  go through the portal and will silently fail to read; the import
-  flow needs an explicit "this file is outside the sandbox" path —
-  re-prompt the user via `Gtk.FileDialog` to relaunder the path
-  through the portal, or surface a clear error message.
+- **Drag-and-drop / CLI imports from outside the library tree
+  (Flatpak).** Menu-driven Import Files / Import Folder now go
+  through `importer.stage_into_library`, which copies the picked PDF
+  into the library root before indexing — works inside Flatpak via
+  the FileChooser portal's transient bind-mount, and outside Flatpak
+  it consolidates everything under `~/Documents/Alexandria` instead
+  of scattering sidecars to wherever the source PDF lived. Still
+  open: drag-and-drop and any CLI-handed paths from outside the
+  library tree don't go through the portal and will silently fail to
+  read inside Flatpak. Need an explicit "this file is outside the
+  sandbox" path — either re-prompt the user via `Gtk.FileDialog` to
+  relaunder the path through the portal, or surface a clear error
+  message.
 - **Multi-directory libraries / multiple catalogs.** Currently
   `LIBRARY_ROOT` is a single directory. Some users want separate
   catalogs (e.g. "Personal", "Work", "Crystallography teaching")
@@ -229,8 +229,27 @@ Pending features, roughly grouped. Newest at the top of each section.
       `conn.close()` so the DB lock is released cleanly even if a
       thread is still finishing.
 
-## Compatibility
-- GTK4 < 4.10 fallback (some widgets we use are 4.10+)
+## Multi-host / NFS
+See `docs/design/database-and-nfs.md` for the full concurrency
+model. Single-writer-at-a-time on a shared library is safe; two
+active editors on two hosts is not. These items would harden it.
+- **Polling watcher fallback over NFS.** `GFileMonitor` is
+  inotify-backed, which doesn't fire for sidecar writes from
+  another NFS client. Layer a periodic `os.scandir` of the library
+  on top of the existing watcher signal and diff mtimes; only trip
+  it when the library root is detected as a network filesystem
+  (re-use `index.is_network_filesystem`). Catches host-A-edits-while-
+  host-B-runs.
+- **Hostname-suffixed sidecar tmp paths.** Switch
+  `sidecar.write` from `path + ".tmp"` to `path +
+  ".<host>.<pid>.tmp"`. Concurrent writers from two hosts won't
+  stomp on each other's tmp file mid-flush. Doesn't fix
+  last-rename-wins but eliminates the corrupt-tmp race.
+- **Read-modify-write with mtime check before rename.** Before
+  `rename(tmp, sidecar)`, re-stat the sidecar; if mtime changed
+  since the read, abort and re-merge. Catches the common
+  cross-host edit race instead of silently dropping one of the
+  two edits.
 
 ## Speculative / maybe-never
 

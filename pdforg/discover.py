@@ -54,6 +54,7 @@ class DiscoverWindow(Adw.Window):
 
         self.stack.add_titled(self._build_author_page(), "author", "By author")
         self.stack.add_titled(self._build_topic_page(),  "topic",  "By topic")
+        self.stack.add_titled(self._build_title_page(),  "title",  "By title")
 
         switcher = Adw.ViewSwitcher()
         switcher.set_stack(self.stack)
@@ -187,7 +188,10 @@ class DiscoverWindow(Adw.Window):
             self._a_results_box.append(self._build_author_row(r))
 
     def _build_author_row(self, r):
-        frame = Gtk.Frame()
+        """Build one author result row. The whole row is a button —
+        click anywhere on it to open the author-works window. A
+        'go-next' chevron on the right makes the affordance obvious;
+        the row hover-highlights so it doesn't look static."""
         outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         outer.set_margin_start(10)
         outer.set_margin_end(10)
@@ -239,16 +243,23 @@ class DiscoverWindow(Adw.Window):
 
         outer.append(info)
 
-        # Right side: open author-works window.
-        open_btn = Gtk.Button(label="Show works")
-        open_btn.set_valign(Gtk.Align.CENTER)
-        open_btn.add_css_class("flat")
-        open_btn.connect(
-            "clicked", lambda _b, rr=r: self._open_author_works(rr))
-        outer.append(open_btn)
+        # Affordance: chevron + label so it's obvious the row is
+        # clickable, not just informational.
+        right = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        right.set_valign(Gtk.Align.CENTER)
+        right.append(Gtk.Label(label="Show works"))
+        right.append(Gtk.Image.new_from_icon_name("go-next-symbolic"))
+        outer.append(right)
 
-        frame.set_child(outer)
-        return frame
+        # Whole-row button: click anywhere to drill in.
+        btn = Gtk.Button()
+        btn.add_css_class("flat")
+        btn.set_child(outer)
+        btn.set_tooltip_text(
+            "Open papers by " + (r.get("display_name") or "this author"))
+        btn.connect(
+            "clicked", lambda _b, rr=r: self._open_author_works(rr))
+        return btn
 
     def _open_author_works(self, r):
         """Hand off to the existing AuthorWorksWindow. We synthesise the
@@ -366,6 +377,121 @@ class DiscoverWindow(Adw.Window):
         for r in rows:
             self._t_results_box.append(self._build_work_row(r, existing))
         return False
+
+    # =========================================================
+    # By title
+    # =========================================================
+
+    def _build_title_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.set_margin_top(10)
+        box.set_margin_bottom(10)
+
+        controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._ti_query = Gtk.Entry()
+        controls.append(_form_row("Title", self._ti_query))
+        self._ti_query.set_placeholder_text(
+            "e.g. AUSPEX graphical tool for X-ray diffraction "
+            "(full or partial title)")
+
+        opts = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        opts.append(Gtk.Label(label="Year ≥"))
+        self._ti_year = Gtk.Entry()
+        self._ti_year.set_max_length(4)
+        self._ti_year.set_width_chars(5)
+        self._ti_year.set_placeholder_text("(any)")
+        opts.append(self._ti_year)
+        opts.append(Gtk.Label(label="  Sort"))
+        sl = Gtk.StringList()
+        for label in ("Relevance", "Most cited", "Most recent"):
+            sl.append(label)
+        self._ti_sort = Gtk.DropDown(model=sl)
+        # Title queries usually want the closest match by relevance,
+        # not "most cited paper that mentions these words."
+        self._ti_sort.set_selected(0)
+        opts.append(self._ti_sort)
+        controls.append(opts)
+
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._ti_search_btn = Gtk.Button(label="Search OpenAlex")
+        self._ti_search_btn.add_css_class("suggested-action")
+        self._ti_search_btn.connect("clicked", self._on_title_search)
+        btn_row.append(self._ti_search_btn)
+        controls.append(btn_row)
+
+        self._ti_query.connect("activate", self._on_title_search)
+
+        box.append(controls)
+
+        self._ti_status = Gtk.Label(xalign=0.0)
+        box.append(self._ti_status)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_vexpand(True)
+        scrolled.set_hexpand(True)
+        self._ti_results_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        scrolled.set_child(self._ti_results_box)
+        box.append(scrolled)
+        return box
+
+    def _on_title_search(self, _btn):
+        query = (self._ti_query.get_text() or "").strip()
+        if not query:
+            self._ti_status.set_text("Enter a title (or part of one).")
+            return
+        year_text = (self._ti_year.get_text() or "").strip()
+        year_min = None
+        if year_text:
+            try:
+                year_min = int(year_text)
+            except ValueError:
+                self._ti_status.set_text("Year must be a number.")
+                return
+        sort_idx = self._ti_sort.get_selected()
+        sort = ("relevance", "cited", "recent")[max(0, min(sort_idx, 2))]
+
+        self._ti_status.set_text("Searching OpenAlex…")
+        self._ti_search_btn.set_sensitive(False)
+        self._clear_box(self._ti_results_box)
+
+        def _do():
+            try:
+                rows = metrics.search_works(
+                    query=query, limit=20, sort=sort,
+                    year_min=year_min, search_field="title")
+            except Exception as e:
+                rows = []
+                err = str(e)
+            else:
+                err = None
+            GLib.idle_add(self._after_title_search, rows, err)
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _after_title_search(self, rows, err):
+        self._ti_search_btn.set_sensitive(True)
+        if err:
+            self._ti_status.set_markup(
+                "<span foreground='#cc3333'>Search failed: {}</span>".format(
+                    GLib.markup_escape_text(err)))
+            return False
+        if not rows:
+            self._ti_status.set_text("No results.")
+            return False
+        self._ti_status.set_markup(
+            "<small>{} result{}</small>".format(
+                len(rows), "" if len(rows) == 1 else "s"))
+        existing = self.parent_window._existing_dois_set()
+        for r in rows:
+            self._ti_results_box.append(self._build_work_row(r, existing))
+        return False
+
+    # =========================================================
+    # Shared work-row (topic + title results)
+    # =========================================================
 
     def _build_work_row(self, r, existing_dois):
         """Reuse the parent window's `_build_related_row` for shape

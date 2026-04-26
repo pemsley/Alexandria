@@ -2519,9 +2519,24 @@ class BrowserWindow(Adw.ApplicationWindow):
             info.append(meta)
         box.append(info)
 
-        # Right side: DOI button (open in browser) + in-library tag.
+        # Right side: in-library tag (when applicable), OA chip
+        # (when known to be Open Access), DOI button.
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         right.set_valign(Gtk.Align.CENTER)
+
+        # Open Access chip — only renders when `is_oa` is true. Other
+        # callers (cited-by / references popovers) don't currently
+        # populate this field, so the chip is invisible there until
+        # they do.
+        if r.get("is_oa"):
+            oa_chip = Gtk.Label()
+            oa_chip.set_markup(
+                '<span foreground="#2a7a7a" weight="bold">'
+                '<small>OA</small></span>')
+            oa_chip.set_tooltip_text(
+                r.get("oa_url") or "Open Access")
+            right.append(oa_chip)
+
         doi = (r.get("doi") or "").lower()
         if doi and doi in existing_dois:
             in_lib = Gtk.Label()

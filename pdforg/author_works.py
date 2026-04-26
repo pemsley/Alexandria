@@ -283,25 +283,44 @@ class AuthorWorksWindow(Gtk.Window):
                 GLib.markup_escape_text(name)))
         hleft.append(name_lbl)
 
-        sub = []
+        # Sub line: ORCID · current institution + small history button
+        # that opens a popover with the full prior-institution list.
+        # The label gets filled in once the profile arrives — for
+        # callers that don't pass `institution` in the authorship
+        # (e.g. Discover) the line stays sparse until then.
+        sub_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._sub_orcid_lbl = Gtk.Label(xalign=0.0)
+        self._sub_orcid_lbl.set_selectable(True)
+        self._sub_orcid_lbl.set_visible(False)
         if self.authorship.get("orcid"):
-            sub.append("ORCID " + self.authorship["orcid"])
+            self._sub_orcid_lbl.set_markup(
+                "<span size='small' alpha='75%'>ORCID {}</span>".format(
+                    GLib.markup_escape_text(self.authorship["orcid"])))
+            self._sub_orcid_lbl.set_visible(True)
+        sub_row.append(self._sub_orcid_lbl)
+
+        self._sub_inst_lbl = Gtk.Label(xalign=0.0)
+        self._sub_inst_lbl.set_visible(False)
         if self.authorship.get("institution"):
-            sub.append(self.authorship["institution"])
-        if sub:
-            sub_lbl = Gtk.Label(xalign=0.0)
-            sub_lbl.set_markup(
-                "<span size='small' alpha='75%'>{}</span>".format(
-                    GLib.markup_escape_text("  ·  ".join(sub))))
-            sub_lbl.set_selectable(True)
-            # GtkLabel selects all its text on focus by default. The
-            # window opens with this label often the first focusable,
-            # so it arrives pre-selected — visually noisy. Clear the
-            # selection once after the window is shown; the label
-            # stays selectable for on-demand copy-paste.
-            GLib.idle_add(
-                lambda: (sub_lbl.select_region(0, 0), False)[1])
-            hleft.append(sub_lbl)
+            self._sub_inst_lbl.set_markup(
+                "<span size='small' alpha='75%'>·  {}</span>".format(
+                    GLib.markup_escape_text(self.authorship["institution"])))
+            self._sub_inst_lbl.set_visible(True)
+        sub_row.append(self._sub_inst_lbl)
+
+        self._aff_history_btn = Gtk.MenuButton()
+        self._aff_history_btn.set_icon_name("document-open-recent-symbolic")
+        self._aff_history_btn.add_css_class("flat")
+        self._aff_history_btn.set_tooltip_text(
+            "Show all prior institutions")
+        self._aff_history_btn.set_visible(False)
+        sub_row.append(self._aff_history_btn)
+
+        # Clear any auto-selection once after present (selectable
+        # labels grab focus and select-all by default).
+        GLib.idle_add(
+            lambda: (self._sub_orcid_lbl.select_region(0, 0), False)[1])
+        hleft.append(sub_row)
 
         self.stats_lbl = Gtk.Label(xalign=0.0)
         self.stats_lbl.set_markup("<span size='small' alpha='65%'>Loading…</span>")
@@ -469,6 +488,8 @@ class AuthorWorksWindow(Gtk.Window):
                 self.hist_area.set_visible(True)
                 self.hist_area.queue_draw()
 
+            self._populate_affiliations(profile.get("affiliations") or [])
+
         if coauths:
             self.coauth_label.set_visible(True)
             self.coauth_box.set_visible(True)
@@ -491,6 +512,66 @@ class AuthorWorksWindow(Gtk.Window):
         for w in works:
             self.list_box.append(self._make_work_row(w))
         return False
+
+    # --- Affiliations -------------------------------------------------
+
+    def _populate_affiliations(self, rows):
+        """Set the header's "current institution" label to the most
+        recent affiliation, and stash the full list behind a popover
+        on `self._aff_history_btn`. Hides the button if the list is
+        empty or the author has only one institution (no history to
+        show)."""
+        if not rows:
+            return
+        # Most-recent first comes from metrics.fetch_author_profile;
+        # row[0] is "where they are now" with the usual asterisk.
+        current = rows[0]
+        if not self._sub_inst_lbl.get_visible():
+            self._sub_inst_lbl.set_markup(
+                "<span size='small' alpha='75%'>·  {}</span>".format(
+                    GLib.markup_escape_text(current["display_name"])))
+            self._sub_inst_lbl.set_visible(True)
+
+        if len(rows) <= 1:
+            return  # nothing extra to surface
+        # Build the popover contents — a vertically scrollable list
+        # of "year_range  institution_name" lines.
+        pop = Gtk.Popover()
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        outer.set_margin_start(10)
+        outer.set_margin_end(10)
+        outer.set_margin_top(8)
+        outer.set_margin_bottom(8)
+        hdr = Gtk.Label(xalign=0.0)
+        hdr.set_markup(
+            "<b>Prior institutions</b>  "
+            "<span alpha='65%' size='small'>({})</span>".format(len(rows)))
+        outer.append(hdr)
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_min_content_height(min(360, 26 * len(rows) + 10))
+        scrolled.set_min_content_width(420)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        for r in rows:
+            body.append(self._make_aff_row(r))
+        scrolled.set_child(body)
+        outer.append(scrolled)
+        pop.set_child(outer)
+        self._aff_history_btn.set_popover(pop)
+        self._aff_history_btn.set_visible(True)
+
+    def _make_aff_row(self, r):
+        ymin, ymax = r["year_min"], r["year_max"]
+        years = "{}".format(ymin) if ymin == ymax else "{}–{}".format(ymin, ymax)
+        lbl = Gtk.Label(xalign=0.0)
+        lbl.set_wrap(True)
+        lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        lbl.set_max_width_chars(80)
+        lbl.set_markup(
+            "<span size='small'>"
+            "<tt>{:>9}</tt>  <span alpha='80%'>{}</span>"
+            "</span>".format(
+                years, GLib.markup_escape_text(r["display_name"])))
+        return lbl
 
     def _open_coauthor(self, c):
         authorship = {

@@ -288,10 +288,17 @@ def fetch_works_by_author(orcid=None, openalex_id=None, since=None,
 
 def fetch_author_profile(orcid=None, openalex_id=None):
     """Return {works_count, cited_by_count, h_index, i10_index, name,
-    counts_by_year: [{year, works_count, cited_by_count}, ...]} or None.
+    counts_by_year: [{year, works_count, cited_by_count}, ...],
+    affiliations: [{display_name, openalex_id, year_min, year_max}, ...]}
+    or None.
 
-    counts_by_year is OpenAlex's per-year totals (capped at ~10 years).
-    Sorted oldest-first."""
+    counts_by_year is OpenAlex's per-year totals (capped at ~10 years),
+    sorted oldest-first.
+
+    affiliations is the author's full institution history collapsed
+    to one row per institution with the year span condensed to
+    (min, max). Sorted with the most-recent year_max first — the
+    "where do they work *now*" question gets a fast answer."""
     if not orcid and not openalex_id:
         return None
     if orcid:
@@ -319,6 +326,22 @@ def fetch_author_profile(orcid=None, openalex_id=None):
                 "cited_by_count": r.get("cited_by_count") or 0,
             })
     cby.sort(key=lambda r: r["year"])
+    aff_rows = []
+    for af in (data.get("affiliations") or []):
+        inst = af.get("institution") or {}
+        name = inst.get("display_name")
+        if not name:
+            continue
+        years = [y for y in (af.get("years") or []) if isinstance(y, int)]
+        if not years:
+            continue
+        aff_rows.append({
+            "display_name": name,
+            "openalex_id": _strip_openalex_id(inst.get("id")),
+            "year_min": min(years),
+            "year_max": max(years),
+        })
+    aff_rows.sort(key=lambda r: r["year_max"], reverse=True)
     return {
         "name": data.get("display_name"),
         "works_count": data.get("works_count") or 0,
@@ -326,6 +349,7 @@ def fetch_author_profile(orcid=None, openalex_id=None):
         "h_index": summ.get("h_index"),
         "i10_index": summ.get("i10_index"),
         "counts_by_year": cby,
+        "affiliations": aff_rows,
     }
 
 
@@ -958,7 +982,16 @@ def search_authors(name=None, institution=None, orcid=None, limit=15):
     else:
         if not name:
             return []
-        filt = []
+        # Use `display_name.search:` rather than the top-level
+        # `search=` parameter. The latter also matches against
+        # `display_name_alternatives`, where OpenAlex sometimes
+        # stores whole author-list strings parsed from a paper's
+        # metadata (e.g. Venter's record carries
+        # "Venter, J. Craig; Smith, Hamilton O.; Hutchison, III,
+        # Clyde A.; Gibson, Daniel G." as an alternative name).
+        # That made unrelated co-authors surface in name searches —
+        # tightening to `display_name.search` cuts most of it.
+        filt = ["display_name.search:" + name]
         if institution:
             inst_hits = resolve_institution(institution, limit=1)
             if not inst_hits:
@@ -968,12 +1001,10 @@ def search_authors(name=None, institution=None, orcid=None, limit=15):
                 "affiliations.institution.id:"
                 + matched_institution["openalex_id"])
         params = [
-            ("search", name),
             ("per_page", str(max(1, min(int(limit), 50)))),
             ("select", select),
+            ("filter", ",".join(filt)),
         ]
-        if filt:
-            params.append(("filter", ",".join(filt)))
     if OPENALEX_MAILTO:
         params.append(("mailto", OPENALEX_MAILTO))
     url = "https://api.openalex.org/authors?" + urllib.parse.urlencode(params)
@@ -1010,14 +1041,28 @@ _WORKS_SEARCH_SORTS = {
 }
 
 
-def search_works(query, limit=25, sort="relevance", year_min=None):
-    """Free-text search across OpenAlex Works (title + abstract +
-    fulltext on indexed papers). Used by the Discover dialog's
-    "By topic" tab.
+def search_works(query, limit=25, sort="relevance", year_min=None,
+                 require_doi=True, search_field="any"):
+    """Free-text search across OpenAlex Works. Used by the Discover
+    dialog's "By topic" and "By title" tabs.
+
+    `search_field`:
+      * `"any"` (default) — top-level `search=` parameter; matches
+        title + abstract + fulltext (when indexed). Right for
+        topic / keyword queries.
+      * `"title"` — `filter=title.search:` instead; matches the
+        title field only. Right for "find me this specific paper"
+        queries where the user knows (most of) the title.
 
     Result shape matches `fetch_cited_by` / `fetch_references` so
     `_build_related_row` in browse.py renders them unchanged.
-    Returns [] on failure / no matches."""
+    Returns [] on failure / no matches.
+
+    `require_doi=True` (the default) asks OpenAlex to only return
+    works with a DOI — internal reports / theses / dataset records
+    without a DOI are noise for the Discover flow because the "Add
+    to library" path uses DOI as the de-duplication key. Pass
+    False if a future caller wants the raw response."""
     if not query:
         return []
     sort_key = _WORKS_SEARCH_SORTS.get(sort, _WORKS_SEARCH_SORTS["relevance"])
@@ -1029,8 +1074,11 @@ def search_works(query, limit=25, sort="relevance", year_min=None):
             filt.append("from_publication_date:{}-01-01".format(int(year_min)))
         except (TypeError, ValueError):
             pass
+    if require_doi:
+        filt.append("has_doi:true")
+    if search_field == "title":
+        filt.append("title.search:" + query)
     params = [
-        ("search", query),
         ("sort", sort_key),
         ("per_page", str(max(1, min(int(limit), 50)))),
         ("select",
@@ -1038,6 +1086,8 @@ def search_works(query, limit=25, sort="relevance", year_min=None):
          "authorships,primary_location,cited_by_count,open_access,"
          "best_oa_location"),
     ]
+    if search_field != "title":
+        params.insert(0, ("search", query))
     if filt:
         params.append(("filter", ",".join(filt)))
     if OPENALEX_MAILTO:

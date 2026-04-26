@@ -81,8 +81,13 @@ def _migrate(conn):
     if "is_supplementary" not in cols:
         conn.execute(
             "ALTER TABLE papers ADD COLUMN is_supplementary INTEGER DEFAULT 0")
+    if "highlights_text" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN highlights_text TEXT")
+    if "comments_text" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN comments_text TEXT")
     conn.commit()
     _reencode_unicode_columns(conn)
+    _backfill_highlight_text(conn)
 
 
 def _reencode_unicode_columns(conn):
@@ -133,40 +138,113 @@ def _reencode_unicode_columns(conn):
               "rebuilt papers_fts.".format(rows_changed))
 
 
+def _highlights_blob(record):
+    """Concatenate highlight selection text into a single string (or
+    None). Used for FTS so 'find papers where I highlighted X' works."""
+    parts = []
+    for h in (record.get("highlights") or []):
+        t = (h.get("text") or "").strip()
+        if t:
+            parts.append(t)
+    return "\n".join(parts) or None
+
+
+def _comments_blob(record):
+    """Concatenate comment text into a single string (or None). Each
+    comment is a free-form note the user attached to a highlight."""
+    parts = []
+    for h in (record.get("highlights") or []):
+        c = (h.get("comment") or "").strip()
+        if c:
+            parts.append(c)
+    return "\n".join(parts) or None
+
+
+def _backfill_highlight_text(conn):
+    """One-time migration: walk each row whose highlights_text /
+    comments_text is NULL, read the sidecar from disk, and populate
+    the columns. Drops papers_fts so _ensure_fts() rebuilds it with
+    the new content."""
+    cur = conn.execute(
+        "SELECT id, sidecar_path FROM papers"
+        " WHERE highlights_text IS NULL AND comments_text IS NULL")
+    rows = cur.fetchall()
+    if not rows:
+        return
+    # Local import — sidecar imports index in some edge paths; keep
+    # the dep one-directional at module-load time.
+    from . import sidecar
+    rows_changed = 0
+    for row in rows:
+        sc_path = row["sidecar_path"]
+        if not sc_path or not os.path.isfile(sc_path):
+            continue
+        try:
+            rec = sidecar.read(sc_path)
+        except Exception:
+            continue
+        h_blob = _highlights_blob(rec)
+        c_blob = _comments_blob(rec)
+        if h_blob is None and c_blob is None:
+            continue
+        conn.execute(
+            "UPDATE papers SET highlights_text = ?, comments_text = ?"
+            " WHERE id = ?", (h_blob, c_blob, row["id"]))
+        rows_changed += 1
+    if rows_changed:
+        for trig in ("papers_fts_ai", "papers_fts_ad", "papers_fts_au"):
+            conn.execute("DROP TRIGGER IF EXISTS {}".format(trig))
+        conn.execute("DROP TABLE IF EXISTS papers_fts")
+        conn.commit()
+        print("index: backfilled highlight/comment text for {} row(s); "
+              "rebuilt papers_fts.".format(rows_changed))
+    else:
+        conn.commit()
+
+
 _FTS_SCHEMA = """
 CREATE VIRTUAL TABLE papers_fts USING fts5(
     title, authors, journal, abstract, keywords, doi,
+    highlights, comments,
     tokenize='unicode61 remove_diacritics 2'
 );
 CREATE TRIGGER papers_fts_ai AFTER INSERT ON papers BEGIN
-    INSERT INTO papers_fts(rowid, title, authors, journal, abstract, keywords, doi)
+    INSERT INTO papers_fts(rowid, title, authors, journal, abstract, keywords, doi,
+                           highlights, comments)
     VALUES (new.id, new.title, new.authors_json, new.journal, new.abstract,
-            new.auto_keywords_json, new.doi);
+            new.auto_keywords_json, new.doi,
+            new.highlights_text, new.comments_text);
 END;
 CREATE TRIGGER papers_fts_ad AFTER DELETE ON papers BEGIN
     DELETE FROM papers_fts WHERE rowid = old.id;
 END;
 CREATE TRIGGER papers_fts_au AFTER UPDATE ON papers BEGIN
     DELETE FROM papers_fts WHERE rowid = old.id;
-    INSERT INTO papers_fts(rowid, title, authors, journal, abstract, keywords, doi)
+    INSERT INTO papers_fts(rowid, title, authors, journal, abstract, keywords, doi,
+                           highlights, comments)
     VALUES (new.id, new.title, new.authors_json, new.journal, new.abstract,
-            new.auto_keywords_json, new.doi);
+            new.auto_keywords_json, new.doi,
+            new.highlights_text, new.comments_text);
 END;
 """
 
 
 def _ensure_fts(conn):
     """Create the FTS5 virtual table + sync triggers if absent, and
-    backfill from existing rows. If the existing FTS table is the
-    (now-deprecated) external-content variant, drop and recreate."""
+    backfill from existing rows. Recreates the table when the schema
+    is out of date — this includes the legacy external-content variant
+    and tables predating the highlights/comments FTS columns."""
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='papers_fts'"
     ).fetchone()
     if row:
-        sql = (row[0] or "").lower()
-        if "content=" not in sql:
-            return  # already on the current schema
-        # Migrate: drop the broken external-content table + its triggers.
+        sql_lower = (row[0] or "").lower()
+        on_current_schema = (
+            "content=" not in sql_lower
+            and "highlights" in sql_lower
+            and "comments" in sql_lower)
+        if on_current_schema:
+            return
         for trig in ("papers_fts_ai", "papers_fts_ad", "papers_fts_au"):
             conn.execute("DROP TRIGGER IF EXISTS {}".format(trig))
         conn.execute("DROP TABLE papers_fts")
@@ -174,8 +252,10 @@ def _ensure_fts(conn):
 
     conn.executescript(_FTS_SCHEMA)
     conn.execute("""
-        INSERT INTO papers_fts(rowid, title, authors, journal, abstract, keywords, doi)
-        SELECT id, title, authors_json, journal, abstract, auto_keywords_json, doi
+        INSERT INTO papers_fts(rowid, title, authors, journal, abstract, keywords, doi,
+                               highlights, comments)
+        SELECT id, title, authors_json, journal, abstract, auto_keywords_json, doi,
+               highlights_text, comments_text
         FROM papers
     """)
     conn.commit()
@@ -272,6 +352,8 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
     pv = record.get("published_version")
     pv_json = json.dumps(pv, ensure_ascii=False) if pv else None
     first_author, last_author = _derive_first_last_author(record)
+    h_blob = _highlights_blob(record)
+    c_blob = _comments_blob(record)
     conn.execute("""
         INSERT INTO papers
             (pdf_path, sidecar_path, thumb_path, title, authors_json,
@@ -280,8 +362,9 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
              auto_keywords_json, abstract,
              first_author, last_author, authorships_json,
              citations_by_year_json, published_version_json,
-             is_supplementary)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             is_supplementary,
+             highlights_text, comments_text)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(pdf_path) DO UPDATE SET
             sidecar_path=excluded.sidecar_path,
             thumb_path=excluded.thumb_path,
@@ -305,7 +388,9 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
             authorships_json=excluded.authorships_json,
             citations_by_year_json=excluded.citations_by_year_json,
             published_version_json=excluded.published_version_json,
-            is_supplementary=excluded.is_supplementary
+            is_supplementary=excluded.is_supplementary,
+            highlights_text=excluded.highlights_text,
+            comments_text=excluded.comments_text
     """, (pdf_path, sidecar_path, thumb_path,
           record.get("title"), authors_json,
           record.get("year"), record.get("doi"), record.get("journal"),
@@ -319,7 +404,8 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
           record.get("abstract"),
           first_author, last_author, authorships_json,
           cby_json, pv_json,
-          1 if record.get("is_supplementary") else 0))
+          1 if record.get("is_supplementary") else 0,
+          h_blob, c_blob))
     conn.commit()
 
 
@@ -455,9 +541,10 @@ def search(conn, query=None, limit=500, mark_filter=None,
     sql = ("SELECT papers.* FROM papers"
            " WHERE (title LIKE ? OR authors_json LIKE ? OR doi LIKE ?"
            "        OR journal LIKE ? OR abstract LIKE ?"
-           "        OR auto_keywords_json LIKE ?)" + mark_sql +
-           order_clause + " LIMIT ?")
-    cur = conn.execute(sql, tuple([pat]*6 + mark_params + [limit]))
+           "        OR auto_keywords_json LIKE ?"
+           "        OR highlights_text LIKE ? OR comments_text LIKE ?)"
+           + mark_sql + order_clause + " LIMIT ?")
+    cur = conn.execute(sql, tuple([pat]*8 + mark_params + [limit]))
     return [dict(r) for r in cur.fetchall()]
 
 

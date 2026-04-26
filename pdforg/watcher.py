@@ -57,6 +57,13 @@ class LibraryWatcher:
         self._suppress = {}
         self._suppress_lock = threading.Lock()
 
+    def suppress(self, path, secs):
+        """Public: silence watcher events on `path` for `secs` seconds.
+        Used by callers that write to a sidecar themselves and don't
+        want the resulting CHANGED event to drive a card-list reload
+        (e.g. caching cited-by / references lists)."""
+        self._suppress_path(path, secs)
+
     def _suppress_path(self, path, secs):
         if not path:
             return

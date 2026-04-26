@@ -3,9 +3,6 @@
 Pending features, roughly grouped. Newest at the top of each section.
 
 ## Top priority
-- **Highlight text + attach comments** (poppler viewer): drag-select →
-  highlight quads on page → optional comment popover. Highlights and
-  comments persist; navigable from a per-paper sidebar; FTS-indexed.
 - **Comment author identity:** for now we stamp comments with the OS
   username (`getpass.getuser()`). Add a Preferences entry so the user
   can set a display name (e.g. "BigDave") that's used instead. Migrate
@@ -76,17 +73,13 @@ Pending features, roughly grouped. Newest at the top of each section.
 - Page thumbnails sidebar.
 
 ## Discovery
-- **Cache the Cited-by, References and Related-works *paper lists*.**
-  The cited-by *count* is already cached on the papers row
-  (`citations_fetched` / `citations`), but the popover-displayed
-  *lists* themselves are re-fetched from OpenAlex on every click —
-  visible latency on unreliable networks and unnecessary API churn
-  for a paper whose citation graph isn't changing much from one open
-  to the next. Cache the resolved lists per paper with a fetched-on
-  timestamp (sidecar JSON, alongside existing OpenAlex-derived
-  fields); invalidate on a sensible schedule (weekly?) or on a
-  user-triggered "refresh now" action in the popover header. Same
-  approach for `referenced_works` and `related_works`.
+- **Cache the Related-works *paper list*.** Cited-by and References
+  are now cached in the sidecar (`cited_by_cache` / `references_cache`)
+  with a manual refresh button in each popover; Related-works still
+  re-queries OpenAlex on every open. Same approach: stash the list
+  with a `fetched` timestamp and a refresh button. Optional follow-
+  up: time-based invalidation (e.g. weekly), and a "refresh all
+  caches" action somewhere central.
 - New-citations-of-favourites feed (papers citing my green-marked papers,
   filtered by overlap with my other green-marked papers' keywords)
 - Show abstract somewhere visible (hover preview? expandable card?)

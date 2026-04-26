@@ -2010,6 +2010,70 @@ class BrowserWindow(Adw.ApplicationWindow):
         # copy-paste.
         GLib.idle_add(lambda: (body.select_region(0, 0), False)[1])
 
+    # --- Popover cache (cited-by / references) ----------------------
+
+    def _write_sidecar_cache(self, sc_path, updates):
+        """Read the sidecar, merge `updates` into it, and write it
+        back. Watcher events on this path are suppressed for a few
+        seconds so the cache write doesn't drive a card-list reload."""
+        if not sc_path:
+            return
+        try:
+            rec = sidecar.read(sc_path)
+        except Exception:
+            return
+        rec.update(updates)
+        if getattr(self, "watcher", None) is not None:
+            try:
+                self.watcher.suppress(sc_path, 5)
+            except Exception:
+                pass
+        try:
+            sidecar.write(sc_path, rec)
+        except Exception as e:
+            print("cache write failed:", e)
+
+    def _cache_age_str(self, fetched_iso):
+        """Render '(cached, fetched X ago)' for a popover header. Returns
+        '' when fetched_iso isn't parseable."""
+        if not fetched_iso:
+            return ""
+        try:
+            from datetime import datetime
+            ts = datetime.fromisoformat(fetched_iso)
+            delta = datetime.now(ts.tzinfo) - ts
+            secs = int(delta.total_seconds())
+        except Exception:
+            return ""
+        if secs < 60:
+            ago = "just now"
+        elif secs < 3600:
+            ago = "{}m ago".format(secs // 60)
+        elif secs < 86400:
+            ago = "{}h ago".format(secs // 3600)
+        elif secs < 86400 * 30:
+            ago = "{}d ago".format(secs // 86400)
+        else:
+            ago = ts.date().isoformat()
+        return ago
+
+    def _make_popover_header(self, title_markup, on_refresh):
+        """Build the (title + refresh button) row used by the cached
+        popovers. Returns (box, refresh_btn). `on_refresh` is the
+        callback invoked when the refresh button is clicked."""
+        hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        title = Gtk.Label()
+        title.set_markup(title_markup)
+        title.set_halign(Gtk.Align.START)
+        title.set_hexpand(True)
+        hbox.append(title)
+        refresh_btn = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+        refresh_btn.set_tooltip_text("Refresh from OpenAlex")
+        refresh_btn.add_css_class("flat")
+        refresh_btn.connect("clicked", lambda _b: on_refresh())
+        hbox.append(refresh_btn)
+        return hbox, refresh_btn
+
     def _open_references_popover(self, anchor_widget, row):
         """Show the references *of* this paper (the things it cites).
 
@@ -2018,7 +2082,8 @@ class BrowserWindow(Adw.ApplicationWindow):
         count, in-library detection by DOI). When OpenAlex has no
         record of this paper, we fall back to parsing the PDF's
         bibliography directly — fewer fields but always available
-        offline."""
+        offline. Lists are cached per-paper in the sidecar so the
+        popover opens instantly on revisit."""
         pop = Gtk.Popover()
         pop.set_parent(anchor_widget)
         pop.set_has_arrow(True)
@@ -2030,12 +2095,28 @@ class BrowserWindow(Adw.ApplicationWindow):
         outer.set_margin_top(10)
         outer.set_margin_bottom(10)
 
-        header = Gtk.Label()
-        header.set_markup("<b>References</b>")
-        header.set_halign(Gtk.Align.START)
+        sc_path = row["sidecar_path"]
+        doi = row["doi"]
+        pdf_path = row["pdf_path"]
+        if sidecar.is_ghost_path(pdf_path) or not os.path.exists(pdf_path):
+            pdf_path = None
+
+        state = {"loading": False}
+
+        def _do_refresh():
+            if state["loading"]:
+                return
+            state["loading"] = True
+            status.set_text("Refreshing…")
+            self._clear_box(list_box)
+            threading.Thread(target=lambda: _fetch(force=True),
+                             daemon=True).start()
+
+        header, refresh_btn = self._make_popover_header(
+            "<b>References</b>", _do_refresh)
         outer.append(header)
 
-        status = Gtk.Label(label="Loading…")
+        status = Gtk.Label(label="")
         status.set_halign(Gtk.Align.START)
         outer.append(status)
 
@@ -2049,48 +2130,105 @@ class BrowserWindow(Adw.ApplicationWindow):
         pop.set_child(outer)
         pop.popup()
 
-        doi = row["doi"]
-        pdf_path = row["pdf_path"]
-        if sidecar.is_ghost_path(pdf_path) or not os.path.exists(pdf_path):
-            pdf_path = None
+        # Try cache first.
+        try:
+            rec = sidecar.read(sc_path)
+        except Exception:
+            rec = None
+        cache = (rec or {}).get("references_cache") if rec else None
+        if cache and (cache.get("refs") or cache.get("refs_pdf")):
+            self._render_references(
+                status, list_box,
+                cache.get("refs") or [],
+                cache.get("refs_pdf") or [],
+                from_cache=True,
+                fetched_iso=cache.get("fetched"))
+            return
 
-        def _fetch():
-            refs = metrics.fetch_references(doi=doi, limit=50)
+        # No cache — fetch.
+        status.set_text("Loading…")
+        refresh_btn.set_sensitive(False)
+
+        def _fetch(force=False):
+            refs = []
             pdf_refs = []
-            if not refs and pdf_path:
+            fetched_iso = None
+            try:
                 try:
-                    pdf_refs = references_pdf.parse_bibliography(pdf_path)
-                except Exception:
-                    pdf_refs = []
-            GLib.idle_add(self._fill_references_popover,
-                          status, list_box, refs, pdf_refs)
+                    refs = metrics.fetch_references(doi=doi, limit=50) or []
+                except Exception as e:
+                    print("fetch_references failed:", e)
+                    refs = []
+                if not refs and pdf_path:
+                    try:
+                        pdf_refs = references_pdf.parse_bibliography(pdf_path)
+                    except Exception:
+                        pdf_refs = []
+                if refs or pdf_refs:
+                    fetched_iso = self._now_iso()
+                    self._write_sidecar_cache(sc_path, {
+                        "references_cache": {
+                            "refs": refs,
+                            "refs_pdf": pdf_refs,
+                            "source": ("openalex" if refs else "pdf"),
+                            "fetched": fetched_iso,
+                        }
+                    })
+            finally:
+                state["loading"] = False
+            GLib.idle_add(self._after_refs_fetch,
+                          status, list_box, refresh_btn,
+                          refs, pdf_refs, fetched_iso)
 
         threading.Thread(target=_fetch, daemon=True).start()
 
-    def _fill_references_popover(self, status, list_box, refs, pdf_refs):
+    def _after_refs_fetch(self, status, list_box, refresh_btn,
+                          refs, pdf_refs, fetched_iso):
+        refresh_btn.set_sensitive(True)
+        self._render_references(status, list_box, refs, pdf_refs,
+                                from_cache=False, fetched_iso=fetched_iso)
+        return False
+
+    def _render_references(self, status, list_box, refs, pdf_refs,
+                           from_cache=False, fetched_iso=None):
+        suffix = ""
+        if from_cache and fetched_iso:
+            ago = self._cache_age_str(fetched_iso)
+            if ago:
+                suffix = " · cached {}".format(ago)
         if refs:
             status.set_markup(
                 "<small><span alpha='75%'>{} references "
-                "(OpenAlex, in publication order)</span></small>".format(
-                    len(refs)))
+                "(OpenAlex, in publication order{})</span></small>".format(
+                    len(refs), suffix))
             existing = self._existing_dois_set()
             for r in refs:
                 list_box.append(
                     self._build_related_row(
                         r, existing,
                         prefer_date=False, show_citations=True))
-            return False
+            return
         if pdf_refs:
             status.set_markup(
                 "<small><span alpha='75%'>{} references "
-                "(parsed from PDF; OpenAlex had no record)"
-                "</span></small>".format(len(pdf_refs)))
+                "(parsed from PDF; OpenAlex had no record{})"
+                "</span></small>".format(len(pdf_refs), suffix))
             existing = self._existing_dois_set()
             for r in pdf_refs:
                 list_box.append(self._build_pdf_ref_row(r, existing))
-            return False
+            return
         status.set_text("No references found.")
-        return False
+
+    def _clear_box(self, box):
+        child = box.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            box.remove(child)
+            child = nxt
+
+    def _now_iso(self):
+        from datetime import datetime
+        return datetime.now().astimezone().isoformat(timespec="seconds")
 
     def _build_pdf_ref_row(self, r, existing_dois):
         """Render a bibliography entry parsed straight from the PDF.
@@ -2152,10 +2290,10 @@ class BrowserWindow(Adw.ApplicationWindow):
         return frame
 
     def _open_cited_by_popover(self, anchor_widget, row):
-        """Show two short lists side-by-section in one popover: the
-        most recent papers that cite this paper, and the most-cited
-        papers that cite this paper. Both come from OpenAlex via
-        `cites:` filter queries (one HTTP each)."""
+        """Show two short lists in one popover: the most recent papers
+        that cite this paper, and the most-cited ones. Both come from
+        OpenAlex via `cites:` filter queries (one HTTP each). Cached
+        per-paper in the sidecar so revisits don't re-query."""
         pop = Gtk.Popover()
         pop.set_parent(anchor_widget)
         pop.set_has_arrow(True)
@@ -2167,16 +2305,29 @@ class BrowserWindow(Adw.ApplicationWindow):
         outer.set_margin_top(10)
         outer.set_margin_bottom(10)
 
-        header = Gtk.Label()
         cb = row["citations"] if "citations" in row.keys() else None
         suffix = "  <small alpha='65%'>({} total)</small>".format(cb) if cb else ""
-        header.set_markup(
-            "<b>Cited by</b>" + suffix +
-            "  <span size='small' alpha='65%'>(OpenAlex)</span>")
-        header.set_halign(Gtk.Align.START)
+        title_markup = ("<b>Cited by</b>" + suffix +
+                        "  <span size='small' alpha='65%'>(OpenAlex)</span>")
+
+        sc_path = row["sidecar_path"]
+        doi = row["doi"]
+        state = {"loading": False}
+
+        def _do_refresh():
+            if state["loading"]:
+                return
+            state["loading"] = True
+            status.set_text("Refreshing…")
+            self._clear_box(list_box)
+            threading.Thread(target=lambda: _fetch(force=True),
+                             daemon=True).start()
+
+        header, refresh_btn = self._make_popover_header(
+            title_markup, _do_refresh)
         outer.append(header)
 
-        status = Gtk.Label(label="Loading…")
+        status = Gtk.Label(label="")
         status.set_halign(Gtk.Align.START)
         outer.append(status)
 
@@ -2190,21 +2341,77 @@ class BrowserWindow(Adw.ApplicationWindow):
         pop.set_child(outer)
         pop.popup()
 
-        doi = row["doi"]
+        # Try cache first.
+        try:
+            rec = sidecar.read(sc_path)
+        except Exception:
+            rec = None
+        cache = (rec or {}).get("cited_by_cache") if rec else None
+        if cache and (cache.get("recent") or cache.get("cited")):
+            self._render_cited_by(
+                status, list_box,
+                cache.get("recent") or [],
+                cache.get("cited") or [],
+                from_cache=True,
+                fetched_iso=cache.get("fetched"))
+            return
 
-        def _fetch():
-            recent = metrics.fetch_cited_by(doi=doi, sort="recent", limit=10)
-            cited = metrics.fetch_cited_by(doi=doi, sort="cited", limit=5)
-            GLib.idle_add(self._fill_cited_by_popover,
-                          status, list_box, recent, cited)
+        status.set_text("Loading…")
+        refresh_btn.set_sensitive(False)
+
+        def _fetch(force=False):
+            recent = []
+            cited = []
+            fetched_iso = None
+            try:
+                try:
+                    recent = metrics.fetch_cited_by(
+                        doi=doi, sort="recent", limit=10) or []
+                except Exception as e:
+                    print("fetch_cited_by(recent) failed:", e)
+                try:
+                    cited = metrics.fetch_cited_by(
+                        doi=doi, sort="cited", limit=5) or []
+                except Exception as e:
+                    print("fetch_cited_by(cited) failed:", e)
+                if recent or cited:
+                    fetched_iso = self._now_iso()
+                    self._write_sidecar_cache(sc_path, {
+                        "cited_by_cache": {
+                            "recent": recent,
+                            "cited": cited,
+                            "fetched": fetched_iso,
+                        }
+                    })
+            finally:
+                state["loading"] = False
+            GLib.idle_add(self._after_cited_by_fetch,
+                          status, list_box, refresh_btn,
+                          recent, cited, fetched_iso)
 
         threading.Thread(target=_fetch, daemon=True).start()
 
-    def _fill_cited_by_popover(self, status, list_box, recent, cited):
+    def _after_cited_by_fetch(self, status, list_box, refresh_btn,
+                              recent, cited, fetched_iso):
+        refresh_btn.set_sensitive(True)
+        self._render_cited_by(status, list_box, recent, cited,
+                              from_cache=False, fetched_iso=fetched_iso)
+        return False
+
+    def _render_cited_by(self, status, list_box, recent, cited,
+                         from_cache=False, fetched_iso=None):
         if not recent and not cited:
             status.set_text("No citing papers found.")
-            return False
-        status.set_visible(False)
+            return
+        if from_cache and fetched_iso:
+            ago = self._cache_age_str(fetched_iso)
+            if ago:
+                status.set_markup(
+                    "<small><span alpha='65%'>cached {}</span></small>".format(ago))
+            else:
+                status.set_visible(False)
+        else:
+            status.set_visible(False)
         existing = self._existing_dois_set()
 
         def _section_header(text):
@@ -2231,7 +2438,6 @@ class BrowserWindow(Adw.ApplicationWindow):
                     self._build_related_row(
                         w, existing,
                         prefer_date=False, show_citations=True))
-        return False
 
     def _open_related_popover(self, anchor_widget, row):
         """Show OpenAlex's related_works for this paper. Fetches in a

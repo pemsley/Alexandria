@@ -88,6 +88,17 @@ def new_record(pdf_path):
         "bibtex_key": None,
         "bibtex_type": None,
         "bibtex_extra": {},
+        # Cached OpenAlex popover lists (avoid re-querying on every
+        # popover open). Keys are absent on legacy sidecars; readers
+        # should use `.get()`. Schema:
+        #   cited_by_cache:    {recent: [...], cited: [...], fetched: iso8601}
+        #   references_cache:  {refs: [...], refs_pdf: [...], source: str,
+        #                       fetched: iso8601}
+        # The cached items are full work-dicts (the same shape that
+        # metrics.fetch_cited_by / fetch_references return), so the
+        # popover can render straight from them.
+        "cited_by_cache": None,
+        "references_cache": None,
         "raw": {},
     }
 

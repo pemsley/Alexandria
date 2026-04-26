@@ -8,14 +8,17 @@ never modified.
 
 import datetime
 import os
+import re
+import threading
 import uuid
 
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Poppler", "0.18")
-from gi.repository import Gtk, Gdk, Gio, GLib, Poppler
+from gi.repository import Gtk, Gdk, Gio, GLib, Pango, Poppler
 
-from . import sidecar as sidecar_mod, identity
+from . import (sidecar as sidecar_mod, identity, pdf_links,
+               references_pdf, metrics)
 
 
 _ZOOM_STEP = 1.25
@@ -26,10 +29,112 @@ _PAGE_SPACING = 8     # pixels between pages in continuous scroll
 
 _HIGHLIGHT_FILL = (1.0, 0.95, 0.0, 0.35)   # yellow, translucent
 _HIGHLIGHT_FILL_HOVER = (1.0, 0.80, 0.0, 0.45)
+# Margin comment-note marker: same RGB as the highlight, but solid
+# so it reads clearly against the white page margin (no text under
+# it that needs to show through).
+_COMMENT_MARKER_FILL = _HIGHLIGHT_FILL[:3] + (0.95,)
 
 
 def _now_iso():
     return datetime.datetime.now().replace(microsecond=0).isoformat()
+
+
+# --- Bibliography-entry → BibTeX-shaped record helpers -----------------
+# Used by the citation popover when the user clicks "Add to library".
+# Vancouver-style entries look like:
+#   "Smith J, Jones K (2020) The clever paper. Nature 581:123-130"
+# We need a best-effort split into authors / year / title / journal so
+# we can hand a sensible record to bibtex_import.import_record.
+
+_YEAR_PAREN_RE = re.compile(r"\((\d{4})\)\s*")
+_TITLE_END_RE = re.compile(r"\.\s+(?=[A-Z])")
+
+
+def _split_entry_text(text):
+    """Best-effort (authors_str, year, title, journal) for a Vancouver-
+    style bibliography entry. Returns (None, None, None, None) when
+    the year pattern is missing — that's our anchor and without it
+    the rest is too unreliable to guess at."""
+    m = _YEAR_PAREN_RE.search(text or "")
+    if not m:
+        return None, None, None, None
+    year = int(m.group(1))
+    authors_str = text[:m.start()].strip().rstrip(",")
+    rest = text[m.end():].strip()
+    m2 = _TITLE_END_RE.search(rest)
+    if m2:
+        title = rest[:m2.start()].strip()
+        journal_etc = rest[m2.end():].strip()
+    else:
+        title = rest.rstrip(".").strip()
+        journal_etc = ""
+    title = title.rstrip(".").strip()
+    # "Journal Name 12:345-356" — keep the journal name only.
+    journal = re.split(r"\s+\d", journal_etc, maxsplit=1)[0].strip()
+    return authors_str, year, title, journal
+
+
+def _author_surnames(authors_str):
+    """First word of each comma-separated author becomes the surname.
+    "Smith J, van Dijk AA, Anand-Apte B" → ["Smith", "van", "Anand-Apte"].
+    Heuristic — good enough to feed `find_doi`'s author-overlap gate."""
+    if not authors_str:
+        return []
+    out = []
+    for chunk in authors_str.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        first = chunk.split()[0] if chunk.split() else ""
+        if first:
+            out.append(first)
+    return out
+
+
+def _build_br(entry, resolved):
+    """Build a BibTeX-shaped dict for `bibtex_import.import_record`.
+    Prefers the OpenAlex-resolved metadata when available; falls back
+    to whatever `parse_bibliography` extracted."""
+    if resolved:
+        first = resolved.get("first_author") or "ref"
+        surname = re.sub(r"[^a-z]", "",
+                         (first.split()[-1] if first.split() else "ref")
+                         .lower()) or "ref"
+        title = resolved.get("title") or ""
+        first_word = ""
+        for w in title.split():
+            cleaned = re.sub(r"[^a-zA-Z]", "", w).lower()
+            if cleaned:
+                first_word = cleaned
+                break
+        year = resolved.get("year") or "nodate"
+        key = "{}{}{}".format(surname, year, first_word)[:48]
+        if not key:
+            key = "ref" + uuid.uuid4().hex[:8]
+        return {
+            "bibtex_key": key,
+            "bibtex_type": "article",
+            "title": resolved.get("title"),
+            "authors": resolved.get("authors") or [],
+            "year": str(resolved["year"]) if resolved.get("year") else None,
+            "journal": resolved.get("journal"),
+            "doi": resolved.get("doi"),
+            "bibtex_extra": {},
+        }
+    # Unresolved: synthesise from the parsed entry.
+    authors_str, year, title, journal = _split_entry_text(
+        entry.get("text") or "")
+    return {
+        "bibtex_key": "ref" + uuid.uuid4().hex[:8],
+        "bibtex_type": "article",
+        "title": title or (entry.get("text") or "")[:120] or "Untitled",
+        "authors": [a.strip() for a in (authors_str or "").split(",")
+                    if a.strip()],
+        "year": str(year) if year else None,
+        "journal": journal or None,
+        "doi": entry.get("doi"),
+        "bibtex_extra": {},
+    }
 
 
 def _truncate(s, n):
@@ -52,6 +157,7 @@ def open_viewer(parent, pdf_path, sidecar_path=None):
 class PdfViewerWindow(Gtk.Window):
     def __init__(self, parent, pdf_path, sidecar_path=None):
         super().__init__(transient_for=parent)
+        self.parent_window = parent  # for callbacks (refresh, get-pdf)
         self.pdf_path = pdf_path
         self.sidecar_path = sidecar_path
         self.set_title(os.path.basename(pdf_path))
@@ -82,6 +188,22 @@ class PdfViewerWindow(Gtk.Window):
         self._drag_state = {}      # page_idx -> dict(start_x, start_y, cur_x, cur_y)
         self._highlights_popover = None
         self._load_highlights()
+
+        # Citation/cross-reference link annotations: built once at
+        # open time so a click on `[1]` in the body can jump straight
+        # to entry [1] in the references, like Preview does.
+        self.citation_links = pdf_links.read_citation_links(pdf_path)
+        # Per-page "is the cursor currently over a link?" cache, used
+        # to avoid re-setting the cursor on every motion event.
+        self._cursor_over_link = {}
+        # Parsed bibliography keyed by ref_n; populated lazily on the
+        # first citation click (parsing is non-trivial and we don't
+        # need it unless the user actually exercises a link).
+        self._bibliography_by_n = None
+        # The currently-open reference popover, if any. Tracked so
+        # repeated clicks on different citations close the previous
+        # popover instead of stacking.
+        self._reference_popover = None
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
@@ -146,12 +268,28 @@ class PdfViewerWindow(Gtk.Window):
         if not self.sidecar_path:
             self.sidebar_toggle.set_sensitive(False)
 
+        # Reference popover button. Hidden until the user clicks an
+        # in-text citation; from then on it shows "Reference [N]" and
+        # toggles a popover with the resolved metadata + actions.
+        # Anchoring the popover to a stable toolbar button (instead
+        # of the scrollable page widget) sidesteps a focus / parent-
+        # reallocation race that was dismissing the popover ~1s after
+        # opening, and matches how browse.py's References / Cited-by
+        # popovers are built.
+        self.ref_btn = Gtk.MenuButton()
+        self.ref_btn.set_label("Reference")
+        self.ref_btn.set_tooltip_text(
+            "Reference details for the citation you last clicked. "
+            "Click to toggle.")
+        self.ref_btn.set_visible(False)
+
         for w in (first_btn, prev_btn, self.page_entry, self.page_total_lbl,
                   next_btn, last_btn, sep,
                   zoom_out_btn, zoom_reset_btn, zoom_in_btn, zoom_fit_btn,
                   self.zoom_lbl, sep2,
                   self.find_entry, find_prev_btn, find_next_btn,
-                  self.find_count_lbl, sep3, self.sidebar_toggle):
+                  self.find_count_lbl, sep3, self.sidebar_toggle,
+                  self.ref_btn):
             tb.append(w)
 
         outer.append(tb)
@@ -167,6 +305,10 @@ class PdfViewerWindow(Gtk.Window):
             da.set_draw_func(self._draw_one_page, i)
             self.page_widgets.append(da)
             self.pages_box.append(da)
+            # Click is always wired: citation-link jumps don't need a
+            # sidecar, only the highlight-creation drag does.
+            self._attach_click_controller(da, i)
+            self._attach_link_motion_controller(da, i)
             if self.sidecar_path:
                 self._attach_annotation_controllers(da, i)
 
@@ -306,13 +448,13 @@ class PdfViewerWindow(Gtk.Window):
             cr.fill()
 
     def _draw_comment_marker(self, cr, quad, ph, pw):
-        """Tiny speech-bubble in the right margin next to the highlight."""
-        margin_x = pw + 2     # outside the page, in the spacing
-        # Drawn within the page bounds so it stays visible: stick to
-        # the right edge.
+        """Tiny note marker pinned to the right edge of the page,
+        next to the highlight. Filled with the same yellow as the
+        highlight (via _COMMENT_MARKER_FILL) so the highlight, the
+        marker, and the card-level chip all read as one signal."""
         x = pw - 14
         y = max(2, quad[1] - 2)
-        cr.set_source_rgba(1.0, 0.75, 0.0, 0.95)
+        cr.set_source_rgba(*_COMMENT_MARKER_FILL)
         cr.rectangle(x, y, 12, 10)
         cr.fill()
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.6)
@@ -644,9 +786,21 @@ class PdfViewerWindow(Gtk.Window):
         except Exception as e:
             print("viewer: sidecar write failed:", e)
 
+    def _attach_click_controller(self, da, page_idx):
+        """Per-page primary-button click. Handles citation-link jumps
+        (always available) and existing-highlight popovers (when a
+        sidecar is loaded)."""
+        click = Gtk.GestureClick.new()
+        click.set_button(Gdk.BUTTON_PRIMARY)
+        click.connect(
+            "released",
+            lambda g, n, x, y, _i=page_idx: self._on_page_click(g, n, x, y, _i))
+        da.add_controller(click)
+
     def _attach_annotation_controllers(self, da, page_idx):
-        """Per-page drag (for selection) and click (for hit-testing existing
-        highlights)."""
+        """Per-page drag — selection → highlight popover. Click is
+        wired separately by `_attach_click_controller` because
+        citation links should work even when no sidecar is loaded."""
         drag = Gtk.GestureDrag.new()
         drag.set_button(Gdk.BUTTON_PRIMARY)
         drag.connect("drag-begin",
@@ -656,13 +810,6 @@ class PdfViewerWindow(Gtk.Window):
         drag.connect("drag-end",
                      lambda g, dx, dy, _i=page_idx: self._on_drag_end(g, dx, dy, _i))
         da.add_controller(drag)
-
-        click = Gtk.GestureClick.new()
-        click.set_button(Gdk.BUTTON_PRIMARY)
-        click.connect(
-            "released",
-            lambda g, n, x, y, _i=page_idx: self._on_page_click(g, n, x, y, _i))
-        da.add_controller(click)
 
     # Coord helpers: widget pixels → PDF points (y-down-from-top).
     def _to_pdf(self, x_widget, y_widget):
@@ -880,6 +1027,12 @@ class PdfViewerWindow(Gtk.Window):
         if n_press != 1:
             return
         x, y = self._to_pdf(x_widget, y_widget)
+        # Citation links first — they don't depend on the sidecar and
+        # take precedence over highlight hit-testing because publishers
+        # place citation rects on tiny [N] glyphs that rarely overlap a
+        # highlight anyway.
+        if self._handle_citation_click(page_idx, x, y):
+            return
         for h in self.highlights:
             if h.get("page") != page_idx:
                 continue
@@ -889,6 +1042,313 @@ class PdfViewerWindow(Gtk.Window):
                     self._show_edit_popover(h, page_idx,
                                             (x_widget, y_widget))
                     return
+
+    def _citation_at(self, page_idx, x_pdf, y_pdf_down):
+        """Return the citation-link entry covering `(x, y)` on this
+        page, or None. Link rects from `pdf_links.read_citation_links`
+        are in PDF user space (origin bottom-left, y up); incoming
+        coords are in the viewer's PDF-points-y-down convention."""
+        links = self.citation_links.get(page_idx)
+        if not links:
+            return None
+        _, ph = self.doc.get_page(page_idx).get_size()
+        for entry in links:
+            rect = entry[0]
+            x1, y1_up, x2, y2_up = rect
+            x_lo, x_hi = (x1, x2) if x1 <= x2 else (x2, x1)
+            y_top_down = ph - max(y1_up, y2_up)
+            y_bot_down = ph - min(y1_up, y2_up)
+            if (x_lo <= x_pdf <= x_hi
+                    and y_top_down <= y_pdf_down <= y_bot_down):
+                return entry
+        return None
+
+    def _handle_citation_click(self, page_idx, x_pdf, y_pdf_down):
+        """Returns True when a citation link was hit and the jump
+        was scheduled."""
+        entry = self._citation_at(page_idx, x_pdf, y_pdf_down)
+        if entry is None:
+            return False
+        _rect, target_page, target_top, ref_n = entry
+        self._jump_to(target_page, target_top)
+        # After the jump, surface a popover anchored at the target
+        # entry with "Add to library" / "Add + try PDF" actions.
+        # Idle-add so layout has scrolled before we anchor — popover
+        # positioning uses current widget coordinates.
+        if ref_n is not None:
+            GLib.idle_add(
+                self._show_reference_popover, ref_n, target_page, target_top)
+        return True
+
+    def _attach_link_motion_controller(self, da, page_idx):
+        """Toggle the pointer cursor over citation links so the user
+        knows they're clickable, like Preview's hand cursor. Skip
+        pages with no links — no point paying for motion events
+        we'd just ignore."""
+        if page_idx not in self.citation_links:
+            return
+        motion = Gtk.EventControllerMotion.new()
+        motion.connect(
+            "motion",
+            lambda c, x, y, _i=page_idx: self._on_link_motion(x, y, _i))
+        motion.connect(
+            "leave",
+            lambda c, _i=page_idx: self._set_link_cursor(_i, False))
+        da.add_controller(motion)
+
+    def _on_link_motion(self, x_widget, y_widget, page_idx):
+        x, y = self._to_pdf(x_widget, y_widget)
+        self._set_link_cursor(
+            page_idx, self._citation_at(page_idx, x, y) is not None)
+
+    def _set_link_cursor(self, page_idx, over_link):
+        # Only touch the cursor on transitions; motion events fire
+        # at pointer-poll rate and most of them stay on the same side
+        # of the link boundary.
+        if self._cursor_over_link.get(page_idx) == over_link:
+            return
+        self._cursor_over_link[page_idx] = over_link
+        self.page_widgets[page_idx].set_cursor_from_name(
+            "pointer" if over_link else None)
+
+    # --- Reference popover (after a citation jump) --------------------
+
+    def _ensure_bibliography_parsed(self):
+        """Parse the bibliography on first access and cache the
+        result keyed by ref number. Parsing scans the whole PDF, so
+        we defer it until the user actually clicks a citation."""
+        if self._bibliography_by_n is not None:
+            return
+        try:
+            entries = references_pdf.parse_bibliography(self.pdf_path)
+        except Exception:
+            entries = []
+        self._bibliography_by_n = {e["n"]: e for e in entries}
+
+    def _show_reference_popover(self, ref_n, target_page, target_top):
+        """Toolbar-anchored popover for the citation the user just
+        jumped to. Shows the parsed entry text immediately, kicks
+        off OpenAlex resolution in a background thread, and once
+        resolved offers Add-to-library / Add+try-PDF actions.
+
+        target_page / target_top are accepted for signature stability
+        (they're how the click handler tells us which entry); the
+        popover itself anchors to `self.ref_btn` in the toolbar."""
+        del target_page, target_top
+        self._ensure_bibliography_parsed()
+        entry = self._bibliography_by_n.get(ref_n) or {
+            "n": ref_n,
+            "text": "(this entry wasn't parsed from the bibliography)",
+            "doi": None,
+        }
+
+        # Tear down any prior popover so it doesn't linger as an
+        # orphan child of `ref_btn`.
+        if self._reference_popover is not None:
+            try:
+                self._reference_popover.popdown()
+            except Exception:
+                pass
+            self._reference_popover = None
+
+        pop = Gtk.Popover()
+        pop.set_has_arrow(True)
+        pop.set_size_request(460, -1)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        outer.set_margin_start(10)
+        outer.set_margin_end(10)
+        outer.set_margin_top(10)
+        outer.set_margin_bottom(10)
+
+        header = Gtk.Label(xalign=0.0)
+        header.set_markup("<b>Reference [{}]</b>".format(ref_n))
+        outer.append(header)
+
+        entry_lbl = Gtk.Label(xalign=0.0)
+        entry_lbl.set_wrap(True)
+        entry_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        entry_lbl.set_max_width_chars(58)
+        entry_lbl.set_selectable(True)
+        entry_lbl.set_text(entry["text"])
+        outer.append(entry_lbl)
+
+        status = Gtk.Label(xalign=0.0)
+        status.set_markup(
+            "<small><i>Looking up on OpenAlex…</i></small>")
+        outer.append(status)
+
+        # Filled in once resolution settles: title/meta + action buttons.
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        outer.append(content)
+
+        pop.set_child(outer)
+        self._reference_popover = pop
+        # Anchor to the toolbar button. Setting the popover on a
+        # MenuButton makes the button toggle it for free, and the
+        # button stays visible so the user can re-open the popover
+        # after dismissing it.
+        self.ref_btn.set_label("Reference [{}]".format(ref_n))
+        self.ref_btn.set_visible(True)
+        self.ref_btn.set_popover(pop)
+        self.ref_btn.popup()
+        # Selectable GtkLabels auto-select-all on focus, so the entry
+        # text arrives pre-selected; clear it once after popup so the
+        # user starts with no selection but the label stays selectable
+        # for on-demand copy-paste.
+        GLib.idle_add(lambda: (entry_lbl.select_region(0, 0), False)[1])
+
+        threading.Thread(
+            target=self._resolve_reference_and_render,
+            args=(entry, pop, status, content),
+            daemon=True).start()
+        return False  # so this can also be used as a GLib.idle_add target
+
+    def _resolve_reference_and_render(self, entry, popover, status, content):
+        resolved = self._resolve_reference_blocking(entry)
+        GLib.idle_add(self._render_resolved_reference,
+                      popover, status, content, entry, resolved)
+
+    def _resolve_reference_blocking(self, entry):
+        """Background-thread resolution. If the parsed entry already
+        has a DOI we go straight to OpenAlex by DOI; otherwise we
+        try `metrics.find_doi` with a heuristic title/author/year
+        split of the entry text and look up the result. Returns the
+        normalised metadata dict from `metrics.fetch_work_by_doi`,
+        or None if nothing matched."""
+        doi = entry.get("doi")
+        if not doi:
+            authors_str, year, title, journal = _split_entry_text(
+                entry.get("text") or "")
+            if title:
+                doi = metrics.find_doi(
+                    title, year=year,
+                    author_names=_author_surnames(authors_str),
+                    journal=journal or None)
+        if not doi:
+            return None
+        return metrics.fetch_work_by_doi(doi)
+
+    def _render_resolved_reference(self, popover, status, content,
+                                   entry, resolved):
+        # Popover may have been replaced or closed in the meantime.
+        if popover is not self._reference_popover:
+            return False
+        if resolved is None:
+            status.set_markup(
+                "<small><i>Couldn't find this paper on OpenAlex."
+                "</i></small>")
+            actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                              spacing=6)
+            actions.set_halign(Gtk.Align.END)
+            add_btn = Gtk.Button(label="Add as ghost")
+            add_btn.set_tooltip_text(
+                "Save what we parsed from the PDF as a metadata-only "
+                "library entry.")
+            add_btn.connect(
+                "clicked",
+                lambda _b: self._on_add_to_library(popover, entry, None, False))
+            actions.append(add_btn)
+            content.append(actions)
+            return False
+        status.set_markup(
+            "<small><span alpha='75%'>Found on OpenAlex:</span></small>")
+        title_lbl = Gtk.Label(xalign=0.0)
+        title_lbl.set_wrap(True)
+        title_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        title_lbl.set_max_width_chars(58)
+        title_lbl.set_markup("<b>{}</b>".format(
+            GLib.markup_escape_text(resolved.get("title") or "(untitled)")))
+        content.append(title_lbl)
+        bits = []
+        fa, la = resolved.get("first_author"), resolved.get("last_author")
+        if fa and la and fa != la:
+            bits.append("{} → {}".format(fa, la))
+        elif fa:
+            bits.append(fa)
+        if resolved.get("year"):
+            bits.append(str(resolved["year"]))
+        if resolved.get("journal"):
+            bits.append(resolved["journal"])
+        if resolved.get("citations"):
+            bits.append("cited {}×".format(resolved["citations"]))
+        if bits:
+            meta = Gtk.Label(xalign=0.0)
+            meta.set_wrap(True)
+            meta.set_max_width_chars(58)
+            meta.set_markup(
+                "<small><span alpha='75%'>{}</span></small>".format(
+                    GLib.markup_escape_text("  ·  ".join(bits))))
+            content.append(meta)
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        actions.set_halign(Gtk.Align.END)
+        if resolved.get("doi"):
+            doi_btn = Gtk.Button(label="Open DOI")
+            doi_btn.connect(
+                "clicked",
+                lambda _b, d=resolved["doi"]:
+                    Gio.AppInfo.launch_default_for_uri(
+                        "https://doi.org/" + d, None))
+            actions.append(doi_btn)
+        add_btn = Gtk.Button(label="Add to library")
+        add_btn.connect(
+            "clicked",
+            lambda _b: self._on_add_to_library(popover, entry, resolved, False))
+        actions.append(add_btn)
+        if resolved.get("is_oa") or resolved.get("oa_url"):
+            add_pdf_btn = Gtk.Button(label="Add + try PDF")
+            add_pdf_btn.add_css_class("suggested-action")
+            add_pdf_btn.set_tooltip_text(
+                "Add to library and try to download the open-access "
+                "PDF via OpenAlex.")
+            add_pdf_btn.connect(
+                "clicked",
+                lambda _b: self._on_add_to_library(popover, entry, resolved, True))
+            actions.append(add_pdf_btn)
+        content.append(actions)
+        return False
+
+    def _on_add_to_library(self, popover, entry, resolved, also_get_pdf):
+        if (self.parent_window is None
+                or not hasattr(self.parent_window,
+                               "add_reference_from_viewer")):
+            print("viewer: parent doesn't expose add_reference_from_viewer")
+            return
+        br = _build_br(entry, resolved)
+
+        def _on_done(success, message):
+            try:
+                popover.popdown()
+            except Exception:
+                pass
+            # The browse window's status bar carries the user-visible
+            # outcome; this print is just a developer crumb.
+            print("viewer: add-reference:", message)
+            return False
+        self.parent_window.add_reference_from_viewer(
+            br, also_get_pdf, _on_done)
+
+    def _jump_to(self, page_idx, top_pdf_up=None):
+        """Scroll so that y=`top_pdf_up` (PDF user-space, origin
+        bottom-left) on `page_idx` lands at the top of the viewport.
+        Falls back to the page's top edge when `top_pdf_up` is None
+        or out of range — same effect as `_goto`."""
+        if page_idx < 0 or page_idx >= self.n_pages:
+            return
+        self.current_page = page_idx
+        _, ph_pt = self.doc.get_page(page_idx).get_size()
+        offset_in_page = 0
+        if top_pdf_up is not None and 0 <= top_pdf_up <= ph_pt:
+            offset_in_page = (ph_pt - top_pdf_up) * self.zoom
+        target_y = self.page_y[page_idx] + offset_in_page
+
+        def _do_scroll():
+            adj = self.scrolled.get_vadjustment()
+            adj.set_value(target_y)
+            return False
+        GLib.idle_add(_do_scroll)
+        self._update_page_indicator()
 
     # --- Popovers ------------------------------------------------------
 

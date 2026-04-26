@@ -20,11 +20,11 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gdk, GLib, Gio, GObject, Pango, Adw
 
 from . import (index, edit_dialog, importer, metrics, sidecar, extract,
-               viewer, marks_config, watcher as watcher_mod, author_works,
-               bibtex_import, bibtex_export)
+               viewer, marks_config, prefs, watcher as watcher_mod,
+               author_works, bibtex_import, bibtex_export, opener,
+               references_pdf)
 
-LIBRARY_ROOT = os.environ.get(
-    "PDFORG_LIBRARY", os.path.expanduser("~/pdfs"))
+LIBRARY_ROOT = prefs.get_library_root()
 
 
 # Display flags. Future plan: surface these via a "Display Options"
@@ -34,12 +34,8 @@ display_auto_keywords = False
 
 
 def open_pdf(path):
-    try:
-        subprocess.Popen(["xdg-open", path],
-                         stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL)
-    except Exception as e:
-        print("open failed:", e)
+    if not opener.open_external(path):
+        print("open failed:", path)
 
 
 _SAFE_INLINE_TAGS = ("i", "b", "u", "s", "em", "strong",
@@ -387,6 +383,19 @@ def authors_str(authors_json):
     return ", ".join(a)
 
 
+def _pdf_comment_count(sidecar_path):
+    """Number of highlights in this sidecar that carry a non-empty
+    comment. Returns 0 on a missing or unreadable sidecar — surfacing
+    a "no comments" state is the same as not having an indicator."""
+    try:
+        record = sidecar.read(sidecar_path)
+    except (OSError, ValueError):
+        return 0
+    return sum(
+        1 for h in (record.get("highlights") or [])
+        if (h.get("comment") or "").strip())
+
+
 def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
     box.set_margin_start(8)
@@ -411,10 +420,41 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
             pass
     frame = Gtk.Frame()
     frame.set_size_request(130, 160)
-    frame.set_child(img)
+    comment_count = (0 if is_ghost
+                     else _pdf_comment_count(row["sidecar_path"]))
+    if comment_count:
+        # Yellow count-chip in the top-right of the thumbnail signals
+        # "this PDF has commented highlights". The chip text is plain
+        # digits — colour emoji rendering can crash CoreText/Cairo on
+        # macOS, so we lean on the yellow background (matching the
+        # viewer's comment-marker colour) and the tooltip below to
+        # carry the meaning. `can-target=False` lets the click pass
+        # through to the frame's open-viewer gesture.
+        overlay = Gtk.Overlay()
+        overlay.set_child(img)
+        chip = Gtk.Label()
+        # Background matches viewer.py:_HIGHLIGHT_FILL (RGB 1.0,0.95,0.0)
+        # so the chip, the highlight, and the in-margin marker all read
+        # as one yellow.
+        chip.set_markup(
+            '<small><span background="#fff200" foreground="#000000">'
+            ' {} </span></small>'.format(comment_count))
+        chip.set_halign(Gtk.Align.END)
+        chip.set_valign(Gtk.Align.START)
+        chip.set_margin_top(4)
+        chip.set_margin_end(4)
+        chip.set_can_target(False)
+        overlay.add_overlay(chip)
+        frame.set_child(overlay)
+    else:
+        frame.set_child(img)
     if not is_ghost:
         frame.set_cursor_from_name("pointer")
-        frame.set_tooltip_text("View PDF")
+        tip = "View PDF"
+        if comment_count:
+            tip += "\n{} comment{}".format(
+                comment_count, "" if comment_count == 1 else "s")
+        frame.set_tooltip_text(tip)
         click = Gtk.GestureClick.new()
         click.set_button(1)
         click.connect(
@@ -723,7 +763,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         # END: hamburger first → far right; then mark filter; then
         # search toggle. Order in pack_end is rightmost-first.
         hamburger_menu = Gio.Menu()
-        hamburger_menu.append("Edit Mark Labels…", "win.edit-marks")
+        hamburger_menu.append("Preferences…", "win.preferences")
         hamburger_btn = Gtk.MenuButton()
         hamburger_btn.set_icon_name("open-menu-symbolic")
         hamburger_btn.set_menu_model(hamburger_menu)
@@ -873,7 +913,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             ("import-folder", self._on_import_folder),
             ("import-bibtex", self._on_import_bibtex),
             ("export-bibtex", self._on_export_bibtex),
-            ("edit-marks",    self._open_marks_prefs),
+            ("preferences",   self._open_preferences),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect(
@@ -1604,6 +1644,48 @@ class BrowserWindow(Adw.ApplicationWindow):
 
     # --- Preprint → published-version actions -------------------------
 
+    def add_reference_from_viewer(self, br, also_get_pdf, on_done):
+        """Public entry point used by `viewer.py` when the user clicks
+        the "Add to library" button on a citation popover. Wraps the
+        BibTeX-style import path so the viewer doesn't have to know
+        about `conn`, `LIBRARY_ROOT`, or the cards-list refresh.
+
+        `br` is a BibTeX-shaped dict (title/authors/year/journal/doi
+        plus a synthesised `bibtex_key`). `also_get_pdf=True` chases
+        the OA download via the existing `_on_get_pdf` flow once the
+        ghost is in. `on_done(success: bool, message: str)` is
+        invoked on the GTK thread when the import settles."""
+        try:
+            rec, status = bibtex_import.import_record(
+                self.conn, br, LIBRARY_ROOT)
+        except Exception as e:
+            GLib.idle_add(on_done, False,
+                          "Import failed: {}".format(e))
+            return
+        # Refresh the cards list so the new ghost is visible.
+        self._reload(self.search.get_text() or None)
+        if status == "duplicate":
+            GLib.idle_add(on_done, True,
+                          "Already in your library.")
+            return
+        if status == "error" or rec is None:
+            GLib.idle_add(on_done, False, "Could not import.")
+            return
+        if also_get_pdf and rec.get("doi"):
+            # Find the freshly-imported row by DOI so we can hand it
+            # to the existing OA-download flow. The ghost was just
+            # upserted, so this should always succeed.
+            row = index.find_duplicate(self.conn, doi=rec["doi"],
+                                       exclude_path="")
+            if row:
+                self._on_get_pdf(row)
+                GLib.idle_add(on_done, True,
+                              "Added; trying to fetch PDF…")
+                return
+        GLib.idle_add(on_done, True,
+                      "Added as ghost." if status == "ghost"
+                      else "Added.")
+
     def _on_get_pdf(self, row):
         """Ghost-card "Get PDF": ask OpenAlex for OA pdf URLs for the
         entry's DOI, try them in order via our existing downloader, and
@@ -1905,9 +1987,14 @@ class BrowserWindow(Adw.ApplicationWindow):
         GLib.idle_add(lambda: (body.select_region(0, 0), False)[1])
 
     def _open_references_popover(self, anchor_widget, row):
-        """Show the references *of* this paper (the things it cites),
-        as a single list in publication order. Sourced from OpenAlex's
-        `referenced_works` field — no PDF parsing needed."""
+        """Show the references *of* this paper (the things it cites).
+
+        Primary source is OpenAlex's `referenced_works` (gives us
+        structured metadata: title, authors, year, journal, citation
+        count, in-library detection by DOI). When OpenAlex has no
+        record of this paper, we fall back to parsing the PDF's
+        bibliography directly — fewer fields but always available
+        offline."""
         pop = Gtk.Popover()
         pop.set_parent(anchor_widget)
         pop.set_has_arrow(True)
@@ -1920,10 +2007,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         outer.set_margin_bottom(10)
 
         header = Gtk.Label()
-        header.set_markup(
-            "<b>References</b>"
-            "  <span size='small' alpha='65%'>(OpenAlex, "
-            "in publication order)</span>")
+        header.set_markup("<b>References</b>")
         header.set_halign(Gtk.Align.START)
         outer.append(header)
 
@@ -1942,28 +2026,106 @@ class BrowserWindow(Adw.ApplicationWindow):
         pop.popup()
 
         doi = row["doi"]
+        pdf_path = row["pdf_path"]
+        if sidecar.is_ghost_path(pdf_path) or not os.path.exists(pdf_path):
+            pdf_path = None
 
         def _fetch():
             refs = metrics.fetch_references(doi=doi, limit=50)
+            pdf_refs = []
+            if not refs and pdf_path:
+                try:
+                    pdf_refs = references_pdf.parse_bibliography(pdf_path)
+                except Exception:
+                    pdf_refs = []
             GLib.idle_add(self._fill_references_popover,
-                          status, list_box, refs)
+                          status, list_box, refs, pdf_refs)
 
         threading.Thread(target=_fetch, daemon=True).start()
 
-    def _fill_references_popover(self, status, list_box, refs):
-        if not refs:
-            status.set_text("No references known to OpenAlex.")
+    def _fill_references_popover(self, status, list_box, refs, pdf_refs):
+        if refs:
+            status.set_markup(
+                "<small><span alpha='75%'>{} references "
+                "(OpenAlex, in publication order)</span></small>".format(
+                    len(refs)))
+            existing = self._existing_dois_set()
+            for r in refs:
+                list_box.append(
+                    self._build_related_row(
+                        r, existing,
+                        prefer_date=False, show_citations=True))
             return False
-        status.set_markup(
-            "<small><span alpha='75%'>{} references</span></small>".format(
-                len(refs)))
-        existing = self._existing_dois_set()
-        for r in refs:
-            list_box.append(
-                self._build_related_row(
-                    r, existing,
-                    prefer_date=False, show_citations=True))
+        if pdf_refs:
+            status.set_markup(
+                "<small><span alpha='75%'>{} references "
+                "(parsed from PDF; OpenAlex had no record)"
+                "</span></small>".format(len(pdf_refs)))
+            existing = self._existing_dois_set()
+            for r in pdf_refs:
+                list_box.append(self._build_pdf_ref_row(r, existing))
+            return False
+        status.set_text("No references found.")
         return False
+
+    def _build_pdf_ref_row(self, r, existing_dois):
+        """Render a bibliography entry parsed straight from the PDF.
+        Shape is `{n, text, doi}`: a `[N]` chip on the left, the raw
+        entry text wrapped in the middle, and a DOI button + in-
+        library marker on the right when we extracted a DOI."""
+        frame = Gtk.Frame()
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+        box.set_margin_top(6)
+        box.set_margin_bottom(6)
+
+        n_lbl = Gtk.Label()
+        n_lbl.set_markup(
+            "<small><span alpha='65%'>[{}]</span></small>".format(r["n"]))
+        n_lbl.set_valign(Gtk.Align.START)
+        n_lbl.set_xalign(0.0)
+        n_lbl.set_width_chars(5)
+        box.append(n_lbl)
+
+        text_lbl = Gtk.Label(xalign=0.0)
+        text_lbl.set_wrap(True)
+        text_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        text_lbl.set_max_width_chars(70)
+        text_lbl.set_hexpand(True)
+        text_lbl.set_selectable(True)
+        text_lbl.set_text(r.get("text") or "")
+        box.append(text_lbl)
+
+        doi = (r.get("doi") or "").lower()
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        right.set_valign(Gtk.Align.START)
+        if doi and doi in existing_dois:
+            in_lib = Gtk.Label()
+            in_lib.set_markup(
+                '<span foreground="#33aa33" weight="bold">'
+                '<small>✓ in library</small></span>')
+            in_lib.set_tooltip_text("Already in your library — "
+                                    "click to filter")
+            in_lib_btn = Gtk.Button()
+            in_lib_btn.add_css_class("flat")
+            in_lib_btn.set_child(in_lib)
+            in_lib_btn.connect(
+                "clicked",
+                lambda _b, d=doi: self._navigate_to_doi(d))
+            right.append(in_lib_btn)
+        if doi:
+            doi_btn = Gtk.Button(label="DOI")
+            doi_btn.add_css_class("flat")
+            doi_btn.set_tooltip_text("https://doi.org/" + doi)
+            doi_btn.connect(
+                "clicked",
+                lambda _b, d=doi: open_pdf("https://doi.org/" + d))
+            right.append(doi_btn)
+        box.append(right)
+
+        frame.set_child(box)
+        return frame
 
     def _open_cited_by_popover(self, anchor_widget, row):
         """Show two short lists side-by-section in one popover: the
@@ -2242,7 +2404,19 @@ class BrowserWindow(Adw.ApplicationWindow):
             grid.set_row_spacing(2)
             for i, a in enumerate(authorships):
                 self._build_author_row(grid, i, a, pop)
-            outer.append(grid)
+            # Author lists can run to tens or even hundreds of names
+            # (consortium papers). A popover taller than the screen
+            # silently fails to display on macOS Gtk4, so cap the height
+            # and let the user scroll inside.
+            scroller = Gtk.ScrolledWindow()
+            scroller.set_policy(Gtk.PolicyType.NEVER,
+                                Gtk.PolicyType.AUTOMATIC)
+            scroller.set_propagate_natural_height(True)
+            scroller.set_propagate_natural_width(True)
+            scroller.set_max_content_height(500)
+            scroller.set_min_content_width(320)
+            scroller.set_child(grid)
+            outer.append(scroller)
 
         pop.set_child(outer)
         pop.popup()
@@ -2366,73 +2540,107 @@ class BrowserWindow(Adw.ApplicationWindow):
             # original ordering. (Adw.HeaderBar has no insert-at-index.)
         self.mark_filter_dd = new_dd
 
-    def _open_marks_prefs(self, _btn):
-        win = Gtk.Window(transient_for=self, modal=True)
-        win.set_title("Mark labels")
-        win.set_default_size(420, 240)
+    def _open_preferences(self, _btn):
+        dlg = Adw.PreferencesDialog()
+        dlg.set_title("Preferences")
 
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        outer.set_margin_start(14)
-        outer.set_margin_end(14)
-        outer.set_margin_top(14)
-        outer.set_margin_bottom(14)
+        page = Adw.PreferencesPage()
+        dlg.add(page)
 
-        intro = Gtk.Label()
-        intro.set_xalign(0.0)
-        intro.set_markup(
-            "<small>Give each mark colour a meaning of your choice "
-            "(e.g. <i>Must read</i>, <i>My papers</i>, <i>Cool</i>). "
-            "Leave blank to use the colour name only.</small>")
-        intro.set_wrap(True)
-        outer.append(intro)
+        # ── Library ──────────────────────────────────────────────────────
+        lib_group = Adw.PreferencesGroup()
+        lib_group.set_title("Library")
+        lib_group.set_description("Where your PDF files are stored")
+        page.add(lib_group)
 
-        grid = Gtk.Grid()
-        grid.set_row_spacing(8)
-        grid.set_column_spacing(10)
+        lib_row = Adw.ActionRow()
+        lib_row.set_title("PDF Folder")
+        lib_row.set_subtitle(LIBRARY_ROOT)
+        lib_row.set_subtitle_selectable(True)
+        choose_btn = Gtk.Button(label="Choose…")
+        choose_btn.set_valign(Gtk.Align.CENTER)
+        choose_btn.add_css_class("flat")
+        lib_row.add_suffix(choose_btn)
+        lib_row.set_activatable_widget(choose_btn)
+        lib_group.add(lib_row)
 
-        entries = {}
-        for i, c in enumerate(("red", "orange", "green", "cyan")):
-            chip = Gtk.Label()
-            chip.set_markup(
-                '<span foreground="{}"><b>●</b></span>  {}'.format(
-                    _MARK_COLORS[c], self._MARK_FALLBACK_NAMES[c]))
-            chip.set_halign(Gtk.Align.START)
-            grid.attach(chip, 0, i, 1, 1)
-            e = Gtk.Entry()
-            e.set_text(self.mark_labels.get(c, "") or "")
-            e.set_hexpand(True)
-            grid.attach(e, 1, i, 1, 1)
-            entries[c] = e
-        outer.append(grid)
+        def _on_lib_folder_chosen(fd, result):
+            try:
+                folder = fd.select_folder_finish(result)
+            except GLib.Error:
+                return
+            if folder is None:
+                return
+            new_path = folder.get_path()
+            if not new_path:
+                return
+            global LIBRARY_ROOT
+            LIBRARY_ROOT = new_path
+            data = prefs.load()
+            data["library_root"] = new_path
+            try:
+                prefs.save(data)
+            except Exception as exc:
+                self.status.set_text("Saving preferences failed: " + str(exc))
+                return
+            lib_row.set_subtitle(new_path)
+            os.makedirs(new_path, exist_ok=True)
+            try:
+                self.library_watcher.stop()
+            except Exception:
+                pass
+            self.library_watcher = watcher_mod.LibraryWatcher(
+                self.conn, LIBRARY_ROOT,
+                on_change_cb=self._on_watcher_change)
+            self.library_watcher.start()
+            self._reload(self.search.get_text() or None)
 
-        btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        btns.set_halign(Gtk.Align.END)
-        cancel = Gtk.Button(label="Cancel")
-        save = Gtk.Button(label="Save")
-        save.add_css_class("suggested-action")
-        btns.append(cancel)
-        btns.append(save)
-        outer.append(btns)
+        def _on_choose_lib(_b):
+            fd = Gtk.FileDialog()
+            fd.set_title("Choose PDF Folder")
+            fd.set_initial_folder(Gio.File.new_for_path(LIBRARY_ROOT))
+            fd.select_folder(self, None, _on_lib_folder_chosen)
 
-        cancel.connect("clicked", lambda _b: win.close())
+        choose_btn.connect("clicked", _on_choose_lib)
 
-        def do_save(_b):
-            new_labels = {c: entries[c].get_text().strip()
+        # ── Mark labels ──────────────────────────────────────────────────
+        marks_group = Adw.PreferencesGroup()
+        marks_group.set_title("Mark Labels")
+        marks_group.set_description(
+            "Give each mark colour a meaning, "
+            "e.g. “Must Read” or “My papers”. "
+            "Leave blank to show the colour name only.")
+        page.add(marks_group)
+
+        mark_entries = {}
+        for color in ("red", "orange", "green", "cyan"):
+            row = Adw.EntryRow()
+            row.set_title(self._MARK_FALLBACK_NAMES[color])
+            row.set_text(self.mark_labels.get(color, "") or "")
+            dot = Gtk.Label()
+            dot.set_markup(
+                '<span foreground="{}"><b>●</b></span>'.format(
+                    _MARK_COLORS[color]))
+            row.add_prefix(dot)
+            marks_group.add(row)
+            mark_entries[color] = row
+
+        def _on_dialog_closed(_d):
+            new_labels = {c: mark_entries[c].get_text().strip()
                           for c in ("red", "orange", "green", "cyan")}
+            if new_labels == self.mark_labels:
+                return
             try:
                 marks_config.save(new_labels)
-            except Exception as e:
-                self.status.set_text("Saving labels failed: " + str(e))
+            except Exception as exc:
+                self.status.set_text("Saving mark labels failed: " + str(exc))
                 return
             self.mark_labels = new_labels
             self._refresh_mark_filter_dd()
             self._reload(self.search.get_text() or None)
-            win.close()
 
-        save.connect("clicked", do_save)
-
-        win.set_child(outer)
-        win.present()
+        dlg.connect("closed", _on_dialog_closed)
+        dlg.present(self)
 
 
 def main(argv):

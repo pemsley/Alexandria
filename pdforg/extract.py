@@ -42,6 +42,139 @@ def _have_pdfx():
 _DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 _YEAR_RE = re.compile(r"(19|20)\d{2}")
 
+# pypdf info-dict keys we trust to hold the *article* DOI directly,
+# tried in priority order. Wiley's WPS pipeline writes both
+# /WPS-ARTICLEDOI (the article) and /WPS-JOURNALDOI (a journal-level
+# prefix that's a strict prefix of the article DOI), so picking by
+# regex order alone yields the truncated journal value.
+_ARTICLE_DOI_KEYS = ("/WPS-ARTICLEDOI", "/prism:doi", "/doi")
+_JOURNAL_DOI_KEYS = ("/WPS-JOURNALDOI",)
+
+# A page-1 line that signals "this PDF is the supporting information
+# document, not the article". ACS, RSC, Nature, Wiley and most others
+# all start their SI cover with one of these phrases.
+_SI_HEADER_RE = re.compile(
+    r"^\s*(?:supporting|supplementary|electronic\s+supplementary)\s+"
+    r"(?:information|material|materials)\b",
+    re.IGNORECASE)
+
+# ACS SI filename like "ci4c02293_si_001.pdf". The journal-prefix lookup
+# below maps "ci" to "jcim" so we can synthesise the parent DOI without
+# a network round-trip.
+_ACS_SI_FILENAME_RE = re.compile(
+    r"^(?P<prefix>[a-z]+)(?P<id>\d+[a-z]+\d+)_si_\d+\.pdf$",
+    re.IGNORECASE)
+
+# Most modern ACS DOIs use the "10.1021/acs.<journal>.<id>" form.
+_ACS_PREFIX_TO_JOURNAL = {
+    "ac": "analchem",      # Analytical Chemistry
+    "bc": "bioconjchem",   # Bioconjugate Chem
+    "bi": "biochem",       # Biochemistry
+    "bm": "biomac",        # Biomacromolecules
+    "ci": "jcim",          # J. Chem. Inf. Model.
+    "ct": "jctc",          # J. Chem. Theory Comput.
+    "es": "est",           # Environ. Sci. Technol.
+    "ic": "inorgchem",     # Inorg. Chem.
+    "jp": "jpcb",          # JPCB (also JPCA/JPCC; coarse but usually right)
+    "jo": "joc",           # J. Org. Chem.
+    "la": "langmuir",      # Langmuir
+    "ma": "macromol",      # Macromolecules
+    "mp": "molpharm",      # Mol. Pharm.
+    "nl": "nanolett",      # Nano Lett.
+    "ol": "orglett",       # Org. Lett.
+}
+
+# Legacy ACS journals that don't use the "acs." infix.
+_ACS_PREFIX_NO_INFIX = {
+    "ja": "jacs",          # JACS — DOI is 10.1021/jacs.<id>
+}
+
+
+def _is_supplementary(pdf_path, page1_text):
+    """True if this PDF is a supporting-information document (not the
+    article itself). Two signals: page-1 cover header, or an SI-suffixed
+    filename in a known publisher pattern."""
+    if page1_text:
+        for line in page1_text.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            return bool(_SI_HEADER_RE.match(s))
+    name = os.path.basename(pdf_path or "").lower()
+    if _ACS_SI_FILENAME_RE.match(name):
+        return True
+    return False
+
+
+def _parent_doi_from_si_filename(pdf_path):
+    """Synthesise the parent paper's DOI from an ACS SI filename like
+    ci4c02293_si_001.pdf. Returns None for non-ACS or unmapped prefixes."""
+    name = os.path.basename(pdf_path or "").lower()
+    m = _ACS_SI_FILENAME_RE.match(name)
+    if not m:
+        return None
+    prefix = m.group("prefix")
+    article = m.group("id")
+    if prefix in _ACS_PREFIX_NO_INFIX:
+        return "10.1021/{}.{}".format(_ACS_PREFIX_NO_INFIX[prefix], article)
+    if prefix in _ACS_PREFIX_TO_JOURNAL:
+        return "10.1021/acs.{}.{}".format(
+            _ACS_PREFIX_TO_JOURNAL[prefix], article)
+    return None
+
+
+def _parse_si_parent_title_authors(text):
+    """Lift the parent paper's title and author list from the SI cover.
+
+    The cover layout is consistently:
+
+        SUPPORTING INFORMATION
+        [for]
+        <title line 1>
+        [<title line 2> ...]
+        <author line(s) — first one carrying digits/asterisks>
+
+    Returns (title, authors) where either may be None / []."""
+    if not text:
+        return None, []
+    lines = [l.rstrip() for l in text.splitlines()]
+    i = 0
+    while i < len(lines) and not _SI_HEADER_RE.match(lines[i].strip()):
+        i += 1
+    if i >= len(lines):
+        return None, []
+    i += 1  # skip the SUPPORTING INFORMATION line
+    while i < len(lines) and (
+            not lines[i].strip() or lines[i].strip().lower() == "for"):
+        i += 1
+    title_lines = []
+    while i < len(lines):
+        s = lines[i].strip()
+        if not s:
+            i += 1
+            break
+        # Author line markers: digit footnote indices, footnote symbols,
+        # or " and " linking the last two names.
+        if re.search(r"\d", s) or any(c in s for c in "*†‡§¶") \
+                or re.search(r"\s+and\s+", s, re.I):
+            break
+        title_lines.append(s)
+        i += 1
+    author_blob = []
+    while i < len(lines) and lines[i].strip():
+        author_blob.append(lines[i].strip())
+        i += 1
+    title = " ".join(title_lines).strip(" .,;:") or None
+    authors = []
+    if author_blob:
+        joined = " ".join(author_blob)
+        # Strip footnote markers and normalise " and " to a comma.
+        joined = re.sub(r"[\d*†‡§¶]+", "", joined)
+        joined = re.sub(r"\s+and\s+", ", ", joined, flags=re.I)
+        authors = [a.strip(" ,.") for a in joined.split(",") if a.strip()]
+        authors = [a for a in authors if len(a) >= 3]
+    return title, authors
+
 # Known placeholder/garbage values that publishers leave in /Info.
 _GARBAGE_TITLES = {
     "no job name",
@@ -322,6 +455,45 @@ def _is_data_doi(doi):
     return any(low.startswith(p) for p in _DATA_DOI_PREFIXES)
 
 
+def _doi_from_info(raw):
+    """Pick the article DOI from a pypdf info dictionary.
+
+    Some publishers embed multiple DOI-shaped strings: Wiley's PDFs,
+    for example, carry both /WPS-JOURNALDOI (a journal-level prefix
+    like '10.1107/S20597983') and /WPS-ARTICLEDOI (the actual
+    article DOI '10.1107/S205979831700969X'). A naive regex scan
+    over the joined blob picks whichever the dict iterates first
+    and silently truncates the result.
+
+    Strategy: look at known per-article keys in priority order; if
+    none hit, scan the remaining values (excluding known
+    journal-level keys), drop any DOI that is a strict prefix of
+    another, then prefer publisher DOIs over data-repo DOIs the
+    same way `_scrape_doi` does."""
+    for k in _ARTICLE_DOI_KEYS:
+        v = raw.get(k)
+        if v:
+            m = _DOI_RE.search(str(v))
+            if m:
+                return m.group(0).rstrip(".,;")
+    blob = " ".join(str(v) for k, v in raw.items()
+                    if k not in _JOURNAL_DOI_KEYS)
+    matches = _DOI_RE.findall(blob)
+    if not matches:
+        return None
+    seen = []
+    for raw_match in matches:
+        d = raw_match.rstrip(".,;")
+        if d and d not in seen:
+            seen.append(d)
+    seen = [d for d in seen
+            if not any(other != d and other.startswith(d) for other in seen)]
+    if not seen:
+        return None
+    publisher = [d for d in seen if not _is_data_doi(d)]
+    return publisher[0] if publisher else seen[0]
+
+
 def _scrape_doi(text):
     """Find a DOI in arbitrary text. Returns the most likely publisher
     DOI, or None. When both a publisher DOI and one or more data-repo
@@ -489,9 +661,32 @@ def _scrape_first_page(pdf_path):
 
 def _enrich(result, pdf_path):
     """If metadata is incomplete, scrape page 1 for a DOI and overlay
-    CrossRef data."""
-    if not result.get("doi"):
-        text = _first_page_text(pdf_path)
+    CrossRef data. Also detects SI documents and re-routes them through
+    the parent paper's DOI."""
+    text = _first_page_text(pdf_path)
+    is_si = _is_supplementary(pdf_path, text)
+    if is_si:
+        result["is_supplementary"] = True
+        # Page-1 / pdfx scrapes will have lifted the SI cover's title
+        # and authors. They describe the parent paper but routinely get
+        # truncated mid-sentence (the comma after "Persistence,"
+        # becomes the title boundary; everything after becomes
+        # "authors"). Discard them and let the parent-DOI lookup
+        # repopulate from the canonical record.
+        si_title, si_authors = _parse_si_parent_title_authors(text)
+        result["title"] = None
+        result["authors"] = []
+        if not result.get("doi"):
+            doi = _parent_doi_from_si_filename(pdf_path)
+            if not doi and si_title:
+                # Lazy import: pdforg.metrics pulls in the OpenAlex /
+                # CrossRef HTTP machinery that pure-PDF callers don't
+                # need.
+                from . import metrics as _metrics
+                doi = _metrics.find_doi(si_title, author_names=si_authors)
+            if doi:
+                result["doi"] = doi
+    elif not result.get("doi"):
         doi = _scrape_doi(text)
         if not doi:
             # Some journals (e.g. Science) print the DOI on the references
@@ -516,8 +711,11 @@ def _enrich(result, pdf_path):
         if cr["journal"]:
             result["journal"] = cr["journal"]
 
-    # Last-resort: scrape page 1 if we still have no title.
-    if not result.get("title") or not result.get("authors"):
+    # Last-resort: scrape page 1 if we still have no title — but skip
+    # for SI documents because the cover page describes the parent
+    # paper and the heuristic scraper routinely clips it badly.
+    if not is_si and (
+            not result.get("title") or not result.get("authors")):
         t, a = _scrape_first_page(pdf_path)
         if t and not result.get("title"):
             result["title"] = t
@@ -560,10 +758,7 @@ def extract_from_pdf(pdf_path):
     author = raw.get("/Author") or raw.get("Author")
     out["authors"] = _split_authors(author) if author else []
 
-    blob = " ".join(str(v) for v in raw.values())
-    m = _DOI_RE.search(blob)
-    if m:
-        out["doi"] = m.group(0).rstrip(".,;")
+    out["doi"] = _doi_from_info(raw)
 
     cd = raw.get("/CreationDate") or raw.get("CreationDate") or ""
     out["year"] = _parse_pdf_date(cd)

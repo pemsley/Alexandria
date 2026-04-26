@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS papers (
     last_author  TEXT,
     authorships_json TEXT,
     citations_by_year_json TEXT,
-    published_version_json TEXT
+    published_version_json TEXT,
+    is_supplementary INTEGER DEFAULT 0
 );
 """
 
@@ -77,6 +78,9 @@ def _migrate(conn):
         conn.execute("ALTER TABLE papers ADD COLUMN citations_by_year_json TEXT")
     if "published_version_json" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN published_version_json TEXT")
+    if "is_supplementary" not in cols:
+        conn.execute(
+            "ALTER TABLE papers ADD COLUMN is_supplementary INTEGER DEFAULT 0")
     conn.commit()
     _reencode_unicode_columns(conn)
 
@@ -275,8 +279,9 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
              citations, citations_source, citations_fetched, mark,
              auto_keywords_json, abstract,
              first_author, last_author, authorships_json,
-             citations_by_year_json, published_version_json)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             citations_by_year_json, published_version_json,
+             is_supplementary)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(pdf_path) DO UPDATE SET
             sidecar_path=excluded.sidecar_path,
             thumb_path=excluded.thumb_path,
@@ -299,7 +304,8 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
             last_author=excluded.last_author,
             authorships_json=excluded.authorships_json,
             citations_by_year_json=excluded.citations_by_year_json,
-            published_version_json=excluded.published_version_json
+            published_version_json=excluded.published_version_json,
+            is_supplementary=excluded.is_supplementary
     """, (pdf_path, sidecar_path, thumb_path,
           record.get("title"), authors_json,
           record.get("year"), record.get("doi"), record.get("journal"),
@@ -312,7 +318,8 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
           auto_keywords_json,
           record.get("abstract"),
           first_author, last_author, authorships_json,
-          cby_json, pv_json))
+          cby_json, pv_json,
+          1 if record.get("is_supplementary") else 0))
     conn.commit()
 
 

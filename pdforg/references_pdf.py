@@ -3,9 +3,13 @@
 v1 scope: numbered references only ([N] or N. style). Returns a list
 of {n, text, doi} dicts; the viewer can hit-test [N] markers in the
 body and look up the matching entry. Author-year styles ("Smith,
-2020") and reference ranges ("[1,2,3]") are deliberately out of
-scope here — they're a much messier problem and best layered on
-top once the numbered case is solid.
+2020") are deliberately out of scope — they're a much messier
+problem and best layered on top once the numbered case is solid.
+
+In-text citations like "[9-12]" or "[1, 3, 5-7]" are split into
+individual entry numbers by `expand_citation_token`; the
+bibliography itself only contains one entry per number, so the
+range expansion lives at the lookup layer, not here.
 """
 
 import re
@@ -37,16 +41,41 @@ _END_HEADERS = (
     "supporting information",
     "acknowledgments",
     "acknowledgements",
+    "publisher's note",
+    "publisher’s note",
+    "competing interests",
+    "author contributions",
+    "data availability",
+    "ethics declarations",
 )
 _END_HEADER_RE = re.compile(
     r"^\s*(?:\d+[\.\)]?\s+)?(" + "|".join(_END_HEADERS) + r")\b",
     re.IGNORECASE)
 
-# Markers at the start of a bibliography entry. We accept either
-# bracketed ([12]) or dotted (12.) numerals at line start.
-_ENTRY_RE = re.compile(r"^\s*(?:\[(\d{1,3})\]|(\d{1,3})\.)\s+(.*)$")
+# Running headers / footers that survive into the text stream and
+# would otherwise attach as continuation lines to the previous
+# bibliography entry. We drop these outright before walking entries.
+_NOISE_RE = re.compile(
+    r"^\s*(?:"
+    r"page\s+\d+\s+of\s+\d+"            # "Page 17 of 17"
+    r"|\(\d{4}\)\s+\d+\s*:\s*\d+"       # Springer running head "(2024) 16:32"
+    r")\s*$",
+    re.IGNORECASE)
+
+# Bibliography entry markers: bracketed ([12]) or dotted/parenthesised
+# (12. or 12)) numerals at line start. Hanging-indent layouts often
+# render the marker on its own visual line ("12." with nothing after),
+# so the body part is allowed to be empty.
+_ENTRY_RE = re.compile(r"^\s*(?:\[(\d{1,3})\]|(\d{1,3})[\.\)])\s*(.*)$")
 
 _DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
+
+# Stitches DOI fragments split across lines (e.g. "10.1234/abc def"
+# from a wrapped URL) — applied iteratively until stable.
+_FRAGMENT_DOI_RE = re.compile(
+    r"(10\.\d{4,9}/[-._;()/:A-Z0-9]*?)\s+([-._;()/:A-Z0-9])",
+    re.IGNORECASE,
+)
 
 
 def _open_doc(pdf_path):
@@ -54,68 +83,150 @@ def _open_doc(pdf_path):
     return Poppler.Document.new_from_gfile(gfile, None, None)
 
 
-def _page_texts(doc):
-    """Return the document text as a list of per-page strings."""
+def _page_lines(page):
+    """Return [(text, x1, y1, x2, y2), ...] for one page's visual
+    lines. Coordinates are in PDF points with the origin at the top
+    of the page (poppler-glib convention).
+
+    Uses get_text_layout() so column-aware reading order can be
+    reconstructed; falls back to positionless lines if the layout
+    array can't be aligned with get_text()."""
+    text = page.get_text() or ""
+    res = page.get_text_layout()
+    if isinstance(res, tuple):
+        ok, rects = res
+    else:
+        rects = res
+        ok = rects is not None
+    if not ok or rects is None:
+        return _fallback_lines(text)
+    if len(rects) == len(text):
+        return _zip_into_lines(text, rects, split_on_newline=True)
+    no_nl = text.replace("\n", "")
+    if len(rects) == len(no_nl):
+        return _zip_into_lines(no_nl, rects, split_on_newline=False)
+    return _fallback_lines(text)
+
+
+def _fallback_lines(text):
+    return [(line, 0.0, float(i), 0.0, float(i + 1))
+            for i, line in enumerate(text.splitlines())]
+
+
+def _zip_into_lines(text, rects, split_on_newline):
+    """Group character/rect pairs into lines. When poppler emits
+    explicit '\\n' characters we split on those; otherwise we split
+    on a vertical jump in the y-coordinate."""
     out = []
-    for i in range(doc.get_n_pages()):
-        page = doc.get_page(i)
-        out.append(page.get_text() or "")
+    cur = []
+    last_y = None
+    for ch, r in zip(text, rects):
+        if split_on_newline and ch == "\n":
+            _flush_line(cur, out)
+            cur = []
+            last_y = None
+            continue
+        if (not split_on_newline) and last_y is not None and abs(r.y1 - last_y) > 4.0:
+            _flush_line(cur, out)
+            cur = []
+        cur.append((ch, r))
+        last_y = r.y1
+    _flush_line(cur, out)
     return out
 
 
-def _find_bibliography_start(page_texts):
-    """Locate the bibliography header. Returns (page_idx, line_idx)
-    pointing to the first line *after* the header, or None."""
-    for pi, txt in enumerate(page_texts):
-        lines = txt.splitlines()
-        for li, line in enumerate(lines):
-            if _HEADER_RE.match(line):
-                return pi, li + 1
-    return None
+# Zero-width characters that some publishers (Springer in particular)
+# inject between every glyph of a hyperlinked DOI as wrap hints. They
+# don't render visibly but break our DOI regex.
+_ZERO_WIDTH = "".join(["​", "‌", "‍", "﻿", "­"])
+_ZERO_WIDTH_TRANS = str.maketrans("", "", _ZERO_WIDTH)
 
 
-def _collect_bibliography_lines(page_texts, start):
-    """From `start = (page_idx, line_idx)`, walk forward across pages,
-    stopping at the first end-of-bibliography header. Returns a flat
-    list of lines."""
-    pi, li = start
+def _flush_line(chars, out):
+    if not chars:
+        return
+    line_text = "".join(ch for ch, _ in chars)
+    line_text = line_text.translate(_ZERO_WIDTH_TRANS).rstrip()
+    if not line_text.strip():
+        return
+    xs1 = [r.x1 for _, r in chars]
+    ys1 = [r.y1 for _, r in chars]
+    xs2 = [r.x2 for _, r in chars]
+    ys2 = [r.y2 for _, r in chars]
+    out.append((line_text, min(xs1), min(ys1), max(xs2), max(ys2)))
+
+
+def _doc_lines(doc):
+    """[(page_idx, text, x1, y1, x2, y2), ...] across all pages."""
     out = []
-    while pi < len(page_texts):
-        lines = page_texts[pi].splitlines()
-        for line in lines[li:]:
-            if _END_HEADER_RE.match(line):
-                return out
-            out.append(line)
-        pi += 1
-        li = 0
+    for pi in range(doc.get_n_pages()):
+        for line in _page_lines(doc.get_page(pi)):
+            out.append((pi,) + line)
     return out
 
 
-def _split_into_entries(lines):
-    """Group continuation lines onto their leading [N] / N. marker."""
-    entries = []
-    current = None  # (n, [lines])
-    for line in lines:
-        m = _ENTRY_RE.match(line)
-        if m:
-            if current is not None:
-                entries.append(current)
-            n = int(m.group(1) or m.group(2))
-            current = (n, [m.group(3).strip()])
-        else:
-            if current is None:
-                continue  # text before the first numbered entry
-            stripped = line.strip()
-            if stripped:
-                current[1].append(stripped)
-    if current is not None:
-        entries.append(current)
-    return entries
+def _column_edges(lines):
+    """Cluster line-x1 values to recover column left edges.
+
+    Returns a sorted list — one entry for single-column, two for
+    double-column. We bin x-coordinates and keep only well-populated
+    bins, so stray page-numbers and centred headers (which sit at
+    odd x positions) don't manufacture a fake gutter. The largest
+    gap among popular bins must be both wide (>80pt) and clearly
+    bigger than any within-column gap (>3x) before we call it a
+    two-column layout — otherwise a typical hanging indent of
+    15-20pt could masquerade as a column boundary."""
+    if not lines:
+        return []
+    if len(lines) < 5:
+        return [min(rec[2] for rec in lines)]
+    bins = {}
+    for rec in lines:
+        key = int(rec[2] // 10) * 10
+        bins[key] = bins.get(key, 0) + 1
+    threshold = max(3, int(len(lines) * 0.03))
+    popular = sorted(k for k, c in bins.items() if c >= threshold)
+    if not popular:
+        return [min(rec[2] for rec in lines)]
+    if len(popular) < 2:
+        return [popular[0]]
+    gaps = sorted(
+        ((popular[i + 1] - popular[i], i) for i in range(len(popular) - 1)),
+        reverse=True,
+    )
+    biggest, idx = gaps[0]
+    second = gaps[1][0] if len(gaps) > 1 else 0.0
+    if biggest > 80.0 and biggest > 3.0 * max(second, 1.0):
+        return [popular[0], popular[idx + 1]]
+    return [popular[0]]
+
+
+def _column_index(x, edges):
+    if len(edges) <= 1:
+        return 0
+    return min(range(len(edges)), key=lambda i: abs(x - edges[i]))
+
+
+def _sort_reading_order(lines, edges):
+    return sorted(
+        lines,
+        key=lambda rec: (rec[0], _column_index(rec[2], edges), rec[3]),
+    )
+
+
+def _stitch_wrapped(text):
+    """Reassemble tokens that line-wrapping split with a space.
+    Soft-hyphen wraps (`s41598-` / `12345`) come first; then any
+    space inside a `10.NNNN/...` DOI body is collapsed iteratively."""
+    text = re.sub(r"(\w)-\s+(\w)", r"\1\2", text)
+    prev = None
+    while prev != text:
+        prev = text
+        text = _FRAGMENT_DOI_RE.sub(r"\1\2", text)
+    return text
 
 
 def _normalize_doi(doi):
-    """Trim trailing punctuation that often clings to a DOI scraped
-    from a sentence end."""
     if not doi:
         return None
     return doi.rstrip(".,;)]>").lower()
@@ -131,31 +242,142 @@ def parse_bibliography(pdf_path):
         doc = _open_doc(pdf_path)
     except Exception:
         return []
-    page_texts = _page_texts(doc)
-    start = _find_bibliography_start(page_texts)
-    if start is None:
+    lines = _doc_lines(doc)
+    if not lines:
         return []
-    lines = _collect_bibliography_lines(page_texts, start)
-    raw = _split_into_entries(lines)
+
+    # Find the bibliography header by spatial position. Two-column
+    # journals often place "References" in column 1 with article
+    # body still flowing in column 2 above where refs start, so we
+    # need both the header's column and y to know what counts as bib.
+    header_page = None
+    header_x = None
+    header_y = None
+    for rec in lines:
+        if _HEADER_RE.match(rec[1]):
+            header_page, _, header_x, header_y, _, _ = rec
+            break
+    if header_page is None:
+        return []
+
+    candidate_all = [rec for rec in lines if rec[0] >= header_page]
+    edges = _column_edges(candidate_all)
+    header_col = _column_index(header_x, edges)
+
+    def in_bib_region(rec):
+        pi, _, x1, y1, _, _ = rec
+        if pi > header_page:
+            return True
+        col = _column_index(x1, edges)
+        if col > header_col:
+            return True
+        return col == header_col and y1 > header_y
+
+    candidate = [rec for rec in candidate_all if in_bib_region(rec)]
+    candidate = _sort_reading_order(candidate, edges)
+
+    cutoff = len(candidate)
+    for j, rec in enumerate(candidate):
+        if _END_HEADER_RE.match(rec[1]):
+            cutoff = j
+            break
+    bib = candidate[:cutoff]
+    if not bib:
+        return []
+
+    # Running headers ("Carbery et al. Journal of Cheminformatics")
+    # and journal-issue strings appear at the top of each page. They
+    # don't match _ENTRY_RE, so without filtering they'd attach as
+    # continuation lines to whichever entry was current when the page
+    # broke. Drop any non-marker line on a page that sits *above* the
+    # first marker on that page.
+    page_first_marker_y = {}
+    for rec in bib:
+        pi, text, _, y1, _, _ = rec
+        if _ENTRY_RE.match(text):
+            prev = page_first_marker_y.get(pi)
+            if prev is None or y1 < prev:
+                page_first_marker_y[pi] = y1
+    bib = [
+        rec for rec in bib
+        if _ENTRY_RE.match(rec[1])
+        or rec[0] not in page_first_marker_y
+        or rec[3] >= page_first_marker_y[rec[0]]
+    ]
+    bib = [rec for rec in bib if not _NOISE_RE.match(rec[1])]
+
+    # Walk markers and accumulate continuation lines. With reading
+    # order correct, hanging-indent markers ("5." alone on a line)
+    # land immediately before their body lines, so the marker opens
+    # the entry and the next non-marker line(s) attach to it.
+    entries = []
+    current = None
+    for rec in bib:
+        text = rec[1]
+        m = _ENTRY_RE.match(text)
+        if m:
+            if current is not None:
+                entries.append(current)
+            n = int(m.group(1) or m.group(2))
+            tail = m.group(3).strip()
+            current = (n, [tail] if tail else [])
+        elif current is not None:
+            stripped = text.strip()
+            if stripped:
+                current[1].append(stripped)
+    if current is not None:
+        entries.append(current)
+
     out = []
     seen = set()
-    for n, parts in raw:
+    for n, parts in entries:
         if n in seen:
-            continue  # ignore stray duplicate numbers
-        seen.add(n)
-        text = " ".join(parts).strip()
-        if not text:
             continue
-        # Stitch soft-hyphen line wraps. PDF text comes out as one
-        # line per visual line, so a DOI like "10.1038/s41598-" /
-        # "12345" arrives as "...s41598- 12345" — the DOI regex
-        # would stop at the space.
-        text = re.sub(r"(\w)-\s+(\w)", r"\1\2", text)
-        m = _DOI_RE.search(text)
+        seen.add(n)
+        joined = " ".join(parts).strip()
+        if not joined:
+            continue
+        joined = _stitch_wrapped(joined)
+        m = _DOI_RE.search(joined)
         out.append({
             "n": n,
-            "text": text,
+            "text": joined,
             "doi": _normalize_doi(m.group(0)) if m else None,
         })
     out.sort(key=lambda r: r["n"])
     return out
+
+
+_CITATION_TOKEN_RE = re.compile(r"\[\s*([\d\s,\-–—]+)\s*\]")
+
+
+def expand_citation_token(token):
+    """Expand an in-text citation like '[9-12]' or '[1, 3, 5-7]'
+    into the explicit list of bibliography entry numbers it points
+    to. Accepts the surrounding brackets or just the inner body.
+    Unparseable parts are skipped silently.
+
+    Used by the viewer to map a clicked citation in the body of the
+    paper to one or more bibliography entries; bibliography entries
+    themselves don't use ranges."""
+    m = _CITATION_TOKEN_RE.search(token) if "[" in token else None
+    body = m.group(1) if m else token
+    body = body.replace("–", "-").replace("—", "-")
+    nums = []
+    for part in body.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            try:
+                lo, hi = (int(x.strip()) for x in part.split("-", 1))
+            except ValueError:
+                continue
+            if lo <= hi:
+                nums.extend(range(lo, hi + 1))
+        else:
+            try:
+                nums.append(int(part))
+            except ValueError:
+                continue
+    return nums

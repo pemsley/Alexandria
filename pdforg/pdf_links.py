@@ -185,3 +185,48 @@ def read_citation_links(pdf_path):
         if page_links:
             out[pi] = page_links
     return out
+
+
+def assign_ref_n_by_position(citation_links, bibliography_positions,
+                             tolerance=12.0):
+    """Patch a `citation_links` dict (as returned by
+    `read_citation_links`) so Links whose destination name didn't
+    match the `CR<N>` pattern (`ref_n is None`) get a reference
+    number from the parsed bibliography by y-coordinate matching.
+
+    `bibliography_positions` is `[(n, page_idx, y_pdf), ...]` in
+    PDF user space — exactly what
+    `references_pdf.bibliography_positions(pdf_path)` returns.
+
+    For each `ref_n=None` Link whose `(target_page, target_top)`
+    falls within `tolerance` PDF-points of a parsed entry's
+    `(page, y)`, we assign the entry's `n`. Links that don't match
+    (e.g. figure / section cross-references) are left untouched —
+    they keep working as plain jumps with no popover.
+
+    Returns a new dict; the input is not mutated."""
+    if not bibliography_positions:
+        return citation_links
+    by_page = {}
+    for n, page, y in bibliography_positions:
+        by_page.setdefault(page, []).append((y, n))
+
+    out = {}
+    for page_idx, links in citation_links.items():
+        new_links = []
+        for rect, target_page, target_top, ref_n in links:
+            if (ref_n is None
+                    and target_top is not None
+                    and target_page in by_page):
+                best_n = None
+                best_dy = None
+                for y, n in by_page[target_page]:
+                    dy = abs(target_top - y)
+                    if best_dy is None or dy < best_dy:
+                        best_dy = dy
+                        best_n = n
+                if best_dy is not None and best_dy <= tolerance:
+                    ref_n = best_n
+            new_links.append((rect, target_page, target_top, ref_n))
+        out[page_idx] = new_links
+    return out

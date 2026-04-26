@@ -309,18 +309,22 @@ def parse_bibliography(pdf_path):
     # Walk markers and accumulate continuation lines. With reading
     # order correct, hanging-indent markers ("5." alone on a line)
     # land immediately before their body lines, so the marker opens
-    # the entry and the next non-marker line(s) attach to it.
+    # the entry and the next non-marker line(s) attach to it. We also
+    # record the (page, y_top_poppler) of the *marker* line for each
+    # entry — that lets `bibliography_positions()` synthesise PDF-
+    # user-space coordinates that pdf_links can match destinations
+    # against.
     entries = []
     current = None
     for rec in bib:
-        text = rec[1]
+        pi, text, _, y1, _, _ = rec
         m = _ENTRY_RE.match(text)
         if m:
             if current is not None:
                 entries.append(current)
             n = int(m.group(1) or m.group(2))
             tail = m.group(3).strip()
-            current = (n, [tail] if tail else [])
+            current = (n, [tail] if tail else [], pi, y1)
         elif current is not None:
             stripped = text.strip()
             if stripped:
@@ -330,7 +334,7 @@ def parse_bibliography(pdf_path):
 
     out = []
     seen = set()
-    for n, parts in entries:
+    for n, parts, pi, y_top in entries:
         if n in seen:
             continue
         seen.add(n)
@@ -343,8 +347,48 @@ def parse_bibliography(pdf_path):
             "n": n,
             "text": joined,
             "doi": _normalize_doi(m.group(0)) if m else None,
+            "page": pi,
+            "y_top_poppler": y_top,
         })
     out.sort(key=lambda r: r["n"])
+    return out
+
+
+def bibliography_positions(pdf_path):
+    """Return marker positions for a parsed bibliography in PDF
+    user space — `[(n, page_idx, y_pdf), ...]` — where `y_pdf` has
+    the origin at the bottom-left of the page (PDF convention) so
+    callers can match these against the `target_top` field of
+    `pdf_links.read_citation_links` directly without coordinate-
+    system conversions.
+
+    Used by `pdf_links.assign_ref_n_by_position` to recover the
+    reference number for Link annotations whose destination name
+    doesn't follow a recognisable `CR<N>` pattern (e.g. Taylor &
+    Francis's `Anchor N` scheme). Returns `[]` when the
+    bibliography can't be parsed."""
+    try:
+        doc = _open_doc(pdf_path)
+    except Exception:
+        return []
+    refs = parse_bibliography(pdf_path)
+    if not refs:
+        return []
+    page_h = {}
+    out = []
+    for r in refs:
+        pi = r.get("page")
+        y_pop = r.get("y_top_poppler")
+        if pi is None or y_pop is None:
+            continue
+        if pi not in page_h:
+            try:
+                _, h = doc.get_page(pi).get_size()
+            except Exception:
+                continue
+            page_h[pi] = h
+        h = page_h[pi]
+        out.append((r["n"], pi, h - y_pop))
     return out
 
 

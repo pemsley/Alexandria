@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -22,7 +23,7 @@ from gi.repository import Gtk, Gdk, GLib, Gio, GObject, Pango, Adw
 from . import (index, edit_dialog, importer, metrics, sidecar, extract,
                viewer, marks_config, prefs, watcher as watcher_mod,
                author_works, bibtex_import, bibtex_export, ris_export,
-               opener, references_pdf, discover)
+               opener, references_pdf, discover, csl_format)
 
 LIBRARY_ROOT = prefs.get_library_root()
 
@@ -658,7 +659,83 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
         lambda *_: parent_window._mark_focus(row["pdf_path"]))
     box.add_controller(focus_click)
 
+    # Right-click → "Cite this paper as…" submenu. One button per
+    # vendored CSL style; click → format → clipboard → toast.
+    cite_click = Gtk.GestureClick.new()
+    cite_click.set_button(3)   # secondary mouse / two-finger trackpad
+    cite_click.connect(
+        "pressed",
+        lambda g, n, x, y: _show_cite_menu(g, x, y, row, parent_window))
+    box.add_controller(cite_click)
+
     return box
+
+
+def _show_cite_menu(gesture, x, y, row, parent_window):
+    """Pop a small "Cite this paper as…" menu next to the click. Each
+    button formats the citation in that style and copies it to the
+    clipboard. Anchored to the card widget; positioned at the click
+    point via `set_pointing_to`."""
+    anchor = gesture.get_widget()
+    pop = Gtk.Popover()
+    pop.set_parent(anchor)
+    pop.set_has_arrow(True)
+    rect = Gdk.Rectangle()
+    rect.x, rect.y, rect.width, rect.height = int(x), int(y), 1, 1
+    pop.set_pointing_to(rect)
+
+    outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+    outer.set_margin_start(8)
+    outer.set_margin_end(8)
+    outer.set_margin_top(6)
+    outer.set_margin_bottom(6)
+    header = Gtk.Label(xalign=0.0)
+    header.set_markup(
+        "<small><span alpha='65%'>Cite this paper as…</span></small>")
+    outer.append(header)
+
+    for style in csl_format.list_styles():
+        btn = Gtk.Button(label=style["label"])
+        btn.add_css_class("flat")
+        btn.set_halign(Gtk.Align.START)
+        btn.connect(
+            "clicked",
+            lambda _b, s=style: _do_copy_citation(
+                s, row, parent_window, pop))
+        outer.append(btn)
+
+    pop.set_child(outer)
+    pop.popup()
+
+
+def _do_copy_citation(style, row, parent_window, pop):
+    """Format the citation in `style` and copy it to the clipboard.
+    Reads the sidecar fresh so any edits since the card was rendered
+    are reflected."""
+    try:
+        rec = sidecar.read(row["sidecar_path"])
+    except Exception as e:
+        parent_window._toast(
+            "Could not read sidecar: {}".format(e), timeout=6)
+        pop.popdown()
+        return
+    try:
+        text = csl_format.format_citation(
+            rec, style["key"], mode="bibliography")
+    except Exception as e:
+        parent_window._toast(
+            "Format failed: {}".format(e), timeout=6)
+        pop.popdown()
+        return
+    if not text:
+        parent_window._toast("Empty citation — missing fields?", timeout=5)
+        pop.popdown()
+        return
+    clipboard = parent_window.get_clipboard()
+    clipboard.set(text)
+    parent_window._toast(
+        "Copied {} citation".format(style["label"]))
+    pop.popdown()
 
 
 class BrowserWindow(Adw.ApplicationWindow):
@@ -2940,8 +3017,47 @@ class BrowserWindow(Adw.ApplicationWindow):
         dlg.present(self)
 
 
+def _show_db_error_and_quit(app, err):
+    """Friendly replacement for the bare sqlite3 traceback when
+    `index.open_db()` fails (most often: a stale process is still
+    holding the WAL lock). Shows a Gtk.AlertDialog and quits the
+    app cleanly when the user dismisses it."""
+    import sqlite3 as _sql
+    body = (
+        "Alexandria can't open its database at:\n"
+        "{}\n\n"
+        "Another Alexandria process may still be running, or a "
+        "previous session didn't shut down cleanly and is still "
+        "holding the database lock.\n\n"
+        "Try closing other Alexandria windows. If that doesn't help, "
+        "run this in a terminal and try again:\n"
+        "    pkill -f pdforg-browse\n\n"
+        "(SQLite said: {})"
+    ).format(index.DEFAULT_DB_PATH, err)
+    # Mirror to stderr too — terminal users see it without waiting
+    # for the dialog dismissal.
+    print("Alexandria: cannot open the library database.\n" + body,
+          file=sys.stderr)
+
+    dlg = Gtk.AlertDialog()
+    dlg.set_modal(True)
+    dlg.set_message("Cannot open the library database")
+    dlg.set_detail(body)
+    dlg.set_buttons(["Quit"])
+    dlg.set_default_button(0)
+    dlg.set_cancel_button(0)
+
+    def _on_response(d, result):
+        try:
+            d.choose_finish(result)
+        except GLib.Error:
+            pass
+        app.quit()
+
+    dlg.choose(None, None, _on_response)
+
+
 def main(argv):
-    conn = index.open_db()
     # Adw.Application initialises libadwaita (theme + dark/light follow
     # the system) and gives us native HeaderBar / Toast support.
     app = Adw.Application(application_id="io.github.pemsley.Alexandria")
@@ -2958,6 +3074,16 @@ def main(argv):
             gs.reset_property("gtk-application-prefer-dark-theme")
         Adw.StyleManager.get_default().set_color_scheme(
             Adw.ColorScheme.PREFER_LIGHT)
+
+        # DB open is deferred until after the Adw.Application is up
+        # so that a failure (most often a stale-lock condition) can
+        # be presented as a Gtk.AlertDialog instead of dumping a raw
+        # sqlite3 traceback to the terminal.
+        try:
+            conn = index.open_db()
+        except sqlite3.OperationalError as e:
+            _show_db_error_and_quit(app, str(e))
+            return
 
         win = BrowserWindow(app, conn)
         win.present()

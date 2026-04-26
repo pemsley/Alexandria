@@ -193,6 +193,23 @@ class PdfViewerWindow(Gtk.Window):
         # open time so a click on `[1]` in the body can jump straight
         # to entry [1] in the references, like Preview does.
         self.citation_links = pdf_links.read_citation_links(pdf_path)
+        # Path A finds the Link annotations but can only attach a
+        # ref_n when the destination name follows a `CR<N>` pattern
+        # (Springer / Nature). For publishers that use opaque
+        # destination names (Taylor & Francis's `Anchor N`, array
+        # destinations with no name at all, …), fall back to
+        # geometry: parse the bibliography, then match each Link's
+        # destination y-coord against the parsed entries to recover
+        # ref_n. Links that don't land on a bibliography entry —
+        # figure / section cross-references — keep ref_n=None and
+        # silently skip the popover, which is the right behaviour.
+        try:
+            bib_positions = references_pdf.bibliography_positions(pdf_path)
+        except Exception:
+            bib_positions = []
+        if bib_positions:
+            self.citation_links = pdf_links.assign_ref_n_by_position(
+                self.citation_links, bib_positions)
         # Per-page "is the cursor currently over a link?" cache, used
         # to avoid re-setting the cursor on every motion event.
         self._cursor_over_link = {}

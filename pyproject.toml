@@ -20,6 +20,10 @@ dependencies = [
     # so pin explicitly — pip otherwise refuses pre-releases.
     # bibtexparser prior to v2 is not maintained.
     "bibtexparser==2.0.0b9",
+    # CSL citation processor for "Cite this paper as…" — turns
+    # CSL JSON + a .csl style into a formatted citation. Used by
+    # csl_format.py.
+    "citeproc-py>=0.9",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -46,3 +50,9 @@ alexandria-classify = "pdforg.classify:main"
 [tool.setuptools.packages.find]
 include = ["pdforg*"]
 exclude = ["tests*"]
+
+# Bundle the vendored CSL style files (CC-BY-SA 3.0, from
+# github.com/citation-style-language/styles) so they're available
+# from `pip install .` and from the Flatpak build.
+[tool.setuptools.package-data]
+pdforg = ["styles/*.csl"]

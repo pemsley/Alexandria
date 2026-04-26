@@ -116,7 +116,17 @@ def _fallback_lines(text):
 def _zip_into_lines(text, rects, split_on_newline):
     """Group character/rect pairs into lines. When poppler emits
     explicit '\\n' characters we split on those; otherwise we split
-    on a vertical jump in the y-coordinate."""
+    on a vertical jump in the y-coordinate.
+
+    We *also* split on a large y-jump even in newline mode, because
+    poppler occasionally elides the newline between the bottom of
+    one column and the top of the next on the same page. Without
+    this fallback those two physical lines fuse, the merged line's
+    y is reported as the minimum (top of the second column), and
+    the parser attributes the second column's leading text to a
+    spatially-distant entry — the PNAS bibliography hits this on
+    the col-0-to-col-1 wrap."""
+    BIG_Y_JUMP = 30.0  # bigger than normal line spacing (~8-15pt)
     out = []
     cur = []
     last_y = None
@@ -126,9 +136,14 @@ def _zip_into_lines(text, rects, split_on_newline):
             cur = []
             last_y = None
             continue
-        if (not split_on_newline) and last_y is not None and abs(r.y1 - last_y) > 4.0:
-            _flush_line(cur, out)
-            cur = []
+        if last_y is not None:
+            small_jump = abs(r.y1 - last_y) > 4.0
+            if (not split_on_newline) and small_jump:
+                _flush_line(cur, out)
+                cur = []
+            elif split_on_newline and abs(r.y1 - last_y) > BIG_Y_JUMP:
+                _flush_line(cur, out)
+                cur = []
         cur.append((ch, r))
         last_y = r.y1
     _flush_line(cur, out)
@@ -232,12 +247,61 @@ def _normalize_doi(doi):
     return doi.rstrip(".,;)]>").lower()
 
 
+def _find_bibliography_fallback(lines, min_run=5):
+    """Locate the bibliography in PDFs that have no "References"
+    heading (older PNAS, some Cell Press, …) by finding the longest
+    *strictly-contiguous* run of sequentially-numbered entry markers
+    in document order: candidates[i].n == 1, candidates[i+1].n == 2,
+    candidates[i+2].n == 3, ... with no intervening markers.
+
+    Strict contiguity is what disambiguates real bibliographies from
+    stray body-text markers like an in-paragraph "1)". A spurious
+    "1)" is followed in document order by other body markers (Eq.
+    refs, footnotes, citation tokens) before the real bib's "2."
+    arrives, so its contiguous run length is 1, while the real bib's
+    is the entry count.
+
+    Returns `(page, x, y)` of the marker for entry 1 of that run,
+    or `None` if no run of at least `min_run` entries was found."""
+    candidates = []  # (n, page, x, y)
+    for rec in lines:
+        m = _ENTRY_RE.match(rec[1])
+        if m:
+            n = int(m.group(1) or m.group(2))
+            candidates.append((n, rec[0], rec[2], rec[3]))
+    if not candidates:
+        return None
+    best_start = None
+    best_len = 0
+    for start in range(len(candidates)):
+        if candidates[start][0] != 1:
+            continue
+        run_len = 1
+        # Strict contiguity: each next candidate must be the next
+        # integer in sequence. Stop at the first gap or out-of-order
+        # candidate. This rejects body-text "1)" because the next
+        # candidate in document order is rarely "2)".
+        for j in range(start + 1, len(candidates)):
+            if candidates[j][0] == run_len + 1:
+                run_len += 1
+            else:
+                break
+        if run_len > best_len:
+            best_len = run_len
+            best_start = start
+    if best_start is None or best_len < min_run:
+        return None
+    _, page, x, y = candidates[best_start]
+    return page, x, y
+
+
 def parse_bibliography(pdf_path):
     """Parse the numbered bibliography of `pdf_path`.
 
-    Returns a list of `{"n": int, "text": str, "doi": str | None}`,
-    sorted by `n`. Returns `[]` if no recognisable bibliography
-    section is found or the section contains no numbered entries."""
+    Returns a list of `{"n": int, "text": str, "doi": str | None,
+    "page": int, "y_top_poppler": float}`, sorted by `n`. Returns
+    `[]` if no recognisable bibliography section is found or the
+    section contains no numbered entries."""
     try:
         doc = _open_doc(pdf_path)
     except Exception:
@@ -257,24 +321,85 @@ def parse_bibliography(pdf_path):
         if _HEADER_RE.match(rec[1]):
             header_page, _, header_x, header_y, _, _ = rec
             break
+    fallback_mode = False
     if header_page is None:
-        return []
+        # Headerless layout (older PNAS, etc.) — locate the
+        # bibliography by sequential-marker scan instead. Then take
+        # everything in reading order from entry 1 onwards (rather
+        # than the headered path's spatial filter, which assumes the
+        # bibliography occupies a clean rectangle below `header_y`
+        # and isn't sandwiched between body-text columns).
+        fallback = _find_bibliography_fallback(lines)
+        if fallback is None:
+            return []
+        header_page, header_x, header_y = fallback
+        fallback_mode = True
 
     candidate_all = [rec for rec in lines if rec[0] >= header_page]
     edges = _column_edges(candidate_all)
     header_col = _column_index(header_x, edges)
+    sorted_all = _sort_reading_order(candidate_all, edges)
 
-    def in_bib_region(rec):
-        pi, _, x1, y1, _, _ = rec
-        if pi > header_page:
-            return True
-        col = _column_index(x1, edges)
-        if col > header_col:
-            return True
-        return col == header_col and y1 > header_y
+    if fallback_mode:
+        # No "References" heading. We've located the marker for
+        # entry 1; collect every marker at-or-after that position in
+        # reading order to derive a per-(page, col) y-band that
+        # covers the bibliography. Markers don't have to be
+        # strictly sequential here — older PNAS papers occasionally
+        # skip a number (e.g. 28 → 30) — but they do all live
+        # below the located start.
+        #
+        # The per-(page, col) y-band is necessary because PNAS-style
+        # 2-column papers run body text down both columns and start
+        # the bibliography below that in *both* columns. A naive
+        # "everything from entry 1 onwards in reading order" sweeps
+        # in body text at the top of column 1.
+        start_col = _column_index(header_x, edges)
+        markers = []   # (n, page, col, y)
+        for rec in sorted_all:
+            m = _ENTRY_RE.match(rec[1])
+            if not m:
+                continue
+            col = _column_index(rec[2], edges)
+            # at-or-after the located start in reading order
+            if rec[0] < header_page:
+                continue
+            if rec[0] == header_page:
+                if col < start_col:
+                    continue
+                if col == start_col and rec[3] < header_y - 0.5:
+                    continue
+            n = int(m.group(1) or m.group(2))
+            markers.append((n, rec[0], col, rec[3]))
+        if not markers:
+            return []
+        by_pcol = {}
+        for _n, pg, col, y in markers:
+            by_pcol.setdefault((pg, col), []).append(y)
+        # Slack of 80pt past the last marker in each column captures
+        # the continuation lines of that column's final entry.
+        y_range = {pcol: (min(ys) - 0.5, max(ys) + 80.0)
+                   for pcol, ys in by_pcol.items()}
+        candidate = []
+        for rec in sorted_all:
+            col = _column_index(rec[2], edges)
+            rng = y_range.get((rec[0], col))
+            if rng is None:
+                continue
+            y_min, y_max = rng
+            if y_min <= rec[3] <= y_max:
+                candidate.append(rec)
+    else:
+        def in_bib_region(rec):
+            pi, _, x1, y1, _, _ = rec
+            if pi > header_page:
+                return True
+            col = _column_index(x1, edges)
+            if col > header_col:
+                return True
+            return col == header_col and y1 > header_y
 
-    candidate = [rec for rec in candidate_all if in_bib_region(rec)]
-    candidate = _sort_reading_order(candidate, edges)
+        candidate = [rec for rec in sorted_all if in_bib_region(rec)]
 
     cutoff = len(candidate)
     for j, rec in enumerate(candidate):

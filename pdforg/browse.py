@@ -214,9 +214,12 @@ def make_preprint_status(row, conn, parent_window):
             lambda _b, d=pub_doi: parent_window._navigate_to_doi(d))
     else:
         # Orange: we know about it but don't have it.
+        # No emoji prefix — U+1F4F0 (📰) is in the macOS colour-emoji
+        # range and crashes the Cairo/CoreText pipeline (see memory:
+        # `feedback_no_color_emoji`). Plain text reads fine.
         inner.set_markup(
             '<span foreground="#cc6600" weight="bold"><small>'
-            '📰 published — Add</small></span>')
+            'published — Add</small></span>')
         btn.set_tooltip_text(
             "Published as «{}» in {}{}.\n"
             "Click to download into the library.".format(
@@ -1996,7 +1999,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             # card on next refresh; force one now.
             self._reload(self.search.get_text() or None)
         else:
-            btn.set_label("📰 published — Add (failed)")
+            btn.set_label("published — Add (failed)")
             btn.set_tooltip_text("Last error: " + str(status_or_msg))
             btn.set_sensitive(True)
         return False
@@ -2999,19 +3002,49 @@ class BrowserWindow(Adw.ApplicationWindow):
             marks_group.add(row)
             mark_entries[color] = row
 
+        # ── Annotations ─────────────────────────────────────────────
+        ann_group = Adw.PreferencesGroup()
+        ann_group.set_title("Annotations")
+        ann_group.set_description(
+            "Display name shown on the highlights / comments you "
+            "make. Existing comments aren't rewritten — only new "
+            "ones use this name. Leave blank to fall back to your "
+            "OS username.")
+        page.add(ann_group)
+
+        ann_row = Adw.EntryRow()
+        ann_row.set_title("Comment author")
+        ann_row.set_text((prefs.load().get("comment_author") or ""))
+        ann_group.add(ann_row)
+
         def _on_dialog_closed(_d):
             new_labels = {c: mark_entries[c].get_text().strip()
                           for c in ("red", "orange", "green", "cyan")}
-            if new_labels == self.mark_labels:
-                return
-            try:
-                marks_config.save(new_labels)
-            except Exception as exc:
-                self.status.set_text("Saving mark labels failed: " + str(exc))
-                return
-            self.mark_labels = new_labels
-            self._refresh_mark_filter_dd()
-            self._reload(self.search.get_text() or None)
+            if new_labels != self.mark_labels:
+                try:
+                    marks_config.save(new_labels)
+                except Exception as exc:
+                    self.status.set_text(
+                        "Saving mark labels failed: " + str(exc))
+                else:
+                    self.mark_labels = new_labels
+                    self._refresh_mark_filter_dd()
+                    self._reload(self.search.get_text() or None)
+
+            new_author = ann_row.get_text().strip()
+            data = prefs.load()
+            old_author = (data.get("comment_author") or "").strip()
+            if new_author != old_author:
+                if new_author:
+                    data["comment_author"] = new_author
+                else:
+                    data.pop("comment_author", None)
+                try:
+                    prefs.save(data)
+                except Exception as exc:
+                    self.status.set_text(
+                        "Saving comment-author preference failed: "
+                        + str(exc))
 
         dlg.connect("closed", _on_dialog_closed)
         dlg.present(self)

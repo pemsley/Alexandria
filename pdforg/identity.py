@@ -20,12 +20,26 @@ def maintainer_email():
 
 
 def comment_author():
-    """Display name stamped on highlights / comments. v1: OS username
-    (override via $PDFORG_AUTHOR). A future Preferences entry will let
-    the user set a friendlier display name."""
+    """Display name stamped on highlights / comments.
+
+    Precedence: $PDFORG_AUTHOR env var > stored Preferences value
+    (`comment_author` key in config.json) > OS username >
+    'anonymous'. Same env-var-first convention as
+    `prefs.get_library_root`.
+
+    Existing comments are not retroactively rewritten when this
+    setting changes — only newly-created and newly-edited comments
+    use the new value."""
     override = os.environ.get("PDFORG_AUTHOR")
     if override:
         return override
+    try:
+        from . import prefs
+        stored = (prefs.load().get("comment_author") or "").strip()
+        if stored:
+            return stored
+    except Exception:
+        pass
     try:
         return getpass.getuser()
     except Exception:

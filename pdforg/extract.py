@@ -123,6 +123,53 @@ def _parent_doi_from_si_filename(pdf_path):
     return None
 
 
+# Filename → DOI patterns for the *article* (not SI). These cover
+# common publisher download-naming conventions where the DOI is
+# trivially recoverable from the filename alone, so we can avoid a
+# pdftotext page-scan or an OpenAlex round-trip.
+_PNAS_FILENAME_RE = re.compile(
+    r"^pnas[\-.](?P<id>\d{7,})\b",
+    re.IGNORECASE)
+# bioRxiv / medRxiv naming: 2024.05.24.595765(.full)?.pdf
+_BIORXIV_FILENAME_RE = re.compile(
+    r"^(?P<id>\d{4}\.\d{2}\.\d{2}\.\d{6,})\b",
+    re.IGNORECASE)
+# Science Advances PDFs are downloaded as "sciadv.<id>.pdf" and the
+# DOI is 10.1126/sciadv.<id> — but Science Advances doesn't print
+# the DOI in the article body, so this is the *only* place to get it
+# without an OpenAlex search.
+_SCIADV_FILENAME_RE = re.compile(
+    r"^sciadv\.(?P<id>[a-z0-9]+)\.pdf$",
+    re.IGNORECASE)
+# Filenames that just *are* the DOI with the slash safely encoded as
+# an underscore: "10.1186_s13321-024-00821-4.pdf".
+_DOI_AS_FILENAME_RE = re.compile(
+    r"^(?P<prefix>10\.\d{4,9})_(?P<rest>[A-Za-z0-9][\w.\-]*)\.pdf$",
+    re.IGNORECASE)
+
+
+def _doi_from_filename(pdf_path):
+    """Recover the article DOI from publisher-conventional filenames.
+
+    Free and instant compared to `_scan_doi_in_pages` (which spawns
+    pdftotext) or `find_doi` (which hits OpenAlex). Returns None for
+    filenames that don't match a known pattern."""
+    name = os.path.basename(pdf_path or "")
+    m = _PNAS_FILENAME_RE.match(name)
+    if m:
+        return "10.1073/pnas.{}".format(m.group("id"))
+    m = _BIORXIV_FILENAME_RE.match(name)
+    if m:
+        return "10.1101/{}".format(m.group("id"))
+    m = _SCIADV_FILENAME_RE.match(name)
+    if m:
+        return "10.1126/sciadv.{}".format(m.group("id"))
+    m = _DOI_AS_FILENAME_RE.match(name)
+    if m:
+        return "{}/{}".format(m.group("prefix"), m.group("rest"))
+    return None
+
+
 def _parse_si_parent_title_authors(text):
     """Lift the parent paper's title and author list from the SI cover.
 
@@ -306,10 +353,23 @@ def _extract_from_pdfx(pdf_path):
            "doi": None, "journal": None, "raw": md}
 
     dc = md.get("dc", {}) or {}
-    prism = (md.get("prism")
-             or md.get("http://prismstandard.org/namespaces/basic/3.0/")
-             or md.get("http://prismstandard.org/namespaces/basic/2.0/")
-             or {})
+    # Match any PRISM XMP namespace version. Publishers ship 2.0,
+    # 2.1, 3.0 and even bare "prism" — Science Advances uses 2.1,
+    # which a hardcoded "2.0 or 3.0" check would miss entirely.
+    prism = md.get("prism") or {}
+    if not prism:
+        for key, val in md.items():
+            if (isinstance(key, str)
+                    and key.startswith(
+                        "http://prismstandard.org/namespaces/basic/")
+                    and isinstance(val, dict)):
+                prism = val
+                break
+    crossmark = md.get("crossmark") or {}
+    # The in-XMP "pdfx" namespace (different from the pdfx Python
+    # library): journals like Science Advances stash a duplicate of
+    # the article DOI here.
+    pdfx_ns = md.get("pdfx") or {}
 
     title_raw = (_first_str(dc.get("title"))
                  or _first_str(md.get("Title"))
@@ -324,9 +384,17 @@ def _extract_from_pdfx(pdf_path):
     elif md.get("Author"):
         out["authors"] = _split_authors(_first_str(md.get("Author")))
 
+    # DOI hunt: try every known XMP slot. Different publishers stamp
+    # the same DOI into different namespaces; some only one of them.
+    # `dc.identifier` is typically prefixed with "doi:" — _DOI_RE
+    # below picks the bare DOI back out.
     out["doi"] = (_first_str(md.get("doi"))
                   or _first_str(prism.get("doi"))
-                  or _first_str(prism.get("identifier")))
+                  or _first_str(prism.get("identifier"))
+                  or _first_str(crossmark.get("DOI"))
+                  or _first_str(crossmark.get("doi"))
+                  or _first_str(pdfx_ns.get("doi"))
+                  or _first_str(dc.get("identifier")))
     if out["doi"]:
         m = _DOI_RE.search(out["doi"])
         if m:
@@ -688,6 +756,13 @@ def _enrich(result, pdf_path):
                 result["doi"] = doi
     elif not result.get("doi"):
         doi = _scrape_doi(text)
+        if not doi:
+            # Filename-based inference: free and instant for the
+            # common publisher conventions (PNAS / bioRxiv /
+            # DOI-as-filename). Older PNAS PDFs in particular have
+            # the DOI nowhere in their text but encode it in the
+            # filename ("pnas-0502225102.pdf").
+            doi = _doi_from_filename(pdf_path)
         if not doi:
             # Some journals (e.g. Science) print the DOI on the references
             # page rather than page 1. Cast a wider net before giving up.

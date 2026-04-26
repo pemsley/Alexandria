@@ -3,10 +3,8 @@
 Pending features, roughly grouped. Newest at the top of each section.
 
 ## Top priority
-- **Comment author identity:** for now we stamp comments with the OS
-  username (`getpass.getuser()`). Add a Preferences entry so the user
-  can set a display name (e.g. "BigDave") that's used instead. Migrate
-  existing comments lazily.
+
+(Nothing pinned here right now — see sections below.)
 
 ## Import / ingestion
 - **Importing PDFs from outside `~/Documents/Alexandria` (Flatpak).**

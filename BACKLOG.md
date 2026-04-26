@@ -49,16 +49,59 @@ Pending features, roughly grouped. Newest at the top of each section.
   `metrics.fetch_references(doi|openalex_id)` mirrors
   `fetch_cited_by`. No PDF parsing, no HTML scraping, no GROBID;
   works for any paper OpenAlex has data on (which is most).
+  *(Done: card popover + PDF-parsed fallback wired in.
+  Citation→bibliography click-to-jump and the resolved-reference
+  toolbar popover work for publisher-annotated PDFs (Springer,
+  Nature). What's still missing is the parser-driven fallback for
+  PDFs without those annotations — see "Citation hit-testing
+  fallback" below.)*
+- **Citation hit-testing fallback for un-annotated `[N]` PDFs.**
+  Click-to-jump and the resolved-reference popover currently work
+  on PDFs with publisher-embedded `/Link` annotations + named
+  destinations (Springer's `:CR<N>:`, Nature's `bm_CR<N>`). PDFs
+  without those — older / iText-reprocessed Wiley files, AUSPEX-
+  shaped Acta Cryst D papers — get the popover-fallback for the
+  References panel but no in-page click-to-jump. Path B from the
+  Step-2 design notes: walk each page's `get_text_layout()` rects,
+  find `\[\d+\]` (and `[N-M]` ranges via `expand_citation_token`)
+  in the body, find the `[N]` markers at the start of bibliography
+  entries, synthesise the same `(rect, target_page, target_top,
+  ref_n)` records `pdf_links.read_citation_links` produces, and
+  pour them into `self.citation_links` only on pages where Path A
+  produced nothing. The existing click handler / hover cursor /
+  `_jump_to` / reference popover all keep working unchanged
+  because they consume the index, not its source. Numbered-only;
+  author-year is a separate problem (see memory:
+  `project_acta_cryst_author_year`).
 - Page thumbnails sidebar.
 
 ## Discovery
+- **Cache the Cited-by, References and Related-works *paper lists*.**
+  The cited-by *count* is already cached on the papers row
+  (`citations_fetched` / `citations`), but the popover-displayed
+  *lists* themselves are re-fetched from OpenAlex on every click —
+  visible latency on unreliable networks and unnecessary API churn
+  for a paper whose citation graph isn't changing much from one open
+  to the next. Cache the resolved lists per paper with a fetched-on
+  timestamp (sidecar JSON, alongside existing OpenAlex-derived
+  fields); invalidate on a sensible schedule (weekly?) or on a
+  user-triggered "refresh now" action in the popover header. Same
+  approach for `referenced_works` and `related_works`.
 - New-citations-of-favourites feed (papers citing my green-marked papers,
   filtered by overlap with my other green-marked papers' keywords)
 - Show abstract somewhere visible (hover preview? expandable card?)
 - Show ORCID / institution in the metadata editor
 
 ## Sorting & filtering
-- Sort by date / journal / title / first-author / last-author
+- **Sort menu.** Currently the cards list is hard-coded to
+  `ORDER BY added_date DESC, sidecar_mtime DESC, title` in
+  `index.py:393`, so newly-imported papers always land at row 0 and
+  there's no UI to change it. Add a sort dropdown anchored next to
+  the search box on the header bar, with keys: added date, year,
+  title, first author, last author, citations, mark. Each key has an
+  asc/desc toggle; persist the choice (session-only is fine for v1,
+  settings entry later). Default stays `added_date DESC` so import-
+  flow ergonomics don't change.
 - Tag chips + filter sidebar
 - FTS to include mark labels
 

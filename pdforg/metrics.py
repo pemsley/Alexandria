@@ -612,6 +612,56 @@ def _author_first_last(authorships):
     return first, last
 
 
+def fetch_work_by_doi(doi):
+    """Return one OpenAlex Work resolved by DOI as a normalised dict,
+    or None on failure / unknown DOI.
+
+    Same shape `fetch_references` and `fetch_cited_by` produce for
+    each item, plus open-access fields the viewer's "Add + try PDF"
+    flow needs to decide whether a download attempt is worthwhile.
+
+    Used by the viewer when a clicked citation needs resolving on
+    the spot — when the parsed bibliography entry already carries
+    a DOI we hit OpenAlex directly with this; otherwise the caller
+    runs `find_doi` first to produce one."""
+    if not doi:
+        return None
+    url = ("https://api.openalex.org/works/doi:"
+           + urllib.parse.quote(doi, safe=""))
+    if OPENALEX_MAILTO:
+        url += "?mailto=" + urllib.parse.quote(OPENALEX_MAILTO)
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
+        timeout=15)
+    if not data:
+        return None
+    first, last = _author_first_last(data.get("authorships"))
+    primary = data.get("primary_location") or {}
+    src = primary.get("source") or {}
+    best_oa = data.get("best_oa_location") or {}
+    open_access = data.get("open_access") or {}
+    authors = []
+    for a in (data.get("authorships") or []):
+        n = (a.get("author") or {}).get("display_name") or ""
+        if n:
+            authors.append(n)
+    return {
+        "openalex_id": _strip_openalex_id(data.get("id")) or data.get("id"),
+        "doi": _normalize_doi(data.get("doi")),
+        "title": data.get("title"),
+        "year": data.get("publication_year"),
+        "publication_date": data.get("publication_date"),
+        "journal": src.get("display_name"),
+        "first_author": first,
+        "last_author": last,
+        "authors": authors,
+        "citations": data.get("cited_by_count") or 0,
+        "is_oa": bool(open_access.get("is_oa")),
+        "oa_url": best_oa.get("pdf_url") or best_oa.get("landing_page_url"),
+    }
+
+
 def fetch_related_works(doi=None, openalex_id=None, limit=12):
     """Return OpenAlex's `related_works` for a paper, resolved to
     [{openalex_id, doi, title, year, journal, first_author, last_author},

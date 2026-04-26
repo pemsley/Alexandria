@@ -15,7 +15,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GLib, Gdk, Gio, Pango
 
-from . import metrics, index, importer
+from . import metrics, index, importer, opener
 
 
 def _attach_copy_link_menu(button, url):
@@ -70,14 +70,7 @@ HISTOGRAM_HEIGHT = 90
 
 
 def _open_url(url):
-    if not url:
-        return
-    try:
-        subprocess.Popen(["xdg-open", url],
-                         stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL)
-    except OSError:
-        pass
+    opener.open_external(url)
 
 
 def _filename_for(doi, oa_url):
@@ -124,10 +117,11 @@ def _download_pdf(url, target_path, timeout=60):
                 (e.headers.get("server") or "").lower()
                 if e.headers else ""):
             return False, ("blocked by Cloudflare bot challenge — "
-                           "click View PDF to download in your browser")
+                           "click View to download in your browser")
         if e.code == 403:
             return False, ("HTTP 403 Forbidden — the publisher refused "
-                           "the download. Use View PDF in your browser.")
+                           "the download. Use View to see the paper in "
+                           "your browser.")
         if e.code == 404:
             return False, "HTTP 404 — the PDF URL is no longer valid"
         return False, "HTTP {} {}".format(e.code, e.reason or "")
@@ -599,7 +593,7 @@ class AuthorWorksWindow(Gtk.Window):
         landing_url = w.get("landing_url") or w.get("oa_url")
         view_target = pdf_url or landing_url
         if w.get("is_oa") and view_target:
-            b = Gtk.Button(label="View PDF")
+            b = Gtk.Button(label="View")
             b.set_tooltip_text(view_target)
             b.connect(
                 "clicked",
@@ -619,7 +613,7 @@ class AuthorWorksWindow(Gtk.Window):
                 add_btn.remove_css_class("suggested-action")
                 add_btn.set_tooltip_text(
                     "No direct PDF link from OpenAlex (only a publisher "
-                    "landing page is available). Use 'View PDF' to open "
+                    "landing page is available). Use 'View' to open "
                     "it in a browser, then drag the PDF into Alexandria.")
             else:
                 tip_lines = ["Download the open-access PDF into your "

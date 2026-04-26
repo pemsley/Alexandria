@@ -33,7 +33,16 @@ def _enrich_with_openalex(rec):
     doi = rec.get("doi")
     if not doi:
         return
-    n, src, kw, abstract, authorships, cby = metrics.fetch_metrics(doi)
+    (n, src, kw, abstract, authorships, cby,
+     oa_title, oa_year) = metrics.fetch_metrics(doi)
+    # Cross-contamination check — see importer._openalex_record_matches.
+    from . import importer as _importer
+    if not _importer._openalex_record_matches(
+            rec.get("title"), rec.get("year"), oa_title, oa_year):
+        if oa_title or oa_year:
+            print("[bibtex_import] OpenAlex record for {} looks "
+                  "corrupted — keeping BibTeX-supplied metadata".format(doi))
+        return
     if n is not None:
         rec["citations"] = n
         rec["citations_source"] = src

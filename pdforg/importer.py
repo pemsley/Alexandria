@@ -4,6 +4,7 @@ and upsert into the local index."""
 import hashlib
 import json
 import os
+import re
 import shutil
 import time
 
@@ -87,6 +88,63 @@ def stage_into_library(src_path, library_root, conn=None):
     return target, "copied"
 
 
+def _title_token_set(title):
+    """Lowercased significant-word set, used by
+    `_openalex_record_matches` to compare PDF and OpenAlex titles
+    with a token-overlap rule. Stop-words common to many titles
+    are dropped so they don't carry the match."""
+    if not title:
+        return set()
+    words = re.findall(r"[\w']+", title.lower())
+    stops = {"a", "an", "the", "of", "and", "or", "in", "on", "at",
+             "for", "to", "by", "with", "from", "as", "via",
+             "study", "analysis", "using", "based"}
+    return {w for w in words if len(w) > 2 and w not in stops}
+
+
+def _openalex_record_matches(pdf_title, pdf_year, oa_title, oa_year):
+    """True if the OpenAlex Work's metadata is consistent with the
+    PDF's. Used by `import_pdf` to detect cross-contaminated OpenAlex
+    records (DOI right, but title/authors/year from a different
+    paper).
+
+    Pass-conditions are intentionally lenient — we only want to
+    *reject* clear mismatches:
+
+    - When OpenAlex didn't return a title or year, we can't compare,
+      so we trust it (preserves the historic behaviour).
+    - Year mismatch > 1 fails — print/online publication years
+      differ by at most one in normal practice.
+    - Title token-overlap: shared significant tokens / smaller-set
+      size must be ≥ 0.3, OR there must be at least two shared
+      tokens. The two-token floor saves 2-word titles from being
+      mis-rejected on a single shared word; the ratio threshold
+      catches the cross-contamination case (zero or one shared
+      token between an ant-biology title and a crystallography
+      title).
+    """
+    # Year check: if both sides have a year and they're more than 1
+    # apart, the records refer to different papers.
+    if pdf_year and oa_year:
+        try:
+            if abs(int(pdf_year) - int(oa_year)) > 1:
+                return False
+        except (TypeError, ValueError):
+            pass
+    # Title check: only meaningful when both sides have titles.
+    pdf_set = _title_token_set(pdf_title)
+    oa_set = _title_token_set(oa_title)
+    if not pdf_set or not oa_set:
+        return True
+    shared = pdf_set & oa_set
+    if len(shared) >= 2:
+        return True
+    smaller = min(len(pdf_set), len(oa_set))
+    if smaller > 0 and len(shared) / smaller >= 0.3:
+        return True
+    return False
+
+
 def _build_record(pdf_path):
     """Run the full extraction pipeline and return a fresh record dict."""
     rec = sidecar.new_record(pdf_path)
@@ -136,22 +194,30 @@ def refresh_pdf(conn, pdf_path):
     # Re-fetch OpenAlex enrichment so newly-added fields (authorships /
     # abstract / keywords) actually populate during --refresh.
     if fresh.get("doi"):
-        n, src, kw, abstract, authorships, cby = metrics.fetch_metrics(fresh["doi"])
-        if n is not None:
-            fresh["citations"] = n
-            fresh["citations_source"] = src
-            fresh["citations_fetched"] = metrics.today_iso()
-        if kw:
-            fresh["auto_keywords"] = kw
-        if abstract:
-            fresh["abstract"] = abstract
-        if authorships:
-            fresh["authorships"] = authorships
-            oa_names = [a["name"] for a in authorships if a.get("name")]
-            if oa_names:
-                fresh["authors"] = oa_names
-        if cby:
-            fresh["citations_by_year"] = cby
+        (n, src, kw, abstract, authorships, cby,
+         oa_title, oa_year) = metrics.fetch_metrics(fresh["doi"])
+        if _openalex_record_matches(
+                fresh.get("title"), fresh.get("year"),
+                oa_title, oa_year):
+            if n is not None:
+                fresh["citations"] = n
+                fresh["citations_source"] = src
+                fresh["citations_fetched"] = metrics.today_iso()
+            if kw:
+                fresh["auto_keywords"] = kw
+            if abstract:
+                fresh["abstract"] = abstract
+            if authorships:
+                fresh["authorships"] = authorships
+                oa_names = [a["name"] for a in authorships if a.get("name")]
+                if oa_names:
+                    fresh["authors"] = oa_names
+            if cby:
+                fresh["citations_by_year"] = cby
+        elif oa_title or oa_year:
+            print("[importer] OpenAlex record for {} looks corrupted "
+                  "(refresh) — keeping existing metadata".format(
+                      fresh["doi"]))
 
     # Preprint → published-version lookup (refresh re-checks too;
     # OpenAlex may have indexed the journal version since last time).
@@ -230,26 +296,47 @@ def import_pdf(conn, pdf_path):
     if dup:
         return dup, "duplicate"
 
-    # OpenAlex enrichment (one HTTP, four outputs). Best-effort; failures
-    # leave fields untouched.
+    # OpenAlex enrichment (one HTTP, six outputs). Best-effort;
+    # failures leave fields untouched.
     if rec.get("doi"):
-        n, src, kw, abstract, authorships, cby = metrics.fetch_metrics(rec["doi"])
-        if n is not None:
-            rec["citations"] = n
-            rec["citations_source"] = src
-            rec["citations_fetched"] = metrics.today_iso()
-        if kw:
-            rec["auto_keywords"] = kw
-        if abstract:
-            rec["abstract"] = abstract
-        if authorships:
-            rec["authorships"] = authorships
-            # Prefer OpenAlex display names for the flat authors list.
-            oa_names = [a["name"] for a in authorships if a.get("name")]
-            if oa_names:
-                rec["authors"] = oa_names
-        if cby:
-            rec["citations_by_year"] = cby
+        (n, src, kw, abstract, authorships, cby,
+         oa_title, oa_year) = metrics.fetch_metrics(rec["doi"])
+        # OpenAlex sanity-check: rare but real, an OpenAlex Work
+        # record cross-contaminates two papers — the DOI is right
+        # but the title/authors/year come from a different paper.
+        # When that happens we DON'T want to clobber the
+        # PDF-extracted authors / abstract / keywords with the wrong
+        # ones (and the citation count for a conflated record is
+        # untrustworthy too). Detect by comparing PDF title vs
+        # OpenAlex title; if they share no significant tokens, or
+        # the years differ by more than 1, treat the OpenAlex
+        # record as suspect and skip the override.
+        if _openalex_record_matches(
+                rec.get("title"), rec.get("year"), oa_title, oa_year):
+            if n is not None:
+                rec["citations"] = n
+                rec["citations_source"] = src
+                rec["citations_fetched"] = metrics.today_iso()
+            if kw:
+                rec["auto_keywords"] = kw
+            if abstract:
+                rec["abstract"] = abstract
+            if authorships:
+                rec["authorships"] = authorships
+                # Prefer OpenAlex display names for the flat
+                # authors list.
+                oa_names = [a["name"] for a in authorships if a.get("name")]
+                if oa_names:
+                    rec["authors"] = oa_names
+            if cby:
+                rec["citations_by_year"] = cby
+        elif oa_title or oa_year:
+            print("[importer] OpenAlex record for {} looks corrupted "
+                  "(PDF: {!r}/{} vs OpenAlex: {!r}/{}) — keeping "
+                  "PDF-extracted metadata".format(
+                      rec["doi"],
+                      rec.get("title"), rec.get("year"),
+                      oa_title, oa_year))
 
     # Preprint → published-version lookup. One extra OpenAlex call,
     # only for preprint DOIs.

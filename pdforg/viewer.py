@@ -60,7 +60,13 @@ def _split_entry_text(text):
         return None, None, None, None
     year = int(m.group(1))
     authors_str = text[:m.start()].strip().rstrip(",")
-    rest = text[m.end():].strip()
+    # Cell-style bibliographies write "(2020). Title…" — the period
+    # right after the year-paren combines with the leading space and
+    # the capital T to satisfy `_TITLE_END_RE` at offset 0, eating
+    # the entire title into `journal_etc` and leaving title empty.
+    # Strip leading whitespace and periods so the search starts at
+    # the title's first real character.
+    rest = text[m.end():].lstrip(" \t.").strip()
     m2 = _TITLE_END_RE.search(rest)
     if m2:
         title = rest[:m2.start()].strip()
@@ -77,7 +83,14 @@ def _split_entry_text(text):
 def _author_surnames(authors_str):
     """First word of each comma-separated author becomes the surname.
     "Smith J, van Dijk AA, Anand-Apte B" → ["Smith", "van", "Anand-Apte"].
-    Heuristic — good enough to feed `find_doi`'s author-overlap gate."""
+    Heuristic — good enough to feed `find_doi`'s author-overlap gate.
+
+    Cell-style entries use Vancouver-with-year and connect the last
+    two authors with "and": "Aldridge, S., and Teichmann, S.A.".
+    Strip leading "and"/"&" connectors and skip comma-chunks that
+    are pure initials ("S.", "S.A.", "M.-A.") so we end up with
+    ["Aldridge", "Teichmann"] instead of ["Aldridge", "S.", "and",
+    "S.A."]."""
     if not authors_str:
         return []
     out = []
@@ -85,9 +98,16 @@ def _author_surnames(authors_str):
         chunk = chunk.strip()
         if not chunk:
             continue
-        first = chunk.split()[0] if chunk.split() else ""
-        if first:
-            out.append(first)
+        words = chunk.split()
+        while words and words[0].lower() in ("and", "&"):
+            words = words[1:]
+        if not words:
+            continue
+        first = words[0]
+        # Skip pure-initial chunks like "S.", "S.A.", "M.-A.".
+        if re.fullmatch(r"[A-Z]\.(?:[\s\-]?[A-Z]\.)*", first):
+            continue
+        out.append(first)
     return out
 
 
@@ -1311,8 +1331,29 @@ class PdfViewerWindow(Gtk.Window):
             actions.append(add_btn)
             content.append(actions)
             return False
-        status.set_markup(
-            "<small><span alpha='75%'>Found on OpenAlex:</span></small>")
+        # Check whether the resolved DOI already lives in the library
+        # — in which case offering "Add to library" / "Add + try PDF"
+        # is misleading. Replace those with a "Show in library" jump
+        # button and switch the status line to make it clear.
+        existing = None
+        resolved_doi = resolved.get("doi")
+        if (resolved_doi
+                and self.parent_window is not None
+                and hasattr(self.parent_window, "find_existing_by_doi")):
+            try:
+                existing = self.parent_window.find_existing_by_doi(
+                    resolved_doi)
+            except Exception:
+                existing = None
+
+        if existing:
+            status.set_markup(
+                "<small><span foreground='#2a7a2a'>"
+                "✓ Already in your library</span></small>")
+        else:
+            status.set_markup(
+                "<small><span alpha='75%'>Found on OpenAlex:"
+                "</span></small>")
         title_lbl = Gtk.Label(xalign=0.0)
         title_lbl.set_wrap(True)
         title_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
@@ -1351,23 +1392,50 @@ class PdfViewerWindow(Gtk.Window):
                     Gio.AppInfo.launch_default_for_uri(
                         "https://doi.org/" + d, None))
             actions.append(doi_btn)
-        add_btn = Gtk.Button(label="Add to library")
-        add_btn.connect(
-            "clicked",
-            lambda _b: self._on_add_to_library(popover, entry, resolved, False))
-        actions.append(add_btn)
-        if resolved.get("is_oa") or resolved.get("oa_url"):
-            add_pdf_btn = Gtk.Button(label="Add + try PDF")
-            add_pdf_btn.add_css_class("suggested-action")
-            add_pdf_btn.set_tooltip_text(
-                "Add to library and try to download the open-access "
-                "PDF via OpenAlex.")
-            add_pdf_btn.connect(
+        if existing:
+            show_btn = Gtk.Button(label="Show in library")
+            show_btn.add_css_class("suggested-action")
+            show_btn.connect(
                 "clicked",
-                lambda _b: self._on_add_to_library(popover, entry, resolved, True))
-            actions.append(add_pdf_btn)
+                lambda _b, p=existing.get("pdf_path"):
+                    self._on_show_in_library(popover, p))
+            actions.append(show_btn)
+        else:
+            add_btn = Gtk.Button(label="Add to library")
+            add_btn.connect(
+                "clicked",
+                lambda _b: self._on_add_to_library(
+                    popover, entry, resolved, False))
+            actions.append(add_btn)
+            if resolved.get("is_oa") or resolved.get("oa_url"):
+                add_pdf_btn = Gtk.Button(label="Add + try PDF")
+                add_pdf_btn.add_css_class("suggested-action")
+                add_pdf_btn.set_tooltip_text(
+                    "Add to library and try to download the "
+                    "open-access PDF via OpenAlex.")
+                add_pdf_btn.connect(
+                    "clicked",
+                    lambda _b: self._on_add_to_library(
+                        popover, entry, resolved, True))
+                actions.append(add_pdf_btn)
         content.append(actions)
         return False
+
+    def _on_show_in_library(self, popover, pdf_path):
+        """"Show in library" button on the citation popover when the
+        resolved reference already exists in the library: ask the
+        parent BrowserWindow to scroll its cards to the matching
+        entry, then dismiss the popover."""
+        if (self.parent_window is not None
+                and hasattr(self.parent_window, "show_paper_in_library")):
+            try:
+                self.parent_window.show_paper_in_library(pdf_path)
+            except Exception as e:
+                print("viewer: show_paper_in_library failed:", e)
+        try:
+            popover.popdown()
+        except Exception:
+            pass
 
     def _on_add_to_library(self, popover, entry, resolved, also_get_pdf):
         if (self.parent_window is None

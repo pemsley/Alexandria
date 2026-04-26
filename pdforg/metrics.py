@@ -82,25 +82,34 @@ KEYWORD_LIMIT = 8
 
 def fetch_metrics(doi):
     """Return (count, source, keywords, abstract, authorships,
-    citations_by_year).
+    citations_by_year, oa_title, oa_year).
 
-    citations_by_year is a list of {year, count} dicts, oldest-first
-    (capped by OpenAlex at ~10 years). Any field may be None / []
-    depending on what OpenAlex / CrossRef returned."""
+    `oa_title` and `oa_year` are the OpenAlex Work's title and
+    publication_year — the caller can cross-check these against
+    PDF-extracted values to detect cross-contaminated OpenAlex
+    records (rare but real: one paper's title/authors merged with
+    another paper's DOI). They're None when the source is CrossRef
+    or no data was returned.
+
+    `citations_by_year` is a list of {year, count} dicts,
+    oldest-first (capped by OpenAlex at ~10 years). Any field may
+    be None / [] depending on what OpenAlex / CrossRef returned."""
     if not doi:
-        return None, None, [], None, [], []
-    n, kw, abstract, authorships, cby = _openalex_metrics(doi)
+        return None, None, [], None, [], [], None, None
+    n, kw, abstract, authorships, cby, oa_title, oa_year = (
+        _openalex_metrics(doi))
     if n is not None:
-        return n, "openalex", kw, abstract, authorships, cby
+        return (n, "openalex", kw, abstract, authorships, cby,
+                oa_title, oa_year)
     n = _crossref_count(doi)
     if n is not None:
-        return n, "crossref", [], None, [], []
-    return None, None, [], None, [], []
+        return n, "crossref", [], None, [], [], None, None
+    return None, None, [], None, [], [], None, None
 
 
 def fetch_citation_count(doi):
     """Backward-compatible wrapper returning just (count, source)."""
-    n, src, _, _, _, _ = fetch_metrics(doi)
+    n, src, _, _, _, _, _, _ = fetch_metrics(doi)
     return n, src
 
 
@@ -127,7 +136,13 @@ def _strip_openalex_id(url):
 
 def _openalex_metrics(doi):
     """Return (cited_by_count, keywords, abstract, authorships,
-    citations_by_year) or (None, [], None, [], [])."""
+    citations_by_year, title, year) or (None, [], None, [], [],
+    None, None). Title and year let the caller cross-check that
+    the OpenAlex Work for `doi` is actually about the same paper —
+    OpenAlex occasionally cross-contaminates records (one paper's
+    title/authors/year merged with another paper's
+    DOI/abstract/source), and a mismatch is the signal to fall
+    back to the PDF-extracted metadata."""
     qdoi = urllib.parse.quote(doi, safe="")
     url = "https://api.openalex.org/works/doi:" + qdoi
     if OPENALEX_MAILTO:
@@ -137,7 +152,7 @@ def _openalex_metrics(doi):
         headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
         timeout=15)
     if data is None:
-        return None, [], None, [], []
+        return None, [], None, [], [], None, None
     n = data.get("cited_by_count")
     if not isinstance(n, int):
         n = None
@@ -168,7 +183,9 @@ def _openalex_metrics(doi):
         if isinstance(y, int) and isinstance(c, int):
             cby.append({"year": y, "count": c})
     cby.sort(key=lambda r: r["year"])
-    return n, kw, abstract, authorships, cby
+    oa_title = data.get("title") or data.get("display_name")
+    oa_year = data.get("publication_year")
+    return n, kw, abstract, authorships, cby, oa_title, oa_year
 
 
 def _normalize_doi(doi):

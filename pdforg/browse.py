@@ -1439,13 +1439,23 @@ class BrowserWindow(Adw.ApplicationWindow):
             doi = row.get("doi")
             if not doi:
                 continue
-            n, src, kw, abstract, authorships, cby = metrics.fetch_metrics(doi)
+            (n, src, kw, abstract, authorships, cby,
+             oa_title, oa_year) = metrics.fetch_metrics(doi)
             if n is None:
                 self._cit_failed_session.add(row["pdf_path"])
             else:
                 today = metrics.today_iso()
                 try:
                     rec = sidecar.read(row["sidecar_path"])
+                    if not importer._openalex_record_matches(
+                            rec.get("title"), rec.get("year"),
+                            oa_title, oa_year):
+                        if oa_title or oa_year:
+                            print(
+                                "[citations] OpenAlex record for {} "
+                                "looks corrupted — skipping refresh"
+                                .format(doi))
+                        continue
                     rec["citations"] = n
                     rec["citations_source"] = src
                     rec["citations_fetched"] = today
@@ -1809,6 +1819,35 @@ class BrowserWindow(Adw.ApplicationWindow):
         return False
 
     # --- Preprint → published-version actions -------------------------
+
+    def find_existing_by_doi(self, doi):
+        """Public lookup used by the citation popover in viewer.py to
+        check whether a resolved reference is already in the library.
+        Returns the index row dict, or None when there's no match.
+        DOI matching is case-insensitive and tolerant of the usual
+        prefixes (`doi:`, `https://doi.org/`)."""
+        if not doi:
+            return None
+        try:
+            return index.find_duplicate(self.conn, doi=doi)
+        except Exception:
+            return None
+
+    def show_paper_in_library(self, pdf_path):
+        """Public scroll-and-focus used by the citation popover when
+        the resolved reference is already in the library — clicking
+        "Show in library" lands the user at the existing card."""
+        if not pdf_path:
+            return
+        # Clear any active filter so a search-restricted results list
+        # doesn't hide the target card.
+        try:
+            self.search.set_text("")
+        except Exception:
+            pass
+        self._mark_focus(pdf_path)
+        self._reload(None)
+        self.present()
 
     def add_reference_from_viewer(self, br, also_get_pdf, on_done):
         """Public entry point used by `viewer.py` when the user clicks

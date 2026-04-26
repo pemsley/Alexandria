@@ -165,6 +165,37 @@ Pending features, roughly grouped. Newest at the top of each section.
   Vermont 1998–2000, NIH 2023–2024, Penn State 2023–2024. Free
   data we already pay for; surprisingly informative as a "who is
   this person" cue when disambiguating.
+- **Citing-impact score per author.** `metrics.compute_citing_impact`
+  is shipped — sums `cited_by_count` across every paper that cites
+  any of an author's papers (self-cites excluded server-side via
+  OpenAlex's filter negation). Returns `{total, mean, n_citing,
+  computed_at}`. Smoke-tested on Cowtan: 65 k citing papers, mean
+  49.5 citations per citer, ~4 min runtime. What's still open:
+    - **Per-author SQLite cache.** New table
+      `author_scores(openalex_id PRIMARY KEY, citing_total,
+      citing_mean, n_citing, self_excluded, computed_at)` —
+      keyed by OpenAlex ID, ~30-day TTL. Lookup keyed off the
+      `authorships` blob in each sidecar.
+    - **Background refresh loop.** Same shape as the existing
+      citation-refresh loop in `browse.py`: walk distinct
+      OpenAlex author IDs across library sidecars, compute
+      missing or stale, write rows. Surface `[citing-impact]`
+      progress on the status line.
+    - **UI chip on the author dialog and (maybe) paper cards.**
+      Tooltip should call out the dominating-paper caveat: when
+      one paper provides the bulk of the citing pool the metric
+      collapses to "average impact of papers that use this
+      author's most-cited work" rather than "this author seeded
+      thinking that propagated". Consider rendering both `total`
+      and `mean` so the user can spot the lopsided case from
+      `total / paper_count`.
+    - **Erdős-style "prize distance".** Loosely related: shortest
+      path from any author to a Nobel/Lasker/Wolf/Turing/Fields
+      laureate via coauthorship. See the awards-chip item for
+      data plumbing; live BFS via OpenAlex is too costly past
+      depth 1, so realistic shapes are (a) cached JIT to depth 2,
+      or (b) precompute against the OpenAlex monthly snapshot
+      for distance ≤ 2 from laureates.
 - **Cache the Related-works *paper list*.** Cited-by and References
   are now cached in the sidecar (`cited_by_cache` / `references_cache`)
   with a manual refresh button in each popover; Related-works still

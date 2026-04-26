@@ -414,6 +414,136 @@ def fetch_coauthors(orcid=None, openalex_id=None, limit=15):
     return out[:limit]
 
 
+def _normalize_author_id(openalex_id):
+    """Strip URL prefix from an OpenAlex author ID — accepts both
+    `https://openalex.org/A5018808577` and `A5018808577`. Returns
+    None for anything that doesn't end in an `A<digits>` token."""
+    if not openalex_id:
+        return None
+    s = openalex_id.strip()
+    if "/" in s:
+        s = s.rsplit("/", 1)[-1]
+    if not s.startswith("A") or not s[1:].isdigit():
+        return None
+    return s
+
+
+def compute_citing_impact(openalex_id, exclude_self_cites=True,
+                          polite_delay=0.0):
+    """Sum of `cited_by_count` over every paper that cites a paper
+    by `openalex_id` (an author). Optionally excludes self-cites
+    (papers that this author co-authored).
+
+    Returns
+        {"total":   int,    # ∑ cited_by_count over citing papers
+         "mean":    float,  # total / n_citing, or 0
+         "n_citing":int,    # unique citing papers
+         "computed_at": iso-date}
+    or None when the author ID is malformed or no works are found.
+
+    The metric captures "your work was cited by people whose work
+    itself mattered" — orthogonal to h-index. Self-cite filtering
+    happens server-side via OpenAlex's filter negation, so it
+    costs nothing extra. Pagination uses cursor (`*` → next_cursor)
+    which OpenAlex requires for any result set above 10 000 hits.
+
+    Cost: O(N + M/200) API calls where N is the author's paper
+    count and M is the total number of citing papers — typically
+    50–500 calls. HTTP RTT alone keeps us well under the 10 req/s
+    polite-pool limit, so `polite_delay` defaults to 0; raise it
+    only when running this concurrently with other heavy OpenAlex
+    traffic. Smoke test: Cowtan (~65 k citing papers via the Coot
+    paper) finished in ~4 minutes; a typical career runs in well
+    under a minute."""
+    aid = _normalize_author_id(openalex_id)
+    if aid is None:
+        return None
+
+    # Step 1: every Work by this author. Cursor pagination + minimal
+    # `select` keeps this to a couple of calls for typical authors.
+    works = []
+    cursor = "*"
+    while cursor:
+        params = [
+            ("filter", "author.id:" + aid),
+            ("select", "id,cited_by_count"),
+            ("per_page", "200"),
+            ("cursor", cursor),
+        ]
+        if OPENALEX_MAILTO:
+            params.append(("mailto", OPENALEX_MAILTO))
+        url = ("https://api.openalex.org/works?"
+               + urllib.parse.urlencode(params))
+        data = _http_get_json(
+            url,
+            headers={"User-Agent": OPENALEX_UA,
+                     "Accept": "application/json"},
+            timeout=20)
+        if data is None:
+            return None
+        for w in (data.get("results") or []):
+            wid = (w.get("id") or "").rsplit("/", 1)[-1]
+            if wid.startswith("W"):
+                works.append(wid)
+        cursor = (data.get("meta") or {}).get("next_cursor")
+        if cursor:
+            time.sleep(polite_delay)
+
+    if not works:
+        return {"total": 0, "mean": 0.0, "n_citing": 0,
+                "computed_at": today_iso()}
+
+    # Step 2: for each Work, paginate through papers that cite it.
+    # `seen_citers` dedupes so a citing paper that hits multiple of
+    # the author's works only counts once — otherwise an author's
+    # own review paper that cites every paper they ever wrote would
+    # contribute its citations N times.
+    total = 0
+    seen_citers = set()
+    for wid in works:
+        cursor = "*"
+        while cursor:
+            filt = "cites:" + wid
+            if exclude_self_cites:
+                # OpenAlex filter negation: exclude works whose
+                # authorships include this author. Same call cost
+                # as without the negation; keeps self-cites out.
+                filt += ",authorships.author.id:!" + aid
+            params = [
+                ("filter", filt),
+                ("select", "id,cited_by_count"),
+                ("per_page", "200"),
+                ("cursor", cursor),
+            ]
+            if OPENALEX_MAILTO:
+                params.append(("mailto", OPENALEX_MAILTO))
+            url = ("https://api.openalex.org/works?"
+                   + urllib.parse.urlencode(params))
+            data = _http_get_json(
+                url,
+                headers={"User-Agent": OPENALEX_UA,
+                         "Accept": "application/json"},
+                timeout=20)
+            if data is None:
+                break
+            for w in (data.get("results") or []):
+                cid = (w.get("id") or "").rsplit("/", 1)[-1]
+                if not cid.startswith("W") or cid in seen_citers:
+                    continue
+                seen_citers.add(cid)
+                c = w.get("cited_by_count")
+                if isinstance(c, int):
+                    total += c
+            cursor = (data.get("meta") or {}).get("next_cursor")
+            if cursor:
+                time.sleep(polite_delay)
+
+    n_citing = len(seen_citers)
+    mean = (total / n_citing) if n_citing else 0.0
+    return {"total": total, "mean": mean, "n_citing": n_citing,
+            "computed_at": today_iso()}
+
+
 def _reconstruct_abstract(inv_idx):
     """Rebuild the plain-text abstract from OpenAlex's inverted-index
     representation: {word: [positions, ...], ...}.

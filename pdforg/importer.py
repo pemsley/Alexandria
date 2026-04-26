@@ -4,6 +4,7 @@ and upsert into the local index."""
 import hashlib
 import json
 import os
+import shutil
 import time
 
 from . import sidecar, thumbnail, extract, index, metrics
@@ -31,6 +32,59 @@ def find_pdfs(root):
         for name in files:
             if name.lower().endswith(".pdf"):
                 yield os.path.join(dirpath, name)
+
+
+def _is_inside(path, root):
+    """True if `path` is at or below `root` (after symlink resolution)."""
+    try:
+        rp = os.path.realpath(path)
+        rr = os.path.realpath(root)
+    except OSError:
+        return False
+    rr_with_sep = rr.rstrip(os.sep) + os.sep
+    return rp == rr or rp.startswith(rr_with_sep)
+
+
+def stage_into_library(src_path, library_root, conn=None):
+    """Ensure `src_path` lives inside `library_root`, copying it in if
+    necessary. Used by the user-driven Import flow so picked PDFs get
+    consolidated under the library root rather than scattering sidecar
+    JSON next to wherever the user happened to keep them. Required for
+    the Flatpak build: with `--filesystem=xdg-documents`, files chosen
+    via the FileChooser portal are bind-mounted at a transient
+    `/run/user/<uid>/doc/...` path, and we need a real copy under the
+    library before the portal mount goes away.
+
+    Returns `(path, status)` where status is one of:
+        'inplace'   — already inside library_root, no copy needed
+        'copied'    — copy succeeded; path is the new in-library path
+        'duplicate' — same SHA already indexed; path is the existing
+                      in-library file, no copy made
+
+    On a name collision with different content the copy is renamed
+    `<stem>-<sha8>.pdf` so it doesn't clobber an unrelated file.
+    The dedup gate runs *before* the copy so we never strand a
+    redundant file in the library."""
+    library_root = os.path.expanduser(library_root)
+    os.makedirs(library_root, exist_ok=True)
+    if _is_inside(src_path, library_root):
+        return src_path, "inplace"
+    sha = _sha256(src_path)
+    if conn is not None:
+        dup = index.find_duplicate(conn, sha256=sha)
+        if dup and dup.get("pdf_path") and os.path.isfile(dup["pdf_path"]):
+            return dup["pdf_path"], "duplicate"
+    basename = os.path.basename(src_path)
+    target = os.path.join(library_root, basename)
+    if os.path.exists(target):
+        # Different content, same name (we'd have hit the SHA dup gate
+        # above otherwise). Suffix with the first 8 hex of the hash so
+        # both files coexist.
+        stem, ext = os.path.splitext(basename)
+        target = os.path.join(
+            library_root, "{}-{}{}".format(stem, sha[:8], ext))
+    shutil.copy2(src_path, target)
+    return target, "copied"
 
 
 def _build_record(pdf_path):

@@ -14,6 +14,62 @@ XDG_STATE = os.environ.get("XDG_STATE_HOME") or os.path.join(
 DEFAULT_DB_PATH = os.path.join(XDG_STATE, "Alexandria", "library.db")
 
 
+# Filesystem types we don't want SQLite's WAL file living on.
+# Network filesystems break advisory locking (or do it unreliably),
+# which corrupts the WAL eventually and tanks performance always.
+# `nfs`/`nfs4` are by far the common case on shared-home setups
+# (e.g. university login boxes); the others are belt-and-braces.
+_NETWORK_FS_TYPES = {
+    "nfs", "nfs4", "nfsd",
+    "cifs", "smbfs", "smb2", "smb3",
+    "fuse.sshfs", "sshfs",
+}
+
+
+def is_network_filesystem(path):
+    """Return True if `path` (or its containing directory) lives on a
+    networked filesystem where SQLite WAL is unsafe. Best-effort: on
+    non-Linux platforms or if we can't read /proc/self/mountinfo, we
+    return False (fail open — a missed warning is better than a
+    bogus one)."""
+    try:
+        target = os.path.realpath(path)
+    except OSError:
+        return False
+    try:
+        with open("/proc/self/mountinfo", "r") as f:
+            entries = f.readlines()
+    except OSError:
+        return False
+    # mountinfo line layout (man 5 proc):
+    #   36 35 98:0 /mnt1 /mnt2 rw,noatime - <fstype> <source> <opts>
+    # The fstype is the field after the ' - ' separator. Pick the
+    # mount with the longest mount point that is a prefix of `target`
+    # — that's the most specific mount covering it.
+    best = None
+    best_len = -1
+    for line in entries:
+        sep = line.find(" - ")
+        if sep < 0:
+            continue
+        before = line[:sep].split()
+        after = line[sep + 3:].split()
+        if len(before) < 5 or not after:
+            continue
+        mount_point = before[4]
+        fstype = after[0]
+        # Match mount_point as a path prefix, anchored at separator
+        # so /home/foo doesn't accidentally match /home/foobar.
+        if (target == mount_point
+                or target.startswith(mount_point.rstrip("/") + "/")):
+            if len(mount_point) > best_len:
+                best = fstype
+                best_len = len(mount_point)
+    if best is None:
+        return False
+    return best.lower() in _NETWORK_FS_TYPES
+
+
 CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS papers (
     id           INTEGER PRIMARY KEY,

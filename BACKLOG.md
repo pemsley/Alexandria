@@ -95,23 +95,40 @@ Pending features, roughly grouped. Newest at the top of each section.
   nothing. The existing click handler / hover cursor / `_jump_to`
   / reference popover all keep working unchanged because they
   consume the index, not its source.
-- **Author-year citation hit-testing (Acta Cryst, IUCr).**
-  *Phase 1 done:* `references_pdf.parse_bibliography` now detects
-  author-year style and returns entries with `surname` / `year` /
-  `suffix` / `key` fields alongside `n`; the References popover
-  renders them with a `(Sheldrick, 2008)` chip. *Phase 2 still
-  open:* in-page click-to-jump from `(Surname, YYYY)` /
-  `Surname (YYYY)` patterns. Walk each page's text layout, regex
-  `\(([A-Z]\S+(?:\s+et\s+al\.)?,?\s+\d{4}[a-z]?(?:,?\s*\d{4}[a-z]?)*)\)`
-  for parenthetical and `[A-Z]\S+(?:\s+et\s+al\.)?\s+\(\d{4}[a-z]?\)`
-  for narrative form, look up `(surname_lower, year)` in the
-  parsed bibliography (tolerating "et al." → first-author
-  surname), synthesise the same `(rect, target_page, target_top,
-  ref_key)` records `pdf_links.read_citation_links` produces but
-  with `ref_key` repurposed as the canonical `key` string.
-  Multi-cite tokens like `(Smith, 2020; Jones, 2003)` and
-  `(Smith, 2020a, 2020b)` expand to multiple refs.
 - Page thumbnails sidebar.
+- **Citation-graph view (Local-Citation-Network style).** Embed-free
+  native implementation, since the dependency stack is already
+  here: Cairo via `Gtk.DrawingArea` for rendering (same primitives
+  the viewer uses for highlight overlays), and OpenAlex for the
+  data we already half-fetch.
+    - **v0 (~half a day):** seed paper as a centred node,
+      references in a backward column (left, dots), citers in a
+      forward column (right, dots), nodes positioned by year.
+      No within-set edges yet. Click a node → reuse the
+      reference-popover machinery from the viewer (it already
+      consumes OpenAlex-resolved metadata).
+    - **v1 (1–2 days):** within-set edges — the actual *network*
+      bit. For each node in the seed-neighbourhood, fetch its
+      `referenced_works` and draw an edge whenever the target
+      is also in the neighbourhood. Top-N filter on citers
+      (popular papers can have thousands of citers — the graph
+      is unreadable without a cap). Hover tooltips with
+      title / authors / year. Pan and pinch-zoom via
+      `Gtk.GestureZoom` on the drawing area.
+    - **v2:** persistence — cache the computed network in the
+      sidecar so re-opens are instant. Same shape as the
+      existing `cited_by_cache` / `references_cache` slots.
+    - **Layout choice worth stealing from Local Citation
+      Network:** year on x-axis, journal-cluster on y-axis.
+      Stable, meaningful, no force-directed graph-physics
+      library needed.
+    - **Cost on the OpenAlex side:** O(N) calls where N is the
+      neighbourhood size (one extra `referenced_works` fetch per
+      node, since the seed paper's ref / citer lists carry the
+      first-degree edges already). For a typical seed paper with
+      ~30 refs and a top-50 citer filter, that's ~80 calls,
+      well-cached. No new APIs needed; `metrics.fetch_references`
+      and `metrics.fetch_cited_by` already exist.
 
 ## Discovery
 - **Author-awards chip on paper cards.** A small badge when an
@@ -165,6 +182,36 @@ Pending features, roughly grouped. Newest at the top of each section.
   Vermont 1998–2000, NIH 2023–2024, Penn State 2023–2024. Free
   data we already pay for; surprisingly informative as a "who is
   this person" cue when disambiguating.
+- **"This author cites" / "Cited by" author lists in the author
+  dialog.** Extend the existing coauthors section in
+  `author_works.py` with two more compact lists:
+    - **Cites most:** top-N other authors that this author's
+      papers reference. For each of A's works, OpenAlex gives
+      `referenced_works`; for each referenced work, fetch
+      authorships (batchable via `ids.openalex:W1|W2|…` —
+      ~30–50 calls for a typical career). Tally author IDs,
+      exclude A (self), keep top 10–15 by count.
+    - **Cited by most:** top-N authors whose papers cite A's
+      papers. Same iteration as `compute_citing_impact` but
+      tally citing-paper authorships instead of citation counts.
+      Self-exclusion via the same OpenAlex filter negation.
+    - Click an author → open their author dialog (already
+      supported by `author_works.py`).
+    - **Same cache shape as the citing-impact score:** roll into
+      the planned `author_scores` table or a sibling
+      `author_relations(openalex_id PRIMARY KEY,
+      cites_top_json, cited_by_top_json, computed_at)`. ~30-day
+      TTL. Background pass shares the citing-impact loop's
+      walk over distinct OpenAlex IDs across library sidecars.
+    - **Why this beats the graph for v1:** much higher
+      information-density per pixel, no layout problem to
+      solve, and the social signal — "Cowtan cites Sheldrick
+      and Murshudov; is cited by [young protégés]" — is the
+      part of a citation graph that actually carries meaning
+      to a researcher.
+
+  Defers the Cairo citation-graph item below: ship this first,
+  see whether the graph still feels missing afterwards.
 - **Citing-impact score per author.** `metrics.compute_citing_impact`
   is shipped — sums `cited_by_count` across every paper that cites
   any of an author's papers (self-cites excluded server-side via

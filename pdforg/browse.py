@@ -926,6 +926,17 @@ class BrowserWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._citation_refresher,
                          daemon=True).start()
 
+        # Background citing-impact pre-fetch. Same shape as the
+        # citation refresher: a single daemon thread that walks
+        # distinct OpenAlex author IDs across the library and
+        # pre-fills the `author_scores` cache so the author
+        # dialog's chip resolves instantly. Pause-aware so an
+        # arbitrarily large library doesn't burn the polite pool.
+        self._asc_stop = threading.Event()
+        self._asc_failed_session = set()
+        threading.Thread(target=self._author_score_refresher,
+                         daemon=True).start()
+
         # GFileMonitor-based library watcher: react to external file
         # changes in LIBRARY_ROOT (drops via Files / cp / sync tools,
         # plus sidecar rewrites from `pdforg-import --refresh`).
@@ -1490,6 +1501,55 @@ class BrowserWindow(Adw.ApplicationWindow):
         # Cheap: just rebuild the list. (Could rebuild a single card later.)
         self._reload(self.search.get_text() or None)
         return False
+
+    def _author_score_refresher(self, initial_delay_seconds=60.0,
+                                pause_seconds=30.0):
+        """Slowly pre-fill the `author_scores` cache for every
+        distinct OpenAlex author across the library, so the
+        author-dialog's citing-impact chip resolves from cache
+        instead of triggering a ~3-min compute on first open.
+
+        Runs once per browser session. Daemon thread, so closing
+        the window is enough to stop it (and `_asc_stop` provides
+        a cleaner shutdown path between iterations). Longer
+        initial delay than the citation refresher because the
+        per-author compute is heavier and we'd rather let
+        citation counts settle first."""
+        if self._asc_stop.wait(initial_delay_seconds):
+            return
+        try:
+            ids = index.stale_author_score_ids(self.conn)
+        except Exception as e:
+            print("author-score refresher: index lookup failed:", e)
+            return
+        if not ids:
+            return
+        for aid in ids:
+            if self._asc_stop.is_set():
+                return
+            if aid in self._asc_failed_session:
+                continue
+            try:
+                result = metrics.compute_citing_impact(
+                    aid, exclude_self_cites=True, polite_delay=0.0)
+            except Exception as e:
+                print("author-score refresher: compute failed for {}: {}"
+                      .format(aid, e))
+                self._asc_failed_session.add(aid)
+                if self._asc_stop.wait(pause_seconds):
+                    return
+                continue
+            if not result:
+                self._asc_failed_session.add(aid)
+            else:
+                try:
+                    index.set_author_score(self.conn, aid, result,
+                                           self_excluded=True)
+                except Exception as e:
+                    print("author-score refresher: cache write failed for "
+                          "{}: {}".format(aid, e))
+            if self._asc_stop.wait(pause_seconds):
+                return
 
     # --- Drag-and-drop --------------------------------------------------
 
@@ -2137,6 +2197,10 @@ class BrowserWindow(Adw.ApplicationWindow):
         # writing to the SQLite handle as the window tears down.
         try:
             self._cit_stop.set()
+        except Exception:
+            pass
+        try:
+            self._asc_stop.set()
         except Exception:
             pass
         try:

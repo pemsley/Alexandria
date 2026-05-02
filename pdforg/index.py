@@ -569,6 +569,56 @@ def update_citations(conn, pdf_path, count, source, fetched_iso):
     conn.commit()
 
 
+def stale_author_score_ids(conn, max_age_days=AUTHOR_SCORE_TTL_DAYS,
+                           limit=None):
+    """OpenAlex author IDs across the library that need a fresh
+    `compute_citing_impact` run. Source: every `openalex_id` in
+    every paper's `authorships_json`, left-joined against
+    `author_scores`. Returns IDs that either have no cached row
+    or whose cached row is older than max_age_days, oldest first
+    (missing rows first)."""
+    cutoff = (date.today() - timedelta(days=max_age_days)).isoformat()
+    # Collect distinct OpenAlex author IDs from authorships_json.
+    # Stored shape: [{"name": ..., "openalex_id": "A...", "orcid": ...}, ...]
+    ids = set()
+    rows = conn.execute(
+        "SELECT authorships_json FROM papers"
+        " WHERE authorships_json IS NOT NULL").fetchall()
+    for r in rows:
+        try:
+            ash = json.loads(r["authorships_json"])
+        except Exception:
+            continue
+        for a in ash or []:
+            oa = a.get("openalex_id") if isinstance(a, dict) else None
+            if oa and isinstance(oa, str) and oa.startswith("A"):
+                ids.add(oa)
+    if not ids:
+        return []
+    # Bind into a temporary table for the join — avoids embedding
+    # potentially thousands of IDs into a SQL IN clause.
+    conn.execute("DROP TABLE IF EXISTS _author_score_candidates")
+    conn.execute(
+        "CREATE TEMP TABLE _author_score_candidates (openalex_id TEXT)")
+    conn.executemany(
+        "INSERT INTO _author_score_candidates (openalex_id) VALUES (?)",
+        [(i,) for i in ids])
+    sql = """
+        SELECT c.openalex_id AS openalex_id, s.computed_at AS computed_at
+        FROM _author_score_candidates c
+        LEFT JOIN author_scores s ON s.openalex_id = c.openalex_id
+        WHERE s.openalex_id IS NULL OR s.computed_at < ?
+        ORDER BY (s.computed_at IS NULL) DESC, s.computed_at ASC
+    """
+    params = [cutoff]
+    if limit:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    out = [r["openalex_id"] for r in conn.execute(sql, params).fetchall()]
+    conn.execute("DROP TABLE IF EXISTS _author_score_candidates")
+    return out
+
+
 def _make_fts_query(query):
     """Convert a free-text search box query into an FTS5 MATCH expression
     with implicit prefix matching: 'Cro Will' → 'Cro* Will*'.

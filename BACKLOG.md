@@ -48,6 +48,55 @@ Pending features, roughly grouped. Newest at the top of each section.
   so future re-exports preserve it. For entries with a DOI, enrich
   via OpenAlex.
 - URL drops (drag a journal/PDF URL into the browser, fetch + import).
+- **Unpaywall as a `Get PDF` fallback.** Currently "Get PDF" on a
+  ghost card chases OpenAlex's `open_access.oa_url`, which is fine
+  when it resolves but misses a long tail. Unpaywall (same parent
+  org as OpenAlex; the OpenAlex blog flagged a planned alignment
+  pass in summer 2025 but the two are not yet fully synced) is
+  the upstream canonical OA-lookup service that Web of Science /
+  Scopus / Dimensions / Wispar all consume. One endpoint:
+  `https://api.unpaywall.org/v2/{doi}?email=…`, email required,
+  100 k requests/day, no API key. Returns `is_oa`, `oa_status`
+  (`gold`/`hybrid`/`green`/`bronze`/`closed`), `best_oa_location`,
+  and an `oa_locations` array. Each location has `url_for_pdf`,
+  `host_type` (`publisher` vs `repository`), `version`
+  (`publishedVersion`/`acceptedVersion`/`submittedVersion`),
+  `license`, `repository_institution`. Three things we can do
+  with it:
+    - **`Get PDF` fallback.** When OpenAlex's `oa_url` is missing
+      or 404s, ask Unpaywall. Wraps a single helper in
+      `metrics.py` (`fetch_oa_locations(doi)`) mirroring the
+      shape of `fetch_cited_by` / `fetch_references`. Sits
+      between OpenAlex (try first) and EZproxy (try last) in
+      the `Get PDF` ladder.
+    - **Version-aware preference.** OpenAlex hands us one URL;
+      Unpaywall's array lets us prefer `publishedVersion @
+      publisher` over `acceptedVersion @ repository` over
+      `submittedVersion @ preprint`. Useful when the user cares
+      which copy lands on disk — the published copy reads
+      identically to the paywalled one, the accepted manuscript
+      doesn't.
+    - **OA-status chip on cards.** Persist `oa_status` in the
+      sidecar (next to existing OpenAlex fields) and render a
+      small badge (`OA`, `green`, `hybrid`, etc.) on the card.
+      Useful at-a-glance signal — "is there a free copy of
+      this paper anywhere" — without round-tripping every open.
+  Diminishing-returns caveat: once OpenAlex's planned Unpaywall
+  alignment lands, the `Get PDF` fallback win will shrink to the
+  tail. The version-aware sort and the OA-status chip are the
+  durable differentiators. (See `chat-stuff/competitors.md`.)
+
+  Not redundant with the Save-to-Alexandria Firefox extension
+  (sister project at `~/Projects/alexandria-firefox-extension`).
+  The extension only fires when the user is browsing a publisher
+  page in Firefox — it's the *collection-side* path. The
+  API-based fallback documented here fires from inside the app
+  on ghost cards (BibTeX imports, DOI-paste imports) where
+  there's no browser session. Both should exist. The extension
+  also composes naturally with the Unpaywall *browser*
+  extension (read-side, finds free PDFs) — see
+  `docs/related-unpaywall-extension.md` in the sister repo.
+
 - **EZproxy support for paywalled fetches.** Currently "Get PDF"
   on a ghost card chases OpenAlex's `oa_url` only — fine for
   open-access papers, useless for paywalled ones. EZproxy is

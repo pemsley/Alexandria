@@ -6,7 +6,24 @@ survives any DB schema change.
 
 import json
 import os
+import socket
 from datetime import date
+
+
+def _tmp_suffix():
+    """Return `.<host>.<pid>.tmp` for the current process. Two
+    Alexandria processes on different hosts writing the same
+    sidecar on an NFS share would otherwise both write to
+    `<path>.tmp` and race the truncate/write/rename triple — one
+    would see a corrupt tmp mid-flush. Per-host, per-pid suffix
+    eliminates that. Doesn't fix the last-rename-wins race (a
+    separate BACKLOG item plans an mtime check before rename)."""
+    host = (socket.gethostname() or "host").split(".", 1)[0]
+    # Restrict to a conservative charset — sidecars live on disk
+    # and we'd rather not embed weird hostnames in filenames.
+    host = "".join(c if (c.isalnum() or c in "-_") else "_"
+                   for c in host) or "host"
+    return ".{}.{}.tmp".format(host, os.getpid())
 
 SCHEMA_VERSION = 1
 SIDECAR_SUFFIX = ".meta.json"
@@ -109,9 +126,9 @@ def read(path):
 
 
 def write(path, record):
-    tmp = path + ".tmp"
+    tmp = path + _tmp_suffix()
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(record, f, indent=2, ensure_ascii=False)
         f.flush()
         os.fsync(f.fileno())
-    os.rename(tmp, path)
+    os.replace(tmp, path)

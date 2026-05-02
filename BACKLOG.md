@@ -48,6 +48,25 @@ Pending features, roughly grouped. Newest at the top of each section.
   so future re-exports preserve it. For entries with a DOI, enrich
   via OpenAlex.
 - URL drops (drag a journal/PDF URL into the browser, fetch + import).
+- **EZproxy support for paywalled fetches.** Currently "Get PDF"
+  on a ghost card chases OpenAlex's `oa_url` only — fine for
+  open-access papers, useless for paywalled ones. EZproxy is
+  the standard URL-rewriting proxy university libraries run for
+  off-campus subscription access. Adding support is small:
+    - New Preferences entry "EZproxy URL", e.g.
+      `https://login.ezproxy.harvard.edu/login?url=`.
+    - When `oa_url` is missing or returns paywall HTML, prefix
+      the publisher URL with the user's EZproxy URL and open it
+      in their default browser. The user already has a session
+      with their institution; we don't handle auth.
+    - Optional: surface a "Open via EZproxy" affordance on
+      every card with a DOI, regardless of OA status, for users
+      who'd rather always go through their institution.
+  Implication for `Get PDF`: for institutionally-affiliated
+  users, it goes from "OA-only" to "anything our institution
+  subscribes to". Wispar already has this; competitive parity
+  point as well as a real workflow improvement. (See
+  `chat-stuff/competitors.md`.)
 
 ## Viewer (poppler) v2
 - Text selection + hit-testing (cairo overlay → page coords) — done v1.

@@ -317,6 +317,82 @@ def _ensure_fts(conn):
     conn.commit()
 
 
+CREATE_AUTHOR_SCORES = """
+CREATE TABLE IF NOT EXISTS author_scores (
+    openalex_id       TEXT PRIMARY KEY,
+    self_excluded     INTEGER NOT NULL DEFAULT 1,
+    software_total    INTEGER NOT NULL DEFAULT 0,
+    software_n_citing INTEGER NOT NULL DEFAULT 0,
+    software_n_works  INTEGER NOT NULL DEFAULT 0,
+    method_total      INTEGER NOT NULL DEFAULT 0,
+    method_n_citing   INTEGER NOT NULL DEFAULT 0,
+    method_n_works    INTEGER NOT NULL DEFAULT 0,
+    idea_total        INTEGER NOT NULL DEFAULT 0,
+    idea_n_citing     INTEGER NOT NULL DEFAULT 0,
+    idea_n_works      INTEGER NOT NULL DEFAULT 0,
+    computed_at       TEXT NOT NULL
+);
+"""
+
+
+# How long a cached citing-impact row is considered fresh. The
+# underlying OpenAlex data moves on the order of weeks, so a month
+# is plenty; we'd rather pay the ~3-min compute occasionally than
+# hammer the API on every dialog open.
+AUTHOR_SCORE_TTL_DAYS = 30
+
+
+def get_author_score(conn, openalex_id):
+    """Read the cached citing-impact result for `openalex_id`, or
+    None if no row exists. Does *not* check freshness — callers
+    decide whether to use the stale value or trigger a refresh."""
+    if not openalex_id:
+        return None
+    row = conn.execute(
+        "SELECT * FROM author_scores WHERE openalex_id = ?",
+        (openalex_id,)).fetchone()
+    if row is None:
+        return None
+    out = {"computed_at": row["computed_at"],
+           "self_excluded": bool(row["self_excluded"])}
+    for kind in ("software", "method", "idea"):
+        total = row["{}_total".format(kind)]
+        n_citing = row["{}_n_citing".format(kind)]
+        n_works = row["{}_n_works".format(kind)]
+        out[kind] = {
+            "total": total,
+            "n_citing": n_citing,
+            "n_works": n_works,
+            "mean": (total / n_citing) if n_citing else 0.0,
+        }
+    return out
+
+
+def set_author_score(conn, openalex_id, result, self_excluded=True):
+    """Persist a `compute_citing_impact` result for later reads.
+    `result` is the dict it returns: per-bucket {total, n_citing,
+    n_works} plus `computed_at`."""
+    if not openalex_id or not result:
+        return
+    cols = ["openalex_id", "self_excluded", "computed_at"]
+    vals = [openalex_id, 1 if self_excluded else 0,
+            result.get("computed_at") or ""]
+    for kind in ("software", "method", "idea"):
+        b = result.get(kind) or {}
+        cols += ["{}_total".format(kind),
+                 "{}_n_citing".format(kind),
+                 "{}_n_works".format(kind)]
+        vals += [int(b.get("total") or 0),
+                 int(b.get("n_citing") or 0),
+                 int(b.get("n_works") or 0)]
+    placeholders = ",".join(["?"] * len(cols))
+    conn.execute(
+        "INSERT OR REPLACE INTO author_scores ({}) VALUES ({})".format(
+            ",".join(cols), placeholders),
+        vals)
+    conn.commit()
+
+
 def open_db(path=DEFAULT_DB_PATH):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     # check_same_thread=False because the GUI shares this connection with
@@ -329,6 +405,7 @@ def open_db(path=DEFAULT_DB_PATH):
     conn.executescript(CREATE_TABLE)
     _migrate(conn)
     conn.executescript(CREATE_INDEXES)
+    conn.executescript(CREATE_AUTHOR_SCORES)
     _ensure_fts(conn)
     return conn
 

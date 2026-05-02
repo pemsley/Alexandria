@@ -15,6 +15,8 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GLib, Gdk, Gio, Pango
 
+import datetime
+
 from . import metrics, index, importer, opener
 from .markup import safe_pango_markup
 
@@ -61,6 +63,35 @@ def _attach_copy_link_menu(button, url):
 
 LIBRARY_ROOT = os.environ.get(
     "PDFORG_LIBRARY", os.path.expanduser("~/pdfs"))
+
+
+def _fmt_compact(n):
+    """Render a count as `2.1M`, `337k`, `42` etc. Used in the
+    citing-impact chip so three numbers fit on one line."""
+    if n is None:
+        return "0"
+    n = int(n)
+    if n >= 1_000_000:
+        return "{:.1f}M".format(n / 1_000_000)
+    if n >= 10_000:
+        return "{:.0f}k".format(n / 1_000)
+    if n >= 1_000:
+        return "{:.1f}k".format(n / 1_000)
+    return str(n)
+
+
+def _author_score_is_fresh(cached):
+    """True when a cached `author_scores` row is younger than the
+    TTL. Anything older we'll show briefly then refresh."""
+    when = (cached or {}).get("computed_at")
+    if not when:
+        return False
+    try:
+        d = datetime.date.fromisoformat(when[:10])
+    except ValueError:
+        return False
+    age_days = (datetime.date.today() - d).days
+    return age_days < index.AUTHOR_SCORE_TTL_DAYS
 
 
 # Hide the histogram entirely if no year reaches this many citations.
@@ -325,6 +356,16 @@ class AuthorWorksWindow(Gtk.Window):
         self.stats_lbl = Gtk.Label(xalign=0.0)
         self.stats_lbl.set_markup("<span size='small' alpha='65%'>Loading…</span>")
         hleft.append(self.stats_lbl)
+
+        # Citing-impact chip: three-bucket (software/method/idea)
+        # rollup of citations to this author's works, computed
+        # lazily and cached for 30 days in `author_scores`. Hidden
+        # until we have an OpenAlex ID and a result to show.
+        self.citing_impact_lbl = Gtk.Label(xalign=0.0)
+        self.citing_impact_lbl.set_use_markup(True)
+        self.citing_impact_lbl.set_visible(False)
+        hleft.append(self.citing_impact_lbl)
+
         header.append(hleft)
 
         self.hist_area = Gtk.DrawingArea()
@@ -404,6 +445,14 @@ class AuthorWorksWindow(Gtk.Window):
         threading.Thread(
             target=self._do_fetch, args=(orcid, oa_id),
             daemon=True).start()
+        # Citing-impact lives on its own thread because the compute
+        # is slow (~3 min for prolific authors) and we don't want
+        # to block the works list on it. Cache-hits return in
+        # microseconds; cache-misses do the slow OpenAlex walk.
+        if oa_id:
+            threading.Thread(
+                target=self._do_citing_impact, args=(oa_id,),
+                daemon=True).start()
 
     def _do_fetch(self, orcid, oa_id):
         profile = metrics.fetch_author_profile(orcid=orcid, openalex_id=oa_id)
@@ -413,6 +462,96 @@ class AuthorWorksWindow(Gtk.Window):
         coauths = metrics.fetch_coauthors(
             orcid=orcid, openalex_id=oa_id, limit=12)
         GLib.idle_add(self._apply_results, profile, works, coauths)
+
+    # --- Citing-impact (cached) ----------------------------------------
+
+    def _do_citing_impact(self, openalex_id):
+        cached = index.get_author_score(self.conn, openalex_id)
+        if cached and _author_score_is_fresh(cached):
+            GLib.idle_add(self._apply_citing_impact, cached, False)
+            return
+        # Stale or absent — show a "computing" placeholder, then
+        # the real numbers. Stale rows are still shown briefly so
+        # the user has something to look at while the refresh runs.
+        if cached:
+            GLib.idle_add(self._apply_citing_impact, cached, True)
+        else:
+            GLib.idle_add(self._show_citing_impact_pending)
+        result = metrics.compute_citing_impact(
+            openalex_id, exclude_self_cites=True, polite_delay=0.0)
+        if not result:
+            GLib.idle_add(self._hide_citing_impact_pending)
+            return
+        try:
+            index.set_author_score(self.conn, openalex_id, result,
+                                   self_excluded=True)
+        except Exception:
+            pass
+        GLib.idle_add(self._apply_citing_impact, result, False)
+
+    def _show_citing_impact_pending(self):
+        self.citing_impact_lbl.set_markup(
+            "<span size='small' alpha='55%'>"
+            "Citing-impact: computing…"
+            "</span>")
+        self.citing_impact_lbl.set_visible(True)
+        return False
+
+    def _hide_citing_impact_pending(self):
+        # Only hide if we're still on the pending placeholder.
+        # The user might have a stale-but-rendered result behind us.
+        if "computing" in (self.citing_impact_lbl.get_text() or ""):
+            self.citing_impact_lbl.set_visible(False)
+        return False
+
+    def _apply_citing_impact(self, result, is_stale):
+        if not result:
+            return False
+        bits = []
+        for kind in ("software", "method", "idea"):
+            b = result.get(kind) or {}
+            total = b.get("total") or 0
+            n_works = b.get("n_works") or 0
+            if n_works == 0:
+                continue
+            bits.append("{} {}".format(kind, _fmt_compact(total)))
+        if not bits:
+            self.citing_impact_lbl.set_visible(False)
+            return False
+        stale_marker = " (stale)" if is_stale else ""
+        self.citing_impact_lbl.set_markup(
+            "<span size='small' alpha='65%'>"
+            "Citing-impact: {}{}</span>".format(
+                GLib.markup_escape_text("  ·  ".join(bits)),
+                GLib.markup_escape_text(stale_marker)))
+        # Build a tooltip with the per-bucket breakdown so the
+        # compact chip stays compact but the detail is one hover
+        # away.
+        tip_lines = ["Citations of papers that cite this author's "
+                     "works (self-cites excluded), bucketed by the "
+                     "kind of work being cited."]
+        for kind in ("software", "method", "idea"):
+            b = result.get(kind) or {}
+            n_works = b.get("n_works") or 0
+            if n_works == 0:
+                continue
+            total = b.get("total") or 0
+            n_citing = b.get("n_citing") or 0
+            mean = (total / n_citing) if n_citing else 0.0
+            tip_lines.append(
+                "{}: {} works, {} citing papers, "
+                "{} total cites of citers, mean {:.1f}".format(
+                    kind.capitalize(),
+                    n_works,
+                    "{:,}".format(n_citing),
+                    "{:,}".format(total),
+                    mean))
+        when = result.get("computed_at")
+        if when:
+            tip_lines.append("Computed {}.".format(when))
+        self.citing_impact_lbl.set_tooltip_text("\n".join(tip_lines))
+        self.citing_impact_lbl.set_visible(True)
+        return False
 
     # --- Sort toggle ---------------------------------------------------
 

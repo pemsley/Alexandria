@@ -71,6 +71,7 @@ Pending features, roughly grouped. Newest at the top of each section.
 ## Viewer (poppler) v2
 - Text selection + hit-testing (cairo overlay → page coords) — done v1.
 - Highlighting / annotation ("stabilo" mode) — done v1.
+
 - **Better column-aware text selection.** v1 uses a heuristic
   (cluster line-start x positions, find the largest cluster gap as a
   column boundary). Works for typical 1- and 2-column papers,
@@ -82,6 +83,7 @@ Pending features, roughly grouped. Newest at the top of each section.
   bbox-clip when no clean cluster is detected; (b) bring in
   `pdfminer.six` or `pymupdf` for proper layout analysis; (c) implement
   page segmentation via connected-components on glyph rectangles.
+
 - **References panel** (per-paper, popover). Use OpenAlex's
   `referenced_works` field on the paper's Work record — already
   structured (each is an OpenAlex Work ID), batched-resolve to
@@ -97,6 +99,7 @@ Pending features, roughly grouped. Newest at the top of each section.
   Nature). What's still missing is the parser-driven fallback for
   PDFs without those annotations — see "Citation hit-testing
   fallback" below.)*
+
 - **Citation hit-testing fallback for un-annotated `[N]` PDFs
   (numbered).** Click-to-jump and the resolved-reference popover
   currently work on PDFs with publisher-embedded `/Link`
@@ -114,7 +117,9 @@ Pending features, roughly grouped. Newest at the top of each section.
   nothing. The existing click handler / hover cursor / `_jump_to`
   / reference popover all keep working unchanged because they
   consume the index, not its source.
+
 - Page thumbnails sidebar.
+
 - **Citation-graph view (Local-Citation-Network style).** Embed-free
   native implementation, since the dependency stack is already
   here: Cairo via `Gtk.DrawingArea` for rendering (same primitives
@@ -249,6 +254,7 @@ Pending features, roughly grouped. Newest at the top of each section.
     - At paper render time: walk `authorships`, check each
       author's `wikidata` ID against the set; render the highest
       tier found.
+
 - **Show an author's prior institutions in the author dialog.**
   OpenAlex's author record carries an `affiliations` array of
   `{institution: {display_name, ...}, years: [...]}` entries — a
@@ -261,6 +267,7 @@ Pending features, roughly grouped. Newest at the top of each section.
   Vermont 1998–2000, NIH 2023–2024, Penn State 2023–2024. Free
   data we already pay for; surprisingly informative as a "who is
   this person" cue when disambiguating.
+
 - **"This author cites" / "Cited by" author lists in the author
   dialog.** Extend the existing coauthors section in
   `author_works.py` with two more compact lists:
@@ -291,6 +298,7 @@ Pending features, roughly grouped. Newest at the top of each section.
 
   Defers the Cairo citation-graph item below: ship this first,
   see whether the graph still feels missing afterwards.
+
 - **Citing-impact score per author.** `metrics.compute_citing_impact`
   is shipped — sums `cited_by_count` across every paper that cites
   any of an author's papers (self-cites excluded server-side via
@@ -376,6 +384,17 @@ Pending features, roughly grouped. Newest at the top of each section.
   Low priority because the user can usually spot the chimera
   themselves once they open the works window — but a quiet hint
   before they get there is friendlier.
+
+## Editor
+
+The sidecars contain many more fields than are editable.
+We want to be able to edit/see the fields that would be
+exported to bibtex.
+
+## Import Failures
+
+  - $HOME/Documents/Alexandria/acs.jcim.4c02293.pdf
+    Find references in body text, but cannot extract the reference.
 
 ## CrossRef integration
 We currently use CrossRef for two thin things — `_crossref_count`
@@ -496,6 +515,24 @@ active editors on two hosts is not. These items would harden it.
   since the read, abort and re-merge. Catches the common
   cross-host edit race instead of silently dropping one of the
   two edits.
+
+## Not soon, but at some stage
+
+### Server Sync
+
+  - Create a server that syncs the library. The client will
+    need to tell the server what files it has, each hashed.
+  - Make a web server on the sync server, so that we can see what
+    has been synced. We will need authentication.
+  - Then, start with a simple viewer of the synced metadata and images
+    And the ability to search the metadata.
+
+### Communication with Claude
+
+  - How do we get Claude in the loop between our client and
+    OpenAlex? Look at Projects that use OpenAlex and provide (say)
+    an MCP gateway. See CiteLens and openalex-research-mcp and
+    Scientific-Papers-MCP.
 
 ## Speculative / maybe-never
 

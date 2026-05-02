@@ -1923,26 +1923,33 @@ class BrowserWindow(Adw.ApplicationWindow):
             headers={"User-Agent": metrics.OPENALEX_UA,
                      "Accept": "application/json"},
             timeout=15)
-        if not data:
-            GLib.idle_add(self._get_pdf_fallback, doi,
-                          "OpenAlex lookup failed")
-            return
 
-        # Collect every OA pdf_url (best_oa_location first, then mirrors).
-        bol = data.get("best_oa_location") or {}
+        # Collect every OA pdf_url. OpenAlex's `best_oa_location` and
+        # `locations` first (when the lookup succeeded), then fall
+        # through to Unpaywall's `oa_locations` for any URL OpenAlex
+        # didn't surface (BACKLOG: Unpaywall as a Get PDF fallback).
         pdf_urls = []
-        if bol.get("pdf_url"):
-            pdf_urls.append(bol["pdf_url"])
-        for loc in (data.get("locations") or []):
-            if not loc.get("is_oa"):
-                continue
-            u = loc.get("pdf_url")
-            if u and u not in pdf_urls:
-                pdf_urls.append(u)
+        if data:
+            bol = data.get("best_oa_location") or {}
+            if bol.get("pdf_url"):
+                pdf_urls.append(bol["pdf_url"])
+            for loc in (data.get("locations") or []):
+                if not loc.get("is_oa"):
+                    continue
+                u = loc.get("pdf_url")
+                if u and u not in pdf_urls:
+                    pdf_urls.append(u)
+        unpw = metrics.fetch_oa_locations(doi)
+        if unpw:
+            for loc in unpw.get("locations") or []:
+                u = loc.get("pdf_url")
+                if u and u not in pdf_urls:
+                    pdf_urls.append(u)
         if not pdf_urls:
-            GLib.idle_add(
-                self._get_pdf_fallback, doi,
-                "no OA PDF URL known to OpenAlex")
+            reason = ("no OA PDF URL known to OpenAlex or Unpaywall"
+                      if data else "OpenAlex lookup failed and no "
+                      "Unpaywall PDF available")
+            GLib.idle_add(self._get_pdf_fallback, doi, reason)
             return
 
         # Download into a tmp file. Magic-byte check + Cloudflare
@@ -2029,21 +2036,26 @@ class BrowserWindow(Adw.ApplicationWindow):
             headers={"User-Agent": metrics.OPENALEX_UA,
                      "Accept": "application/json"},
             timeout=15)
-        if not data:
-            GLib.idle_add(self._add_pv_done, btn, False,
-                          "OpenAlex lookup failed")
-            return
-        # Collect all known OA pdf URLs (best first, then mirrors).
-        bol = data.get("best_oa_location") or {}
+        # Collect all known OA pdf URLs. OpenAlex's `best_oa_location`
+        # + `locations` first (when the lookup succeeded), Unpaywall
+        # second for anything OpenAlex didn't surface.
         pdf_urls = []
-        if bol.get("pdf_url"):
-            pdf_urls.append(bol["pdf_url"])
-        for loc in (data.get("locations") or []):
-            if not loc.get("is_oa"):
-                continue
-            u = loc.get("pdf_url")
-            if u and u not in pdf_urls:
-                pdf_urls.append(u)
+        if data:
+            bol = data.get("best_oa_location") or {}
+            if bol.get("pdf_url"):
+                pdf_urls.append(bol["pdf_url"])
+            for loc in (data.get("locations") or []):
+                if not loc.get("is_oa"):
+                    continue
+                u = loc.get("pdf_url")
+                if u and u not in pdf_urls:
+                    pdf_urls.append(u)
+        unpw = metrics.fetch_oa_locations(doi)
+        if unpw:
+            for loc in unpw.get("locations") or []:
+                u = loc.get("pdf_url")
+                if u and u not in pdf_urls:
+                    pdf_urls.append(u)
         if not pdf_urls:
             GLib.idle_add(self._add_pv_done, btn, False,
                           "no OA PDF URL available")

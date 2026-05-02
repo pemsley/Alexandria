@@ -1018,6 +1018,113 @@ def _author_first_last(authorships):
     return first, last
 
 
+# Unpaywall is the upstream canonical OA-PDF-locator service from
+# OurResearch (same shop as OpenAlex). Used as a fallback in the
+# "Get PDF" path when OpenAlex's `oa_url` is missing or unreachable.
+# Email required (their polite-pool convention, same as OpenAlex);
+# 100 k requests/day is the documented ceiling. See BACKLOG entry
+# "Unpaywall as a Get PDF fallback" for the full design.
+UNPAYWALL_BASE = "https://api.unpaywall.org/v2"
+
+
+# How we sort Unpaywall locations when handing them to the
+# downloader: published version on the publisher's site is the
+# closest copy to "the real paper"; preprint/submitted manuscripts
+# are last resort. Lower number = higher preference.
+_UNPAYWALL_VERSION_RANK = {
+    "publishedVersion":  0,
+    "acceptedVersion":   1,
+    "submittedVersion":  2,
+}
+_UNPAYWALL_HOST_RANK = {
+    "publisher":   0,
+    "repository":  1,
+}
+
+
+def _unpaywall_location_rank(loc):
+    """Sort key for an Unpaywall location dict. Tuple of
+    (host_rank, version_rank) — both default high (worst) when
+    the field is absent so unknown locations fall to the end."""
+    h = _UNPAYWALL_HOST_RANK.get(loc.get("host_type"), 9)
+    v = _UNPAYWALL_VERSION_RANK.get(loc.get("version"), 9)
+    return (h, v)
+
+
+def fetch_oa_locations(doi):
+    """Look up `doi` in Unpaywall and return its OA locations as
+
+        {
+          "is_oa":      bool,
+          "oa_status":  "gold"|"hybrid"|"green"|"bronze"|"closed",
+          "locations":  [{
+              "pdf_url":     str,
+              "host_type":   "publisher"|"repository",
+              "version":     "publishedVersion"|"acceptedVersion"
+                             |"submittedVersion",
+              "license":     str | None,
+              "repository_institution": str | None,
+          }, ...],
+        }
+
+    or None on lookup failure / unknown DOI. The `locations` list
+    is sorted preferring publishedVersion@publisher > everything
+    else (see `_unpaywall_location_rank`). Locations without a
+    `url_for_pdf` are dropped — there's nothing to download.
+
+    Used by the `Get PDF` flow in `browse.py` as a fallback when
+    OpenAlex has no OA URL or every OpenAlex URL fails. Also
+    useful for an OA-status chip on cards (the `oa_status` field
+    is what Unpaywall is canonical for)."""
+    if not doi:
+        return None
+    ndoi = _normalize_doi(doi)
+    if not ndoi:
+        return None
+    if not OPENALEX_MAILTO:
+        # Unpaywall requires an email — without one we can't
+        # politely hit the endpoint. Same posture as the OpenAlex
+        # helpers when MAILTO is unset.
+        return None
+    url = "{}/{}?email={}".format(
+        UNPAYWALL_BASE,
+        urllib.parse.quote(ndoi, safe=""),
+        urllib.parse.quote(OPENALEX_MAILTO))
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
+        timeout=15)
+    if not data:
+        return None
+    out_locs = []
+    seen_urls = set()
+    raw_locs = list(data.get("oa_locations") or [])
+    # `best_oa_location` is usually already in `oa_locations`, but
+    # be defensive — some responses have it without the matching
+    # entry.
+    bol = data.get("best_oa_location")
+    if bol:
+        raw_locs = [bol] + raw_locs
+    for loc in raw_locs:
+        pdf_url = loc.get("url_for_pdf")
+        if not pdf_url or pdf_url in seen_urls:
+            continue
+        seen_urls.add(pdf_url)
+        out_locs.append({
+            "pdf_url":   pdf_url,
+            "host_type": loc.get("host_type"),
+            "version":   loc.get("version"),
+            "license":   loc.get("license"),
+            "repository_institution": loc.get("repository_institution"),
+        })
+    out_locs.sort(key=_unpaywall_location_rank)
+    return {
+        "is_oa":     bool(data.get("is_oa")),
+        "oa_status": data.get("oa_status"),
+        "locations": out_locs,
+    }
+
+
 def fetch_work_by_doi(doi):
     """Return one OpenAlex Work resolved by DOI as a normalised dict,
     or None on failure / unknown DOI.

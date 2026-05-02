@@ -440,6 +440,7 @@ _PAPER_KIND_SOFTWARE_WORDS = (
     "framework", "library", "server", "pipeline",
     "workflow", "platform",
     "tool for", "tools for", "tool that", "tools that",
+    "deep learning", "machine learning",
 )
 _PAPER_KIND_METHOD_WORDS = (
     "method", "algorithm", "approach", "technique",

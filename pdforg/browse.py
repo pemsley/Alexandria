@@ -2323,7 +2323,8 @@ class BrowserWindow(Adw.ApplicationWindow):
                 cache.get("refs") or [],
                 cache.get("refs_pdf") or [],
                 from_cache=True,
-                fetched_iso=cache.get("fetched"))
+                fetched_iso=cache.get("fetched"),
+                refs_source=cache.get("source"))
             return
 
         # No cache — fetch.
@@ -2333,13 +2334,17 @@ class BrowserWindow(Adw.ApplicationWindow):
         def _fetch(force=False):
             refs = []
             pdf_refs = []
+            refs_source = None
             fetched_iso = None
             try:
                 try:
-                    refs = metrics.fetch_references(doi=doi, limit=50) or []
+                    refs, refs_source = (
+                        metrics.fetch_references(doi=doi, limit=50)
+                        or ([], None))
                 except Exception as e:
                     print("fetch_references failed:", e)
                     refs = []
+                    refs_source = None
                 if not refs and pdf_path:
                     try:
                         pdf_refs = references_pdf.parse_bibliography(pdf_path)
@@ -2351,7 +2356,7 @@ class BrowserWindow(Adw.ApplicationWindow):
                         "references_cache": {
                             "refs": refs,
                             "refs_pdf": pdf_refs,
-                            "source": ("openalex" if refs else "pdf"),
+                            "source": (refs_source if refs else "pdf"),
                             "fetched": fetched_iso,
                         }
                     })
@@ -2359,29 +2364,40 @@ class BrowserWindow(Adw.ApplicationWindow):
                 state["loading"] = False
             GLib.idle_add(self._after_refs_fetch,
                           status, list_box, refresh_btn,
-                          refs, pdf_refs, fetched_iso)
+                          refs, pdf_refs, fetched_iso, refs_source)
 
         threading.Thread(target=_fetch, daemon=True).start()
 
     def _after_refs_fetch(self, status, list_box, refresh_btn,
-                          refs, pdf_refs, fetched_iso):
+                          refs, pdf_refs, fetched_iso, refs_source=None):
         refresh_btn.set_sensitive(True)
         self._render_references(status, list_box, refs, pdf_refs,
-                                from_cache=False, fetched_iso=fetched_iso)
+                                from_cache=False, fetched_iso=fetched_iso,
+                                refs_source=refs_source)
         return False
 
     def _render_references(self, status, list_box, refs, pdf_refs,
-                           from_cache=False, fetched_iso=None):
+                           from_cache=False, fetched_iso=None,
+                           refs_source=None):
         suffix = ""
         if from_cache and fetched_iso:
             ago = self._cache_age_str(fetched_iso)
             if ago:
                 suffix = " · cached {}".format(ago)
         if refs:
+            # `fetch_references` falls back from OpenAlex's
+            # `referenced_works` to CrossRef's publisher-deposited
+            # `reference` field. Either way the rows render the
+            # same; the source label tells the user which one
+            # populated the list.
+            src_label = {
+                "openalex": "OpenAlex",
+                "crossref": "CrossRef",
+            }.get(refs_source or "", "external metadata")
             status.set_markup(
                 "<small><span alpha='75%'>{} references "
-                "(OpenAlex, in publication order{})</span></small>".format(
-                    len(refs), suffix))
+                "({}, in publication order{})</span></small>".format(
+                    len(refs), src_label, suffix))
             existing = self._existing_dois_set()
             for r in refs:
                 list_box.append(
@@ -2392,7 +2408,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         if pdf_refs:
             status.set_markup(
                 "<small><span alpha='75%'>{} references "
-                "(parsed from PDF; OpenAlex had no record{})"
+                "(parsed from PDF; OpenAlex and CrossRef had no record{})"
                 "</span></small>".format(len(pdf_refs), suffix))
             existing = self._existing_dois_set()
             for r in pdf_refs:

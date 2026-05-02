@@ -640,52 +640,92 @@ def fetch_cited_by(doi=None, openalex_id=None, sort="recent", limit=10):
 
 
 def fetch_references(doi=None, openalex_id=None, limit=50):
-    """Return the references *of* a paper, in publication order.
+    """Return `(refs, source)` for a paper's references in publication
+    order.
 
-    Reads the paper's OpenAlex Work record, takes its `referenced_works`
-    list (Work IDs the paper cites — derived from CrossRef and other
-    sources), and batched-fetches their bibliographic details.
+    Tries OpenAlex's `referenced_works` first; if that's empty (the
+    Work doesn't carry references), falls back to CrossRef's
+    `reference` array on the same DOI — which the publisher
+    deposited directly and is often present where OpenAlex is not.
+    For CrossRef refs that themselves carry a DOI, we then
+    batch-enrich via OpenAlex to get citation counts and richer
+    titles, the same enrichment OpenAlex-source refs get.
 
-    Returns `[{openalex_id, doi, title, year, journal,
-    first_author, last_author, citations}, ...]` ordered as in the
-    source `referenced_works` list. Returns `[]` on failure / no DOI."""
+    `source` is `'openalex'`, `'crossref'`, or `None` (for an
+    empty result). Each ref dict has the shape:
+      `{openalex_id, doi, title, year, publication_date, journal,
+        first_author, last_author, citations}`.
+    Returns `([], None)` on failure / no DOI."""
     if not doi and not openalex_id:
-        return []
+        return [], None
+
+    # ---- OpenAlex path -------------------------------------------
     if not openalex_id:
         url = ("https://api.openalex.org/works/doi:"
                + urllib.parse.quote(doi, safe=""))
-        if OPENALEX_MAILTO:
-            url += "?mailto=" + urllib.parse.quote(OPENALEX_MAILTO)
-        data = _http_get_json(
-            url,
-            headers={"User-Agent": OPENALEX_UA,
-                     "Accept": "application/json"},
-            timeout=15)
-        if not data:
-            return []
     else:
         url = ("https://api.openalex.org/works/"
                + urllib.parse.quote(openalex_id, safe=""))
-        if OPENALEX_MAILTO:
-            url += "?mailto=" + urllib.parse.quote(OPENALEX_MAILTO)
-        data = _http_get_json(
-            url,
-            headers={"User-Agent": OPENALEX_UA,
-                     "Accept": "application/json"},
-            timeout=15)
-        if not data:
-            return []
-    refs = data.get("referenced_works") or []
-    ref_ids = []
-    for r in refs:
-        sid = _strip_openalex_id(r) or r
-        if sid and sid not in ref_ids:
-            ref_ids.append(sid)
-    if not ref_ids:
-        return []
-    ref_ids = ref_ids[:limit]
+    if OPENALEX_MAILTO:
+        url += "?mailto=" + urllib.parse.quote(OPENALEX_MAILTO)
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": OPENALEX_UA,
+                 "Accept": "application/json"},
+        timeout=15)
 
-    # Batched fetch with field-selection to keep the response small.
+    ref_ids = []
+    if data:
+        refs = data.get("referenced_works") or []
+        for r in refs:
+            sid = _strip_openalex_id(r) or r
+            if sid and sid not in ref_ids:
+                ref_ids.append(sid)
+
+    if ref_ids:
+        ref_ids = ref_ids[:limit]
+        enriched = _enrich_works_by_openalex_id(ref_ids)
+        # Preserve publication-order from referenced_works.
+        return [enriched[r] for r in ref_ids if r in enriched], "openalex"
+
+    # ---- CrossRef fallback ---------------------------------------
+    # OpenAlex didn't have references for this paper; try the
+    # publisher-deposited list on CrossRef. This catches the long
+    # tail of journals where CrossRef has the bibliography but
+    # OpenAlex hasn't ingested it yet.
+    if not doi:
+        return [], None
+    cr_refs = _crossref_references(doi, limit=limit)
+    if not cr_refs:
+        return [], None
+    # CrossRef refs that carry a DOI can be enriched via OpenAlex
+    # in a single batched call — gives us the citation count and
+    # cleaner titles for the popover. Refs without a DOI keep the
+    # bare CrossRef structured fields (the user can still click
+    # them; the popover's resolver will try a title search).
+    dois = [r["doi"] for r in cr_refs if r.get("doi")]
+    if dois:
+        enriched_by_doi = _enrich_works_by_doi(dois)
+        for r in cr_refs:
+            d = r.get("doi")
+            if d and d in enriched_by_doi:
+                # OpenAlex enrichment overrides CrossRef's bare
+                # fields where available — better titles, citation
+                # counts, last_author, openalex_id.
+                e = enriched_by_doi[d]
+                for k in ("openalex_id", "title", "year",
+                          "publication_date", "journal",
+                          "first_author", "last_author", "citations"):
+                    if e.get(k):
+                        r[k] = e[k]
+    return cr_refs, "crossref"
+
+
+def _enrich_works_by_openalex_id(ref_ids):
+    """Batched OpenAlex lookup of `[W<id>, ...]`. Returns
+    `{openalex_id: <our standard ref dict>}`."""
+    if not ref_ids:
+        return {}
     filt = "ids.openalex:" + "|".join(ref_ids)
     params = [
         ("filter", filt),
@@ -696,16 +736,15 @@ def fetch_references(doi=None, openalex_id=None, limit=50):
     ]
     if OPENALEX_MAILTO:
         params.append(("mailto", OPENALEX_MAILTO))
-    url2 = "https://api.openalex.org/works?" + urllib.parse.urlencode(params)
-    data2 = _http_get_json(
-        url2,
+    url = "https://api.openalex.org/works?" + urllib.parse.urlencode(params)
+    data = _http_get_json(
+        url,
         headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
         timeout=20)
-    if not data2:
-        return []
-
     by_id = {}
-    for w in (data2.get("results") or []):
+    if not data:
+        return by_id
+    for w in (data.get("results") or []):
         wid = _strip_openalex_id(w.get("id")) or w.get("id")
         first, last = _author_first_last(w.get("authorships"))
         primary = w.get("primary_location") or {}
@@ -721,8 +760,126 @@ def fetch_references(doi=None, openalex_id=None, limit=50):
             "last_author": last,
             "citations": w.get("cited_by_count") or 0,
         }
-    # Preserve the publication-order from referenced_works.
-    return [by_id[r] for r in ref_ids if r in by_id]
+    return by_id
+
+
+def _enrich_works_by_doi(dois):
+    """Batched OpenAlex lookup keyed by DOI. Returns
+    `{doi: <our standard ref dict>}`. Used by the CrossRef
+    references fallback to backfill citation counts and cleaner
+    titles for refs that carry a DOI."""
+    if not dois:
+        return {}
+    # OpenAlex's filter accepts up to 100 IDs per call via `|`.
+    out = {}
+    BATCH = 50
+    for i in range(0, len(dois), BATCH):
+        chunk = dois[i:i + BATCH]
+        filt = "doi:" + "|".join(chunk)
+        params = [
+            ("filter", filt),
+            ("per_page", str(len(chunk))),
+            ("select",
+             "id,doi,title,publication_year,publication_date,"
+             "authorships,primary_location,cited_by_count"),
+        ]
+        if OPENALEX_MAILTO:
+            params.append(("mailto", OPENALEX_MAILTO))
+        url = ("https://api.openalex.org/works?"
+               + urllib.parse.urlencode(params))
+        data = _http_get_json(
+            url,
+            headers={"User-Agent": OPENALEX_UA,
+                     "Accept": "application/json"},
+            timeout=20)
+        if not data:
+            continue
+        for w in (data.get("results") or []):
+            d = _normalize_doi(w.get("doi"))
+            if not d:
+                continue
+            wid = _strip_openalex_id(w.get("id")) or w.get("id")
+            first, last = _author_first_last(w.get("authorships"))
+            primary = w.get("primary_location") or {}
+            src = primary.get("source") or {}
+            out[d] = {
+                "openalex_id": wid,
+                "doi": d,
+                "title": w.get("title"),
+                "year": w.get("publication_year"),
+                "publication_date": w.get("publication_date"),
+                "journal": src.get("display_name"),
+                "first_author": first,
+                "last_author": last,
+                "citations": w.get("cited_by_count") or 0,
+            }
+    return out
+
+
+def _crossref_references(doi, limit=50):
+    """Fetch the publisher-deposited `reference` array from CrossRef
+    for the paper at `doi`. Returns a list of entries in our standard
+    ref-dict shape — DOI / title / year / journal / first_author —
+    or `[]` if CrossRef has no reference list for this paper.
+
+    CrossRef references vary wildly in completeness. Most have
+    structured fields (`DOI`, `article-title`, `year`,
+    `journal-title`, `author`); some only carry an `unstructured`
+    raw bibliography string. We use `unstructured` as the title when
+    nothing else is present, so the popover can still render a row
+    and the user can decide whether to resolve via title search."""
+    if not doi:
+        return []
+    qdoi = urllib.parse.quote(doi, safe="")
+    url = "https://api.crossref.org/works/" + qdoi
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": CROSSREF_UA, "Accept": "application/json"},
+        timeout=15)
+    if not data:
+        return []
+    msg = data.get("message") or {}
+    refs_raw = msg.get("reference") or []
+    out = []
+    for r in refs_raw:
+        if not isinstance(r, dict):
+            continue
+        # Lowercase: CrossRef returns DOIs in their printed-on-paper
+        # case (often uppercase IUCr IDs, e.g. "10.1107/S0907..."),
+        # while OpenAlex normalises to lowercase. Keeping our DOIs
+        # lowercase throughout means the OpenAlex-by-DOI enrichment
+        # below matches against `enriched_by_doi[d]` correctly.
+        ref_doi = _normalize_doi(r.get("DOI"))
+        if ref_doi:
+            ref_doi = ref_doi.lower()
+        title = (r.get("article-title") or "").strip() or None
+        if not title:
+            unstr = (r.get("unstructured") or "").strip()
+            if unstr:
+                title = unstr
+        year = None
+        y = r.get("year")
+        if y:
+            try:
+                year = int(str(y).strip()[:4])
+            except (TypeError, ValueError):
+                pass
+        journal = (r.get("journal-title") or "").strip() or None
+        author = (r.get("author") or "").strip() or None
+        out.append({
+            "openalex_id": None,
+            "doi": ref_doi,
+            "title": title,
+            "year": year,
+            "publication_date": None,
+            "journal": journal,
+            "first_author": author,
+            "last_author": None,
+            "citations": 0,
+        })
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _crossref_count(doi):

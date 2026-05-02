@@ -294,12 +294,25 @@ Pending features, roughly grouped. Newest at the top of each section.
 - **Citing-impact score per author.** `metrics.compute_citing_impact`
   is shipped — sums `cited_by_count` across every paper that cites
   any of an author's papers (self-cites excluded server-side via
-  OpenAlex's filter negation). Returns `{total, mean, n_citing,
-  computed_at}`. Smoke-tested on Cowtan: 65 k citing papers, mean
-  49.5 citations per citer, ~4 min runtime. What's still open:
+  OpenAlex's filter negation). Now bucketed by paper kind via
+  `classify_paper(title)`: returns `{software, method, idea}` each
+  with `{total, mean, n_citing, n_works}` plus `computed_at`. The
+  buckets answer three different questions ("did people cite this
+  author as software? as method? as idea?") so a citing paper can
+  land in multiple buckets — dedup is per-bucket, not global.
+  Smoke-tested on Cowtan: software 19 works / 41 k citing /
+  mean 50.9; method 9 works / 337 citing / mean 116; idea
+  93 works / 33 k citing / mean 48.1; ~4 min runtime. The method
+  bucket having the highest mean is the kind of signal this metric
+  exists to surface — Cowtan's algorithm papers (DM, PIRATE, etc.)
+  get cited by deeper-impact downstream papers than either his
+  software or his findings papers. What's still open:
     - **Per-author SQLite cache.** New table
-      `author_scores(openalex_id PRIMARY KEY, citing_total,
-      citing_mean, n_citing, self_excluded, computed_at)` —
+      `author_scores(openalex_id PRIMARY KEY,
+      software_total, software_mean, software_n_citing, software_n_works,
+      method_total, method_mean, method_n_citing, method_n_works,
+      idea_total, idea_mean, idea_n_citing, idea_n_works,
+      self_excluded, computed_at)` —
       keyed by OpenAlex ID, ~30-day TTL. Lookup keyed off the
       `authorships` blob in each sidecar.
     - **Background refresh loop.** Same shape as the existing
@@ -308,13 +321,18 @@ Pending features, roughly grouped. Newest at the top of each section.
       missing or stale, write rows. Surface `[citing-impact]`
       progress on the status line.
     - **UI chip on the author dialog and (maybe) paper cards.**
-      Tooltip should call out the dominating-paper caveat: when
-      one paper provides the bulk of the citing pool the metric
-      collapses to "average impact of papers that use this
-      author's most-cited work" rather than "this author seeded
-      thinking that propagated". Consider rendering both `total`
-      and `mean` so the user can spot the lopsided case from
-      `total / paper_count`.
+      Three numbers, not one — render the bucket totals
+      side-by-side so the dominating-paper caveat (one Coot
+      paper provides most of the software bucket) is visible
+      from the shape of the data, not buried in a tooltip.
+      Consider rendering both `total` and `mean` per bucket so
+      the user can spot the lopsided case from `total / n_works`.
+    - **Per-paper kind override.** The title heuristic in
+      `classify_paper` will misfire on review papers ("a review
+      of methods…" → method) and on mis-titled software. Add a
+      sidecar field `paper_kind: software|method|idea` that
+      wins over the heuristic when set, surfaced as a small
+      dropdown in the metadata editor.
     - **Erdős-style "prize distance".** Loosely related: shortest
       path from any author to a Nobel/Lasker/Wolf/Turing/Fields
       laureate via coauthorship. See the awards-chip item for

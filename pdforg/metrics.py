@@ -428,45 +428,100 @@ def _normalize_author_id(openalex_id):
     return s
 
 
+# Title-keyword classifier for paper kind. Software-paper titles
+# almost always advertise themselves: "Coot: model-building tools
+# for…", "PROGRAM X for Y", "PHENIX: a software suite". Method
+# papers usually carry an explicit method/algorithm/procedure word.
+# Everything else is "idea" by default. Heuristic — wrong on some
+# edge cases (review papers, mis-titled software papers), but right
+# on the cases that dominate the citing-impact metric.
+_PAPER_KIND_SOFTWARE_WORDS = (
+    "program", "software", "package", "toolkit", "suite",
+    "framework", "library", "server", "pipeline",
+    "workflow", "platform",
+    "tool for", "tools for", "tool that", "tools that",
+)
+_PAPER_KIND_METHOD_WORDS = (
+    "method", "algorithm", "approach", "technique",
+    "procedure", "protocol", "methodology", "formalism",
+)
+
+
+def classify_paper(title):
+    """Return `'software'`, `'method'`, or `'idea'` for `title`.
+
+    Used by `compute_citing_impact` to bucket an author's work so
+    the citing-impact metric reports three honest pictures rather
+    than collapsing them. A software-heavy career like Cowtan's
+    has 65 k citing papers via the Coot paper, but those are
+    "people who used the software" — a different signal from
+    "people who built on the ideas". Surfacing all three lets the
+    user judge.
+
+    The heuristic looks for software / method words in the title.
+    No signal → `'idea'`. Misses: review papers ("a review of
+    methods…" → method), mis-titled software ("MultiCharge:
+    quantum charge analysis" → idea, not software). The user-
+    override path (per-paper `paper_kind` tag) is the escape
+    hatch for those."""
+    t = (title or "").lower()
+    if not t:
+        return "idea"
+    if any(w in t for w in _PAPER_KIND_SOFTWARE_WORDS):
+        return "software"
+    if any(w in t for w in _PAPER_KIND_METHOD_WORDS):
+        return "method"
+    return "idea"
+
+
 def compute_citing_impact(openalex_id, exclude_self_cites=True,
                           polite_delay=0.0):
-    """Sum of `cited_by_count` over every paper that cites a paper
-    by `openalex_id` (an author). Optionally excludes self-cites
-    (papers that this author co-authored).
+    """Citing-paper impact for an author, bucketed by the kind
+    of work being cited (software / method / idea).
+
+    For each of the author's works, sum `cited_by_count` over
+    every paper that cites it; group those sums under the cited
+    work's kind. A paper that cites both a software work and a
+    method work by this author counts in both buckets — the
+    buckets are answers to three different questions ("did
+    people cite this author as software? as method? as idea?")
+    and dedup happens within each bucket, not across them.
+    Optionally excludes self-cites.
 
     Returns
-        {"total":   int,    # ∑ cited_by_count over citing papers
-         "mean":    float,  # total / n_citing, or 0
-         "n_citing":int,    # unique citing papers
-         "computed_at": iso-date}
-    or None when the author ID is malformed or no works are found.
+        {
+          "software": {"total":  int,
+                       "mean":   float,
+                       "n_citing": int,
+                       "n_works":  int},
+          "method":   {...},
+          "idea":     {...},
+          "computed_at": iso-date,
+        }
+    or None when the author ID is malformed.
 
-    The metric captures "your work was cited by people whose work
-    itself mattered" — orthogonal to h-index. Self-cite filtering
-    happens server-side via OpenAlex's filter negation, so it
-    costs nothing extra. Pagination uses cursor (`*` → next_cursor)
-    which OpenAlex requires for any result set above 10 000 hits.
+    Captures something h-index doesn't: which kind of contribution
+    propagates. Self-cite filtering happens server-side via
+    OpenAlex's filter negation. Pagination via cursor.
 
-    Cost: O(N + M/200) API calls where N is the author's paper
-    count and M is the total number of citing papers — typically
-    50–500 calls. HTTP RTT alone keeps us well under the 10 req/s
-    polite-pool limit, so `polite_delay` defaults to 0; raise it
-    only when running this concurrently with other heavy OpenAlex
-    traffic. Smoke test: Cowtan (~65 k citing papers via the Coot
-    paper) finished in ~4 minutes; a typical career runs in well
-    under a minute."""
+    Cost: O(N + M/200) API calls — 50–500 for typical careers,
+    ~minutes for laureate-tier ones. HTTP RTT alone keeps us
+    under the 10 req/s polite-pool limit; `polite_delay` defaults
+    to 0."""
     aid = _normalize_author_id(openalex_id)
     if aid is None:
         return None
 
-    # Step 1: every Work by this author. Cursor pagination + minimal
-    # `select` keeps this to a couple of calls for typical authors.
-    works = []
+    # Step 1: every Work by this author. Pull `title` so we can
+    # classify; everything else is for the metric. Cursor
+    # pagination + minimal `select` keeps this to a couple of
+    # calls for typical authors.
+    works = []  # list of (wid, kind)
     cursor = "*"
     while cursor:
         params = [
             ("filter", "author.id:" + aid),
-            ("select", "id,cited_by_count"),
+            ("select", "id,title,cited_by_count"),
             ("per_page", "200"),
             ("cursor", cursor),
         ]
@@ -483,31 +538,47 @@ def compute_citing_impact(openalex_id, exclude_self_cites=True,
             return None
         for w in (data.get("results") or []):
             wid = (w.get("id") or "").rsplit("/", 1)[-1]
-            if wid.startswith("W"):
-                works.append(wid)
+            if not wid.startswith("W"):
+                continue
+            kind = classify_paper(w.get("title"))
+            works.append((wid, kind))
         cursor = (data.get("meta") or {}).get("next_cursor")
         if cursor:
             time.sleep(polite_delay)
 
-    if not works:
-        return {"total": 0, "mean": 0.0, "n_citing": 0,
-                "computed_at": today_iso()}
+    # Initialise empty buckets so the return shape is consistent
+    # even for authors with zero works.
+    buckets = {
+        "software": {"total": 0, "seen": set(), "n_works": 0},
+        "method":   {"total": 0, "seen": set(), "n_works": 0},
+        "idea":     {"total": 0, "seen": set(), "n_works": 0},
+    }
+    for _wid, kind in works:
+        buckets[kind]["n_works"] += 1
 
-    # Step 2: for each Work, paginate through papers that cite it.
-    # `seen_citers` dedupes so a citing paper that hits multiple of
-    # the author's works only counts once — otherwise an author's
-    # own review paper that cites every paper they ever wrote would
-    # contribute its citations N times.
-    total = 0
-    seen_citers = set()
-    for wid in works:
+    if not works:
+        return {
+            "software": {"total": 0, "mean": 0.0, "n_citing": 0,
+                         "n_works": 0},
+            "method":   {"total": 0, "mean": 0.0, "n_citing": 0,
+                         "n_works": 0},
+            "idea":     {"total": 0, "mean": 0.0, "n_citing": 0,
+                         "n_works": 0},
+            "computed_at": today_iso(),
+        }
+
+    # Step 2: for each Work, paginate through papers that cite it
+    # and add to that Work's bucket. Per-bucket dedup so a citing
+    # paper that hits multiple software works only counts once for
+    # software; the same paper can land in multiple buckets if it
+    # cites different kinds of works by this author.
+    for wid, kind in works:
+        bucket = buckets[kind]
+        seen = bucket["seen"]
         cursor = "*"
         while cursor:
             filt = "cites:" + wid
             if exclude_self_cites:
-                # OpenAlex filter negation: exclude works whose
-                # authorships include this author. Same call cost
-                # as without the negation; keeps self-cites out.
                 filt += ",authorships.author.id:!" + aid
             params = [
                 ("filter", filt),
@@ -528,20 +599,26 @@ def compute_citing_impact(openalex_id, exclude_self_cites=True,
                 break
             for w in (data.get("results") or []):
                 cid = (w.get("id") or "").rsplit("/", 1)[-1]
-                if not cid.startswith("W") or cid in seen_citers:
+                if not cid.startswith("W") or cid in seen:
                     continue
-                seen_citers.add(cid)
+                seen.add(cid)
                 c = w.get("cited_by_count")
                 if isinstance(c, int):
-                    total += c
+                    bucket["total"] += c
             cursor = (data.get("meta") or {}).get("next_cursor")
             if cursor:
                 time.sleep(polite_delay)
 
-    n_citing = len(seen_citers)
-    mean = (total / n_citing) if n_citing else 0.0
-    return {"total": total, "mean": mean, "n_citing": n_citing,
-            "computed_at": today_iso()}
+    out = {"computed_at": today_iso()}
+    for kind, b in buckets.items():
+        n = len(b["seen"])
+        out[kind] = {
+            "total": b["total"],
+            "mean": (b["total"] / n) if n else 0.0,
+            "n_citing": n,
+            "n_works": b["n_works"],
+        }
+    return out
 
 
 def _reconstruct_abstract(inv_idx):

@@ -27,7 +27,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk, Pango
 
-from . import feed, index
+from . import feed, index, opener
 
 
 def open_window(parent, conn):
@@ -534,6 +534,31 @@ class FeedWindow(Adw.Window):
             chip_lbl.set_valign(Gtk.Align.START)
             title_row.append(chip_lbl)
 
+        # OA badge — sits to the right of the kind chip. Filled in
+        # at refresh time via Unpaywall (see feed.refresh_subscription),
+        # so it's authoritative across CrossRef-sourced journal
+        # rows that don't carry OA flags from upstream.
+        if art.get("is_oa"):
+            oa_status = (art.get("oa_status") or "OA").lower()
+            # Compact label per status. "Gold" / "Hybrid" / "Green"
+            # are useful signals — gold means a fully-OA journal,
+            # green means author manuscript in a repository.
+            label_map = {
+                "gold":   "Gold OA",
+                "hybrid": "Hybrid OA",
+                "green":  "Green OA",
+                "bronze": "Bronze OA",
+                "diamond": "Diamond OA",
+            }
+            oa_lbl = label_map.get(oa_status, "Open Access")
+            oa_badge = Gtk.Label()
+            oa_badge.set_markup(
+                "<span size='small' foreground='#338033'>"
+                "<b>{}</b></span>".format(
+                    GLib.markup_escape_text(oa_lbl)))
+            oa_badge.set_valign(Gtk.Align.START)
+            title_row.append(oa_badge)
+
         outer.append(title_row)
 
         meta_bits = []
@@ -585,25 +610,42 @@ class FeedWindow(Adw.Window):
                           spacing=4)
         btn_row.set_halign(Gtk.Align.END)
         if art.get("doi"):
-            add_btn = Gtk.Button(label="Add")
-            add_btn.add_css_class("flat")
-            # Matches the Discover dialog's per-row vocabulary.
-            # Always imports as a ghost; for OA-flagged rows we
-            # also try the PDF download, otherwise we stop there
-            # — the previous "Get PDF" label promised more than
-            # was honest for the Nature news / CrossRef-sourced
-            # rows where there's no OA copy.
-            add_btn.set_tooltip_text(
-                "Add this article to your library (metadata only). "
-                "If an Open Access PDF is known, also download it.")
-            add_btn.connect("clicked",
-                            lambda _b, a=art: self._on_add(a))
-            btn_row.append(add_btn)
+            view_btn = Gtk.Button(label="View")
+            view_btn.add_css_class("flat")
+            view_btn.set_tooltip_text(
+                "Open the article's page in your default browser.")
+            view_btn.connect("clicked",
+                             lambda _b, a=art: self._on_view(a))
+            btn_row.append(view_btn)
+            # The "Add" affordance is meant for adding research to
+            # the library. Skip it for News / Editorial / Comment /
+            # Correspondence / Correction / Retracted / Concern —
+            # the kind-chip's presence is the signal that this
+            # isn't a primary research paper worth filing.
+            if chip is None:
+                add_btn = Gtk.Button(label="Add")
+                add_btn.add_css_class("flat")
+                add_btn.set_tooltip_text(
+                    "Add this article to your library (metadata only). "
+                    "If an Open Access PDF is known, also download it.")
+                add_btn.connect("clicked",
+                                lambda _b, a=art: self._on_add(a))
+                btn_row.append(add_btn)
         outer.append(btn_row)
 
         frame = Gtk.Frame()
         frame.set_child(outer)
         return frame
+
+    def _on_view(self, art):
+        """Open the article's DOI URL in the user's default
+        browser. For News / Editorial / Correspondence rows this
+        is the only sensible action — they aren't papers to file,
+        they're things to read."""
+        doi = art.get("doi")
+        if not doi:
+            return
+        opener.open_external("https://doi.org/" + doi)
 
     def _on_add(self, art):
         """Import the article into the library as a ghost via the

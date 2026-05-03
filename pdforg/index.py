@@ -421,6 +421,7 @@ CREATE TABLE IF NOT EXISTS discovered (
     abstract TEXT,
     is_oa INTEGER DEFAULT 0,
     oa_url TEXT,
+    oa_status TEXT,
     fetched_at TEXT NOT NULL,
     UNIQUE(subscription_id, doi)
 );
@@ -462,8 +463,20 @@ def open_db(path=DEFAULT_DB_PATH):
     conn.executescript(CREATE_INDEXES)
     conn.executescript(CREATE_AUTHOR_SCORES)
     conn.executescript(CREATE_SUBSCRIPTIONS)
+    _migrate_discovered(conn)
     _ensure_fts(conn)
     return conn
+
+
+def _migrate_discovered(conn):
+    """Additive ALTER for `discovered` so DBs created at the
+    initial-commit schema get the columns we add later.
+    `CREATE TABLE IF NOT EXISTS` is a no-op when the table is
+    already there, so column additions need an explicit ALTER."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(discovered)")}
+    if "oa_status" not in cols:
+        conn.execute("ALTER TABLE discovered ADD COLUMN oa_status TEXT")
+    conn.commit()
 
 
 # --- Subscriptions / discovered ---------------------------------------
@@ -572,6 +585,21 @@ def upsert_discovered(conn, subscription_id, article):
          article.get("oa_url"),
          datetime.datetime.now().isoformat(timespec="seconds")))
     return cur.rowcount > 0
+
+
+def update_discovered_oa(conn, subscription_id, doi,
+                         is_oa, oa_url, oa_status):
+    """Patch the OA fields on a `discovered` row identified by
+    `(subscription_id, doi)`. Used by the feed refresher after
+    an Unpaywall enrichment lookup."""
+    if not doi:
+        return
+    conn.execute(
+        "UPDATE discovered SET is_oa=?, oa_url=?, oa_status=?"
+        " WHERE subscription_id=? AND doi=?",
+        (1 if is_oa else 0, oa_url, oa_status,
+         subscription_id, doi.lower()))
+    conn.commit()
 
 
 def discovered_for(conn, subscription_id, limit=200):

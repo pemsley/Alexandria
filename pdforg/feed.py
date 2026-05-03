@@ -336,8 +336,16 @@ def refresh_subscription(conn, subscription, limit=FEED_FETCH_ROWS):
     n_new_rows). Does NOT touch `last_fetched` — callers do that
     via `index.mark_subscription_fetched` only when the fetch
     succeeded, so transient network failures retry on the next
-    refresher pass."""
-    from . import index
+    refresher pass.
+
+    Newly-inserted rows are enriched in-place with Unpaywall OA
+    status so the feed window can show "Open Access" without
+    round-tripping at render time. CrossRef-sourced journal rows
+    have no OA flag at all from the upstream API, and OpenAlex's
+    `is_oa` can lag Unpaywall's — `fetch_oa_locations` is the
+    canonical source. Only fired for *new* inserts to avoid
+    re-querying every refresh."""
+    from . import index, metrics
     kind = subscription["kind"]
     query = subscription["query"]
     if kind == "journal_issn":
@@ -351,7 +359,30 @@ def refresh_subscription(conn, subscription, limit=FEED_FETCH_ROWS):
     else:
         return 0, 0
     new_count = 0
+    sub_id = subscription["id"]
     for a in articles:
-        if index.upsert_discovered(conn, subscription["id"], a):
-            new_count += 1
+        if not index.upsert_discovered(conn, sub_id, a):
+            continue
+        new_count += 1
+        # Enrich the freshly-inserted row with Unpaywall OA data.
+        # Failures here are non-fatal — the row is already
+        # persisted, the badge just won't appear.
+        doi = a.get("doi")
+        if not doi:
+            continue
+        try:
+            unpw = metrics.fetch_oa_locations(doi)
+        except Exception:
+            unpw = None
+        if not unpw:
+            continue
+        oa_status = unpw.get("oa_status")
+        is_oa = bool(unpw.get("is_oa"))
+        locs = unpw.get("locations") or []
+        oa_url = locs[0]["pdf_url"] if locs else None
+        try:
+            index.update_discovered_oa(
+                conn, sub_id, doi, is_oa, oa_url, oa_status)
+        except Exception:
+            pass
     return len(articles), new_count

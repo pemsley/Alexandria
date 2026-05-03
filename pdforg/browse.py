@@ -1506,6 +1506,12 @@ class BrowserWindow(Adw.ApplicationWindow):
         for row in rows:
             if self._cit_stop.is_set():
                 return
+            # If OpenAlex tripped its session breaker (daily quota
+            # exhausted), bail — the rest of this run would just
+            # log "OpenAlex rate-limited" per row.
+            if metrics.openalex_paused_until() > 0:
+                print("[citations] OpenAlex paused, stopping refresher")
+                return
             if row["pdf_path"] in self._cit_failed_session:
                 continue
             doi = row.get("doi")
@@ -1591,6 +1597,9 @@ class BrowserWindow(Adw.ApplicationWindow):
             for sub in stale:
                 if self._feed_stop.is_set():
                     return
+                if metrics.openalex_paused_until() > 0:
+                    print("[feed] OpenAlex paused, skipping pass")
+                    break
                 try:
                     fetched, new = feed.refresh_subscription(
                         self.conn, sub)
@@ -1662,6 +1671,14 @@ class BrowserWindow(Adw.ApplicationWindow):
             return
         for aid in ids:
             if self._asc_stop.is_set():
+                return
+            # This refresher is THE heaviest OpenAlex consumer in
+            # the app (compute_citing_impact = O(works × citers)
+            # API calls per author). When the daily-quota breaker
+            # trips we stop the whole walk for the session — no
+            # point burning cycles on calls we know will 429.
+            if metrics.openalex_paused_until() > 0:
+                print("[author-score] OpenAlex paused, stopping refresher")
                 return
             if aid in self._asc_failed_session:
                 continue

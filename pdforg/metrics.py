@@ -1596,13 +1596,95 @@ def find_doi_by_author_year(surname, year, journal=None):
     return None
 
 
+def _published_version_via_crossref_relation(preprint_doi):
+    """Look up `preprint_doi` in CrossRef and walk `message.relation`
+    for an `is-preprint-of` link. Returns a `find_published_version`-
+    shaped dict (DOI + title + journal + year + openalex_id +
+    checked) or None when the field is absent or empty.
+
+    Publisher-deposited and authoritative when present, which beats
+    the title-search heuristic — preprints with later journal-
+    version changes (renumbered figures, new co-author, edited
+    title) can defeat the search by overlap alone. CrossRef tracks
+    the relationship directly via the `relation` field on either
+    side."""
+    if not preprint_doi:
+        return None
+    qdoi = urllib.parse.quote(preprint_doi, safe="")
+    data = _http_get_json(
+        "https://api.crossref.org/works/" + qdoi,
+        headers={"User-Agent": CROSSREF_UA, "Accept": "application/json"},
+        timeout=15)
+    if not data:
+        return None
+    msg = data.get("message") or {}
+    rel = msg.get("relation") or {}
+    # `is-preprint-of` carries the journal-published version we
+    # want. `is-version-of` and `has-version` are more general
+    # (corrections, dataset versions); we ignore them here.
+    candidates = rel.get("is-preprint-of") or []
+    for entry in candidates:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("id-type") != "doi":
+            continue
+        target = (entry.get("id") or "").strip().lower()
+        if not target:
+            continue
+        # Enrich via OpenAlex so the caller gets the same dict
+        # shape it would from the OpenAlex title-search path
+        # (journal name + OpenAlex Work ID).
+        oa_url = ("https://api.openalex.org/works/doi:"
+                  + urllib.parse.quote(target, safe="")
+                  + ("?mailto=" + urllib.parse.quote(OPENALEX_MAILTO)
+                     if OPENALEX_MAILTO else ""))
+        oa = _http_get_json(
+            oa_url,
+            headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
+            timeout=15)
+        if oa:
+            pl = oa.get("primary_location") or {}
+            src = pl.get("source") or {}
+            return {
+                "doi":         _normalize_doi(oa.get("doi")) or target,
+                "title":       oa.get("title"),
+                "journal":     src.get("display_name"),
+                "year":        oa.get("publication_year"),
+                "openalex_id": _strip_openalex_id(oa.get("id")),
+                "checked":     today_iso(),
+            }
+        # OpenAlex doesn't know this DOI yet (rare but real for
+        # very fresh publisher releases). Return the DOI alone —
+        # the caller can still hand it to the user.
+        return {
+            "doi":         target,
+            "title":       None,
+            "journal":     None,
+            "year":        None,
+            "openalex_id": None,
+            "checked":     today_iso(),
+        }
+    return None
+
+
 def find_published_version(title, author_names, preprint_doi=None):
     """Search OpenAlex for a journal-published version of a preprint by
     title + author overlap. Returns a dict {doi, title, journal, year,
     openalex_id, checked} or None.
 
     `author_names` is a list of full names (we only use the surnames
-    for cross-checking)."""
+    for cross-checking).
+
+    When `preprint_doi` is supplied, we ask CrossRef first via the
+    publisher-deposited `relation.is-preprint-of` field — that's
+    authoritative and beats the title-search heuristic. The
+    OpenAlex title-search path remains the fallback for preprints
+    whose publisher hasn't deposited the relation."""
+    if preprint_doi:
+        viacross = _published_version_via_crossref_relation(preprint_doi)
+        if viacross:
+            return viacross
+
     if not title or not author_names:
         return None
     # OpenAlex's title.search wants a clean phrase; strip punctuation.

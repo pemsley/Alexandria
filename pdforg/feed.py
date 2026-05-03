@@ -35,22 +35,43 @@ _ISSN_RE = re.compile(r"^\d{4}-?\d{3}[\dxX]$")
 
 FEED_FETCH_ROWS = 50
 
+# How long a deposit must "rest" in CrossRef before we surface it
+# in the feed. Publishers register the DOI before flipping the
+# article's page live; in the meantime the publisher URL 404s.
+# The lag varies (seconds to most of a day) but a few hours catches
+# the worst of it without delaying actual research deposits much.
+# Verified case: Nature `d41586-026-01518-4` deposited 07:02 UTC
+# returned a Nature "Page not found" until the publisher caught up.
+PUBLISH_LAG_HOURS = 6
 
-def fetch_journal_articles(issns, limit=FEED_FETCH_ROWS):
+
+def fetch_journal_articles(issns, limit=FEED_FETCH_ROWS,
+                           publish_lag_hours=PUBLISH_LAG_HOURS):
     """Newest articles in the journal identified by `issns` (a
     list of ISSN strings; a journal may have multiple — e.g.
     Science has print 0036-8075 and online 1095-9203). Sorted
-    by Crossref's `created` field, descending."""
+    by Crossref's `created` field, descending.
+
+    Articles whose CrossRef `created` timestamp is younger than
+    `publish_lag_hours` are dropped — the publisher hasn't had
+    time to make the page live yet and showing them in the feed
+    leads to dead links. We fetch with a wider page than `limit`
+    so the post-filter still returns a useful slice."""
     if not issns:
         return []
     issn_filter = ",".join("issn:" + i.strip() for i in issns if i.strip())
     if not issn_filter:
         return []
+    # Over-fetch to keep ~`limit` rows after the publish-lag filter.
+    # Most days the filter discards a small percentage; right after
+    # a publication burst (e.g. Nature's morning news cycle) it can
+    # discard much more, hence the 2× cushion.
+    fetch_rows = min(max(limit * 2, 50), 100)
     params = [
         ("filter", issn_filter),
         ("sort",   "created"),
         ("order",  "desc"),
-        ("rows",   str(limit)),
+        ("rows",   str(fetch_rows)),
         ("select", "DOI,title,issued,created,published-online,"
                    "published-print,author,container-title,abstract"),
     ]
@@ -66,7 +87,22 @@ def fetch_journal_articles(issns, limit=FEED_FETCH_ROWS):
     if not data:
         return []
     items = (data.get("message") or {}).get("items") or []
-    return [_normalize_crossref_item(it) for it in items if it]
+    cutoff_ms = None
+    if publish_lag_hours and publish_lag_hours > 0:
+        import time
+        cutoff_ms = int((time.time() - publish_lag_hours * 3600) * 1000)
+    out = []
+    for it in items:
+        if not it:
+            continue
+        if cutoff_ms is not None:
+            ts = ((it.get("created") or {}).get("timestamp"))
+            if isinstance(ts, (int, float)) and ts > cutoff_ms:
+                continue
+        out.append(_normalize_crossref_item(it))
+        if len(out) >= limit:
+            break
+    return out
 
 
 def fetch_openalex_query_articles(query, limit=FEED_FETCH_ROWS):

@@ -508,13 +508,33 @@ class FeedWindow(Adw.Window):
         outer.set_margin_top(6)
         outer.set_margin_bottom(6)
 
+        # Title row: title + optional kind chip (Correction / News /
+        # Editorial / etc.). Title is selectable so the user can
+        # copy-paste it into a chat for triage.
+        title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                            spacing=6)
         title = Gtk.Label(xalign=0.0)
         t = art.get("title") or "(untitled)"
         title.set_markup("<b>{}</b>".format(
             GLib.markup_escape_text(t)))
         title.set_wrap(True)
         title.set_xalign(0.0)
-        outer.append(title)
+        title.set_hexpand(True)
+        title.set_selectable(True)
+        title_row.append(title)
+
+        chip = _kind_chip(art)
+        if chip:
+            label, fg = chip
+            chip_lbl = Gtk.Label()
+            chip_lbl.set_markup(
+                "<span size='small' foreground='{}'>"
+                "<b>{}</b></span>".format(
+                    fg, GLib.markup_escape_text(label)))
+            chip_lbl.set_valign(Gtk.Align.START)
+            title_row.append(chip_lbl)
+
+        outer.append(title_row)
 
         meta_bits = []
         if art.get("journal"):
@@ -664,3 +684,53 @@ def _suggest_bibtex_key(authors, year, title):
                 word = cleaned.lower()
                 break
     return "{}{}{}".format(surname.lower(), y, word) or "ref"
+
+
+# Title-prefix patterns used to spot the easy categories. Lower-
+# cased before match; the ":" anchor guards against false hits
+# in body words like "comment".
+_TITLE_PREFIX_KINDS = (
+    ("author correction:",             ("Correction",    "#cc6633")),
+    ("publisher correction:",          ("Correction",    "#cc6633")),
+    ("erratum:",                       ("Correction",    "#cc6633")),
+    ("erratum to:",                    ("Correction",    "#cc6633")),
+    ("corrigendum:",                   ("Correction",    "#cc6633")),
+    ("corrigendum to:",                ("Correction",    "#cc6633")),
+    ("retraction note:",               ("Retracted",     "#cc3333")),
+    ("retraction note to:",            ("Retracted",     "#cc3333")),
+    ("retraction:",                    ("Retracted",     "#cc3333")),
+    ("expression of concern:",         ("Concern",       "#cc3333")),
+    ("editorial expression of concern:", ("Concern",     "#cc3333")),
+    ("correspondence:",                ("Correspondence", "#777777")),
+    ("editorial:",                     ("Editorial",     "#7c4f99")),
+    ("comment:",                       ("Comment",       "#7c4f99")),
+    ("news:",                          ("News",          "#557799")),
+)
+
+
+# Publisher DOI-prefix → kind. Catches the common case (Nature's
+# `d41586-` for News & Views / editorial). Other publishers can
+# be added as we spot patterns. Falls through to the title-prefix
+# heuristic when no entry matches.
+_DOI_PREFIX_KINDS = (
+    ("10.1038/d41586-", ("News", "#557799")),
+)
+
+
+def _kind_chip(art):
+    """Return `(label, foreground)` for the article's kind, or
+    None when we have no positive signal. Order: title prefix
+    first (publisher-agnostic) then DOI prefix (publisher-
+    specific). We deliberately don't slap a "Research" chip on
+    everything else — the absence of a chip *means* "looks like a
+    regular article", and a chip everywhere drowns out the cases
+    that actually need attention."""
+    title_low = (art.get("title") or "").strip().lower()
+    for prefix, chip in _TITLE_PREFIX_KINDS:
+        if title_low.startswith(prefix):
+            return chip
+    doi_low = (art.get("doi") or "").lower()
+    for prefix, chip in _DOI_PREFIX_KINDS:
+        if doi_low.startswith(prefix):
+            return chip
+    return None

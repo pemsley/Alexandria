@@ -565,22 +565,37 @@ class FeedWindow(Adw.Window):
                           spacing=4)
         btn_row.set_halign(Gtk.Align.END)
         if art.get("doi"):
-            getpdf = Gtk.Button(label="Get PDF")
-            getpdf.add_css_class("suggested-action")
-            getpdf.connect("clicked",
-                           lambda _b, a=art: self._on_get_pdf(a))
-            btn_row.append(getpdf)
+            add_btn = Gtk.Button(label="Add")
+            add_btn.add_css_class("flat")
+            # Matches the Discover dialog's per-row vocabulary.
+            # Always imports as a ghost; for OA-flagged rows we
+            # also try the PDF download, otherwise we stop there
+            # — the previous "Get PDF" label promised more than
+            # was honest for the Nature news / CrossRef-sourced
+            # rows where there's no OA copy.
+            add_btn.set_tooltip_text(
+                "Add this article to your library (metadata only). "
+                "If an Open Access PDF is known, also download it.")
+            add_btn.connect("clicked",
+                            lambda _b, a=art: self._on_add(a))
+            btn_row.append(add_btn)
         outer.append(btn_row)
 
         frame = Gtk.Frame()
         frame.set_child(outer)
         return frame
 
-    def _on_get_pdf(self, art):
-        """Hand the article off to the BrowserWindow's
-        ghost-import + OA-download path. Same entry point the
-        viewer uses, so we share the Cloudflare/paywall/license
-        handling that already lives there."""
+    def _on_add(self, art):
+        """Import the article into the library as a ghost via the
+        BrowserWindow's existing add path. We only ask the path
+        to chase the PDF when we have a positive OA signal —
+        matching `discover.py`'s per-row "Add" semantics. For
+        CrossRef-sourced rows OA is always False (CrossRef doesn't
+        carry the flag), so journal-subscription clicks just add
+        the ghost; the user can press "Get PDF" on the resulting
+        ghost card if they want to try the OA chase explicitly.
+        That avoids the surprise-browser-tab fallback for news
+        articles, which is the case that motivated the rename."""
         try:
             import json
             authors = (json.loads(art["authors_json"])
@@ -596,6 +611,7 @@ class FeedWindow(Adw.Window):
             "bibtex_key": _suggest_bibtex_key(authors, art.get("year"),
                                               art.get("title")),
         }
+        also_get_pdf = bool(art.get("is_oa") and art.get("oa_url"))
 
         def on_done(success, message):
             # No toast surface in this window; let the message
@@ -606,7 +622,7 @@ class FeedWindow(Adw.Window):
                 pass
 
         self.parent_window.add_reference_from_viewer(
-            br, also_get_pdf=True, on_done=on_done)
+            br, also_get_pdf=also_get_pdf, on_done=on_done)
 
     # ──── Refresh button ─────────────────────────────────────────
 

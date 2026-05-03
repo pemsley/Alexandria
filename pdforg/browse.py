@@ -23,7 +23,8 @@ from gi.repository import Gtk, Gdk, GLib, Gio, GObject, Pango, Adw
 from . import (index, edit_dialog, importer, metrics, sidecar, extract,
                viewer, marks_config, prefs, watcher as watcher_mod,
                author_works, bibtex_import, bibtex_export, ris_export,
-               csl_export, opener, references_pdf, discover, csl_format)
+               csl_export, opener, references_pdf, discover, csl_format,
+               feed, feed_window)
 
 LIBRARY_ROOT = prefs.get_library_root()
 
@@ -815,6 +816,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         hamburger_menu = Gio.Menu()
         discover_section = Gio.Menu()
         discover_section.append("Discover (OpenAlex)…", "win.discover")
+        discover_section.append("Subscriptions…", "win.subscriptions")
         hamburger_menu.append_section(None, discover_section)
         hamburger_menu.append("Preferences…", "win.preferences")
         hamburger_btn = Gtk.MenuButton()
@@ -938,6 +940,14 @@ class BrowserWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._author_score_refresher,
                          daemon=True).start()
 
+        # Subscription feed refresher. Walks `subscriptions`,
+        # refreshes the stale ones, writes hits into `discovered`.
+        # Daemon thread + `_feed_stop` event for clean shutdown,
+        # consistent with the other two refreshers above.
+        self._feed_stop = threading.Event()
+        threading.Thread(target=self._feed_refresher,
+                         daemon=True).start()
+
         # GFileMonitor-based library watcher: react to external file
         # changes in LIBRARY_ROOT (drops via Files / cp / sync tools,
         # plus sidecar rewrites from `pdforg-import --refresh`).
@@ -994,6 +1004,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             ("export-ris",    self._on_export_ris),
             ("export-csl-json", self._on_export_csl_json),
             ("discover",      self._open_discover),
+            ("subscriptions", self._open_subscriptions),
             ("preferences",   self._open_preferences),
         ):
             action = Gio.SimpleAction.new(name, None)
@@ -1550,6 +1561,81 @@ class BrowserWindow(Adw.ApplicationWindow):
     def _refresh_visible_row(self, pdf_path, count):
         # Cheap: just rebuild the list. (Could rebuild a single card later.)
         self._reload(self.search.get_text() or None)
+        return False
+
+    def _feed_refresher(self, initial_delay_seconds=20.0,
+                        check_interval_seconds=900.0,
+                        per_sub_pause_seconds=2.0,
+                        prune_every_n_passes=4):
+        """Walk subscriptions and refresh the stale ones.
+
+        Wakes every `check_interval_seconds` (15 min default) and
+        runs through `index.stale_subscriptions`. Each
+        subscription's own `fetch_interval_hours` (or the global
+        FEED_FETCH_INTERVAL_HOURS default, 6 h) decides whether it
+        needs refreshing — the timer just decides when we *check*.
+
+        Every fourth pass we also prune the `discovered` table so
+        old entries don't pile up indefinitely. Daemon thread +
+        `_feed_stop` event for shutdown; consistent with the
+        citation / author-score refreshers above."""
+        if self._feed_stop.wait(initial_delay_seconds):
+            return
+        pass_n = 0
+        while True:
+            try:
+                stale = index.stale_subscriptions(self.conn)
+            except Exception as e:
+                print("feed refresher: stale lookup failed:", e)
+                stale = []
+            for sub in stale:
+                if self._feed_stop.is_set():
+                    return
+                try:
+                    fetched, new = feed.refresh_subscription(
+                        self.conn, sub)
+                    index.mark_subscription_fetched(self.conn, sub["id"])
+                    if new:
+                        print("[feed] {}: {} new article(s)"
+                              .format(sub["name"], new))
+                        GLib.idle_add(self._on_feed_updated,
+                                      sub["id"], new)
+                except Exception as e:
+                    print("feed refresher: {} failed: {}"
+                          .format(sub.get("name"), e))
+                if self._feed_stop.wait(per_sub_pause_seconds):
+                    return
+            pass_n += 1
+            if pass_n % prune_every_n_passes == 0:
+                try:
+                    index.prune_old_discovered(self.conn)
+                except Exception as e:
+                    print("feed refresher: prune failed:", e)
+            if self._feed_stop.wait(check_interval_seconds):
+                return
+
+    def _on_feed_updated(self, subscription_id, n_new):
+        """Idle callback fired from the refresher thread when a
+        subscription gained new articles. If a `FeedWindow` is
+        currently open as a transient child, refresh its list so
+        the new entries appear without the user having to close
+        and re-open it."""
+        try:
+            for child in self.list_transient_windows():
+                if isinstance(child, feed_window.FeedWindow):
+                    child._refresh_feed()
+        except AttributeError:
+            # GTK4 doesn't expose a transient-children list on
+            # Window; we walk our own toplevel app windows
+            # instead.
+            try:
+                app = self.get_application()
+                if app is not None:
+                    for w in app.get_windows():
+                        if isinstance(w, feed_window.FeedWindow):
+                            w._refresh_feed()
+            except Exception:
+                pass
         return False
 
     def _author_score_refresher(self, initial_delay_seconds=60.0,
@@ -2251,6 +2337,10 @@ class BrowserWindow(Adw.ApplicationWindow):
             pass
         try:
             self._asc_stop.set()
+        except Exception:
+            pass
+        try:
+            self._feed_stop.set()
         except Exception:
             pass
         try:
@@ -3165,6 +3255,9 @@ class BrowserWindow(Adw.ApplicationWindow):
 
     def _open_discover(self, _btn):
         discover.open_window(self, self.conn)
+
+    def _open_subscriptions(self, _btn):
+        feed_window.open_window(self, self.conn)
 
     def _open_preferences(self, _btn):
         dlg = Adw.PreferencesDialog()

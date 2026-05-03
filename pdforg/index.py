@@ -451,6 +451,11 @@ def open_db(path=DEFAULT_DB_PATH):
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    # ON DELETE CASCADE on `discovered.subscription_id` only fires
+    # when foreign-key enforcement is enabled — SQLite leaves this
+    # off by default for backwards compatibility. Without this,
+    # removing a subscription would leak its discovered rows.
+    conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
     conn.executescript(CREATE_TABLE)
     _migrate(conn)

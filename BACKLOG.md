@@ -576,6 +576,55 @@ active editors on two hosts is not. These items would harden it.
 
 ## Not soon, but at some stage
 
+### Publisher-page metadata harvest (extends the citation_pdf_url fallback)
+
+The feed refresher already does a narrow landing-page scrape:
+when Unpaywall says `is_oa=True` but has no PDF URL, we hit
+`https://doi.org/{doi}`, follow the redirect, and pull
+`<meta name="citation_pdf_url">` from the resulting HTML
+(`feed._fetch_landing_pdf_url`). That covers the freshness
+gap on very-new OA papers without any per-publisher knowledge.
+
+Going further has real wins but per-publisher maintenance cost:
+
+- **Publisher-asserted OA status.** Each publisher embeds its
+  own JSON or microdata. Nature's landing pages have a
+  `window.dataLayer = [{ ..., "copyright": {"open": true},
+  "publishingModel": "Hybrid Access" }]` blob — direct from
+  the publisher, no Unpaywall inference. Other publishers
+  embed similar but use different keys (Elsevier JSON-LD,
+  Wiley Schema.org tags, OUP per-page CSS class, …). Pulling
+  this would let us mark articles OA without Unpaywall in the
+  loop, useful for the small set of papers Unpaywall hasn't
+  indexed.
+- **Full bibliographic harvest from `citation_*` meta tags.**
+  Google-Scholar requires publishers to expose `citation_title`,
+  `citation_author`, `citation_doi`, `citation_journal_title`,
+  `citation_publication_date`, `citation_issn`,
+  `citation_firstpage`, `citation_lastpage`. We already pull
+  most of these from CrossRef/OpenAlex; landing pages would
+  give us a third source for cross-checking and for filling
+  gaps when the API sources are sparse.
+- **License extraction.** `<link rel="license">` or
+  `<meta name="prism.copyright">` carries the CC-BY-* etc.
+  Feed into the License-chip BACKLOG item.
+
+Cost analysis already done — see the conversation around the
+narrow fallback. Roughly:
+  - ~1 day for the standard meta-tags fallback (PDF URL only) —
+    **already shipped, narrow scope**.
+  - + 2–3 days for a per-publisher OA-status extractor for the
+    top 5–10 publishers (Springer-Nature, Wiley, Elsevier, OUP,
+    Cell Press, ACS, IEEE, Sage, RSC, Cambridge).
+  - + plumbing: polite per-host throttling queue, robots.txt
+    honouring, Cloudflare-aware UA, ~1 fetch/host/sec floor.
+
+Why "not soon": Unpaywall's OA flag is usually right; what we
+needed urgently — a PDF URL when Unpaywall has none — is now
+covered. The wider scope is whack-a-mole maintenance with
+diminishing returns, and only buys speed-of-recognition for
+fresh papers.
+
 ### Server Sync
 
   - Create a server that syncs the library. The client will

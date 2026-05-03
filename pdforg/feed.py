@@ -20,13 +20,83 @@ refresher.
 
 import json
 import re
+import urllib.error
 import urllib.parse
+import urllib.request
 
 from . import metrics
 from .metrics import (
     OPENALEX_MAILTO, OPENALEX_UA, CROSSREF_UA, _http_get_json,
     _normalize_doi, _reconstruct_abstract, _strip_openalex_id,
 )
+
+
+# Google-Scholar style metadata convention — Springer-Nature,
+# Wiley, OUP, IEEE, ACS, Sage, Cell Press, … all expose this on
+# their landing pages. We only scrape this one tag; everything
+# beyond it (publisher-specific OA-status extraction, full
+# bibliographic harvest) is on the BACKLOG.
+_CITATION_PDF_URL_RE = re.compile(
+    r"""<meta\s+[^>]*name=["']citation_pdf_url["']\s+"""
+    r"""[^>]*content=["']([^"']+)["']""",
+    re.IGNORECASE)
+# Some publishers put `content=` before `name=`.
+_CITATION_PDF_URL_RE_ALT = re.compile(
+    r"""<meta\s+[^>]*content=["']([^"']+)["']\s+"""
+    r"""[^>]*name=["']citation_pdf_url["']""",
+    re.IGNORECASE)
+
+
+# Browser-ish UA. Many publishers and Cloudflare-shielded pages
+# 403 a Python urllib UA on sight. Same posture as
+# `author_works._download_pdf`.
+_BROWSER_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/124.0.0.0 Safari/537.36"),
+    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+}
+
+
+def _fetch_landing_pdf_url(doi, timeout=12, max_bytes=512 * 1024):
+    """Hit `https://doi.org/{doi}`, follow redirects, scrape the
+    publisher landing page for `<meta name="citation_pdf_url">`.
+    Returns the URL string or None.
+
+    Used by `refresh_subscription` as a fallback when Unpaywall
+    flagged a paper as OA but had no PDF URL for it — common for
+    very-recently-published articles. We cap the read at
+    `max_bytes` so a giant landing page doesn't blow up the
+    feed refresher; the meta tag is always in <head> and 512 KB
+    is plenty for that.
+
+    Failures are silent — this is best-effort enrichment, not a
+    critical path."""
+    if not doi:
+        return None
+    url = "https://doi.org/" + urllib.parse.quote(doi, safe="/")
+    try:
+        req = urllib.request.Request(url, headers=_BROWSER_HEADERS)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read(max_bytes)
+    except (urllib.error.URLError, urllib.error.HTTPError,
+            TimeoutError, OSError, ValueError):
+        return None
+    except Exception:
+        return None
+    if not body:
+        return None
+    try:
+        text = body.decode("utf-8", errors="replace")
+    except Exception:
+        return None
+    m = _CITATION_PDF_URL_RE.search(text)
+    if not m:
+        m = _CITATION_PDF_URL_RE_ALT.search(text)
+    if not m:
+        return None
+    return m.group(1).strip() or None
 
 
 # Eight-digit ISSN with optional dash, case-insensitive checksum char.
@@ -380,6 +450,18 @@ def refresh_subscription(conn, subscription, limit=FEED_FETCH_ROWS):
         is_oa = bool(unpw.get("is_oa"))
         locs = unpw.get("locations") or []
         oa_url = locs[0]["pdf_url"] if locs else None
+        # Unpaywall lag fallback: when Unpaywall says is_oa=True
+        # but has no PDF URL (typical for very-recently-published
+        # papers it hasn't crawled yet), scrape the publisher
+        # landing page for `<meta name="citation_pdf_url">`. The
+        # publisher tag is authoritative and immediate.
+        if is_oa and not oa_url:
+            try:
+                landing_pdf = _fetch_landing_pdf_url(doi)
+            except Exception:
+                landing_pdf = None
+            if landing_pdf:
+                oa_url = landing_pdf
         try:
             index.update_discovered_oa(
                 conn, sub_id, doi, is_oa, oa_url, oa_status)

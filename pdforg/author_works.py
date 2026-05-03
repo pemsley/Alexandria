@@ -94,6 +94,68 @@ def _author_score_is_fresh(cached):
     return age_days < index.AUTHOR_SCORE_TTL_DAYS
 
 
+# Venue chips. Some OpenAlex `works` results are legitimately
+# different in nature from a journal paper (Zenodo uploads can be
+# datasets, slides, code archives, or grey-literature drafts; JoVE
+# is a video journal; bioRxiv / arXiv are preprints). A small chip
+# in the work row lets the user spot these at a glance instead of
+# squinting at the journal name. DOI-prefix match is the primary
+# signal; journal-name fallback catches the long tail.
+#
+# `(label, foreground)` tuples — no background fills, no emojis
+# (color emojis crash the user's Cairo/CoreText pipeline on macOS).
+_VENUE_CHIPS_BY_DOI_PREFIX = (
+    ("10.5281/",   ("Zenodo",  "#b87000")),   # muted orange
+    ("10.3791/",   ("JoVE",    "#3366aa")),   # muted blue
+    ("10.1101/",   ("bioRxiv", "#777777")),
+    ("10.48550/",  ("arXiv",   "#777777")),
+    ("10.26434/",  ("ChemRxiv", "#777777")),
+    ("10.21203/rs", ("Research Square", "#777777")),
+    ("10.22541/au", ("Authorea", "#777777")),
+    ("10.2139/ssrn", ("SSRN",   "#777777")),
+    ("10.31234/",  ("PsyArXiv", "#777777")),
+    ("10.31219/",  ("OSF",     "#777777")),
+    ("10.20944/",  ("Preprints.org", "#777777")),
+    ("10.36227/",  ("TechRxiv", "#777777")),
+)
+# bioRxiv and medRxiv share the 10.1101/ prefix; the journal name
+# is how OpenAlex disambiguates. Apply this *after* the prefix
+# match decided "bioRxiv".
+_VENUE_NAME_OVERRIDES = {
+    "medrxiv": ("medRxiv", "#777777"),
+}
+
+
+def _venue_chip(work):
+    """Decide on at most one venue chip for `work`. Returns
+    `(label, foreground)` or None.
+
+    Match order: DOI prefix first (cheap, unambiguous), then a
+    journal-name override for the bioRxiv/medRxiv split, then a
+    journal-name match for entries OpenAlex stored without a DOI
+    in the expected prefix."""
+    doi = (work.get("doi") or "").lower()
+    journal = (work.get("journal") or "")
+    journal_low = journal.lower()
+    for prefix, chip in _VENUE_CHIPS_BY_DOI_PREFIX:
+        if doi.startswith(prefix):
+            # 10.1101/ → bioRxiv default, override to medRxiv when
+            # OpenAlex labelled it as such.
+            for key, alt in _VENUE_NAME_OVERRIDES.items():
+                if key in journal_low:
+                    return alt
+            return chip
+    # No DOI prefix match (or no DOI at all) — fall back to
+    # journal-name match. Catches deposits that bypass the usual
+    # DOI registrars.
+    if journal_low.startswith("zenodo"):
+        return ("Zenodo", "#b87000")
+    if (journal_low.startswith("journal of visualized experiments")
+            or journal_low == "jove"):
+        return ("JoVE", "#3366aa")
+    return None
+
+
 # Hide the histogram entirely if no year reaches this many citations.
 HISTOGRAM_MIN_PEAK = 5
 
@@ -747,6 +809,21 @@ class AuthorWorksWindow(Gtk.Window):
         title_lbl.set_markup(
             "<b>{}</b>".format(safe_pango_markup(title)))
         title_row.append(title_lbl)
+
+        # Venue chip (Zenodo / JoVE / bioRxiv / arXiv / ...). One
+        # at most. Sits between the title and the in-library
+        # badge, right-aligned visually because the title's
+        # hexpand pushes it.
+        chip = _venue_chip(w)
+        if chip:
+            label, fg = chip
+            chip_lbl = Gtk.Label()
+            chip_lbl.set_markup(
+                "<span size='small' foreground='{}'>"
+                "<b>{}</b></span>".format(
+                    fg, GLib.markup_escape_text(label)))
+            chip_lbl.set_valign(Gtk.Align.START)
+            title_row.append(chip_lbl)
 
         doi = w.get("doi")
         in_library = bool(doi and doi.lower() in self._existing)

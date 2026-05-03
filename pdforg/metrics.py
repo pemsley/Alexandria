@@ -37,12 +37,59 @@ _HTTP_MAX_RETRIES = 3
 _HTTP_RETRY_AFTER_CAP_SECONDS = 30.0
 _HTTP_BACKOFF_BASE = 1.0
 
+# When a 429 response carries a Retry-After longer than this, give
+# up immediately. The server is telling us to wait hours (OpenAlex
+# hands out 33000-second Retry-After once the daily-quota credits
+# are exhausted) — retrying inside the call just stalls the caller.
+# Anything below this threshold is a normal short-term throttle
+# and we keep retrying.
+_HTTP_RETRY_AFTER_GIVE_UP_SECONDS = 60.0
+
+# Session-wide circuit breaker for OpenAlex. When we see a hard 429
+# (Retry-After > _HTTP_RETRY_AFTER_GIVE_UP_SECONDS) we set this to
+# the monotonic time at which we'll retry — and *all* subsequent
+# OpenAlex calls fail fast until then. Background refreshers check
+# `openalex_paused_until()` between iterations and stop walking when
+# they see it set, so the daily-quota-exhausted state doesn't
+# translate into hours of futile retries clogging the UI.
+_openalex_paused_until = 0.0  # monotonic seconds
+
+
+def openalex_paused_until():
+    """Return monotonic time at which the OpenAlex circuit breaker
+    releases, or 0.0 when it isn't tripped. Background workers
+    should call this between iterations and back off when it's set.
+    Foreground callers can still try (the next 429 will fail fast
+    via the same gate inside _http_get_json)."""
+    return _openalex_paused_until
+
+
+def _trip_openalex_breaker(seconds):
+    """Set the circuit breaker for `seconds` from now. Capped at
+    24 h so a wildly-large Retry-After doesn't lock us out
+    indefinitely if the server is wrong."""
+    global _openalex_paused_until
+    seconds = min(max(float(seconds), 0.0), 86400.0)
+    _openalex_paused_until = time.monotonic() + seconds
+
+
+def _is_openalex_url(url):
+    return "openalex.org" in (url or "")
+
 
 def _http_get_json(url, headers, timeout):
     """GET `url`, return parsed JSON dict, or None on persistent failure.
 
     Retries on HTTP 429 (Retry-After honoured, capped) and 5xx
-    (exponential backoff). All other errors return None immediately."""
+    (exponential backoff). All other errors return None immediately.
+
+    Honours the OpenAlex circuit breaker — once tripped by a
+    hard 429 (Retry-After > 60s), subsequent OpenAlex calls fail
+    instantly until the breaker times out. CrossRef and Unpaywall
+    are unaffected."""
+    # Circuit-breaker gate: bail before opening a socket.
+    if _is_openalex_url(url) and _openalex_paused_until > time.monotonic():
+        return None
     attempt = 0
     while True:
         try:
@@ -59,6 +106,16 @@ def _http_get_json(url, headers, timeout):
                     delay = float(ra) if ra is not None else _HTTP_BACKOFF_BASE
                 except (TypeError, ValueError):
                     delay = _HTTP_BACKOFF_BASE
+                # Hard 429 with a long Retry-After: trip the
+                # session breaker for OpenAlex and give up this
+                # call immediately. No point sleeping 30 s, the
+                # next call will 429 too.
+                if (delay > _HTTP_RETRY_AFTER_GIVE_UP_SECONDS
+                        and _is_openalex_url(url)):
+                    _trip_openalex_breaker(delay)
+                    print("[metrics] OpenAlex rate-limited, pausing "
+                          "for {:.0f} s".format(delay))
+                    return None
                 delay = min(max(delay, 0.5), _HTTP_RETRY_AFTER_CAP_SECONDS)
             else:
                 delay = _HTTP_BACKOFF_BASE * (2 ** attempt)
@@ -1240,6 +1297,139 @@ def fetch_related_works(doi=None, openalex_id=None, limit=12):
             "last_author": last,
         }
     return [by_id[r] for r in rel_ids if r in by_id]
+
+
+# --- "These Authors" discovery lens ----------------------------------
+#
+# Research Rabbit calls this "These Authors" — given a seed paper,
+# what else has *this group of people* worked on together? We model
+# the matcher as a small strategy table so the choice between
+# possible matching rules is one line to flip:
+#
+#   * "overlap-2"   (DEFAULT) — fetch works for the seed's first and
+#                   last authors, post-filter to candidates that
+#                   share at least 2 authors with the seed. Catches
+#                   lab papers (PI + several students), collaborator
+#                   papers, and the grad-student-following-a-PI
+#                   pattern. Lab-or-collaboration-shape; not
+#                   anchored on any single role.
+#
+#   * "pi-anchored" — fetch works for only the seed's last author
+#                   (typical PI position), post-filter to candidates
+#                   that share at least 2 authors with the seed
+#                   (last author + ≥1 other). Strict subset of
+#                   overlap-2 hits where the PI is always involved;
+#                   misses collaborator-only papers.
+#
+# Switching the default is the one-liner: change
+# `DEFAULT_THESE_AUTHORS_RULE`. Surfacing the choice in Preferences
+# is a future follow-on.
+
+
+def _pick_first_and_last_authors_with_id(authorships):
+    """Return up to 2 OpenAlex author IDs — the first author with
+    an ID and the last author with an ID (different if possible).
+    Used by the `overlap-2` strategy to bound the candidate pool
+    we fetch."""
+    ids = [a.get("openalex_id") for a in (authorships or [])
+           if a and a.get("openalex_id")]
+    if not ids:
+        return []
+    if len(ids) == 1:
+        return [ids[0]]
+    return [ids[0], ids[-1]]
+
+
+def _pick_last_author_with_id(authorships):
+    """Return the last author's OpenAlex ID as a single-element
+    list, or []. Used by the `pi-anchored` strategy."""
+    for a in reversed(authorships or []):
+        if a and a.get("openalex_id"):
+            return [a["openalex_id"]]
+    return []
+
+
+_THESE_AUTHORS_STRATEGIES = {
+    "overlap-2": {
+        "anchor_picker": _pick_first_and_last_authors_with_id,
+        "min_overlap":   2,
+        "description":   "first/last author + ≥1 other in common",
+    },
+    "pi-anchored": {
+        "anchor_picker": _pick_last_author_with_id,
+        "min_overlap":   2,
+        "description":   "last (PI) author + ≥1 other in common",
+    },
+}
+DEFAULT_THESE_AUTHORS_RULE = "overlap-2"
+
+
+def fetch_papers_by_same_authors(authorships, seed_doi=None,
+                                 seed_openalex_id=None,
+                                 match_rule=None,
+                                 per_anchor_limit=50,
+                                 limit=20):
+    """For a seed paper's authorships, find other papers that
+    share enough of its authors to suggest the same group.
+    Returns a list of dicts shaped like `fetch_related_works`
+    plus an `overlap_count` field (the number of seed authors
+    found in the candidate's authorship), sorted by overlap
+    count descending then publication year descending.
+
+    `match_rule` selects from `_THESE_AUTHORS_STRATEGIES`; falls
+    back to `DEFAULT_THESE_AUTHORS_RULE` when None. Future
+    callers can pass a different rule per call without changing
+    the default."""
+    rule = _THESE_AUTHORS_STRATEGIES.get(
+        match_rule or DEFAULT_THESE_AUTHORS_RULE)
+    if rule is None:
+        return []
+    anchor_ids = rule["anchor_picker"](authorships)
+    if not anchor_ids:
+        return []
+    seed_author_ids = {a.get("openalex_id") for a in (authorships or [])
+                       if a and a.get("openalex_id")}
+    if not seed_author_ids:
+        return []
+    seed_doi_lc = _normalize_doi(seed_doi).lower() if seed_doi else None
+    seed_oa_id = (seed_openalex_id or "").strip() or None
+
+    # Fetch a batch of recent works per anchor, then post-filter.
+    # Two anchors × per_anchor_limit candidates is enough that the
+    # post-filter has a real selection to rank without exploding
+    # the request count.
+    candidates_by_id = {}
+    for anchor in anchor_ids:
+        works = fetch_works_by_author(
+            openalex_id=anchor, limit=per_anchor_limit, sort="recent")
+        for w in works:
+            wid = w.get("openalex_id")
+            if not wid:
+                continue
+            if wid in candidates_by_id:
+                continue
+            # Drop the seed itself.
+            if seed_oa_id and wid == seed_oa_id:
+                continue
+            cdoi = (w.get("doi") or "").lower()
+            if seed_doi_lc and cdoi == seed_doi_lc:
+                continue
+            # Compute author-set overlap.
+            cand_ids = {ash.get("openalex_id")
+                        for ash in (w.get("authorships") or [])
+                        if ash.get("openalex_id")}
+            overlap = len(seed_author_ids & cand_ids)
+            if overlap < rule["min_overlap"]:
+                continue
+            w_with_overlap = dict(w)
+            w_with_overlap["overlap_count"] = overlap
+            candidates_by_id[wid] = w_with_overlap
+
+    out = list(candidates_by_id.values())
+    out.sort(key=lambda w: (w.get("overlap_count") or 0,
+                            w.get("year") or 0),
+             reverse=True)
+    return out[:limit]
 
 
 def is_preprint_doi(doi):

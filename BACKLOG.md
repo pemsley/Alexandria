@@ -206,63 +206,72 @@ Pending features, roughly grouped. Newest at the top of each section.
 ## Discovery
 - **Watch / subscription feed (Wispar-shaped).** A "follow this
   journal / save this OpenAlex search and tell me what's new"
-  feature. Designed by reading Wispar's `feed_service.dart` /
+  feature, designed by reading Wispar's `feed_service.dart` /
   `feed_api.dart` / `home_screen.dart` (cloned at
-  `~/Projects/wispar/Wispar`); see also
-  `chat-stuff/competitors.md`. Their architecture is sound and
-  worth borrowing, with adaptations for our different shape
-  (sidecar-as-truth, no cloud sync).
+  `~/Projects/wispar/Wispar`).
 
-  **Three layers:**
-    1. **Subscriptions** — a new SQLite table
-       `subscriptions(id PRIMARY KEY, kind, query, name,
-       last_fetched, fetch_interval_hours)` where `kind` is
-       `'journal_issn' | 'openalex_query' | 'crossref_query'`.
-       Wispar's saved-query model is a strict superset of
-       "follow a journal" (a journal-follow *is* an OpenAlex /
-       CrossRef query for `issn:X sort=created`), so we keep
-       just the one table — no separate followed-journals
-       table.
-    2. **Refresh** — a background pass on the watcher thread
-       walks subscriptions whose `last_fetched` is older than
-       their interval, runs the stored query, and writes hits
-       into a new `discovered(subscription_id, doi,
-       openalex_id, title, authors_json, journal, year,
-       fetched_at)` table. Separate from the indexed `papers`
-       table so unimported discoveries don't pollute the
-       library. Batched and concurrency-limited (Wispar caps
-       at `maxConcurrentUpdates`); cleans up rows older than
-       N days. Manual refresh affordance for impatient cases.
-    3. **Custom-feed filters** — saved views over the
-       `discovered` rows. Wispar's `FeedFilter` shape:
-       `(name, journals: Set<String>, include: String,
-       exclude: String, date_mode, date_after, date_before)`.
-       Filter is purely client-side over already-cached rows
-       (no extra fetch on filter change), tokenised include
-       / exclude over `title + abstract + journal`, optional
-       date predicate. Multiple filters per user; a feed
-       switcher in the header flips between them; a "Home"
-       pseudo-feed is the unfiltered union.
+  **v1 shipped:**
+    - **Subscriptions** table — `subscriptions(id, kind, name,
+      query, fetch_interval_hours, last_fetched, created_at)`
+      with kind ∈ `journal_issn | openalex_query |
+      crossref_query` (last reserved, not wired). One table
+      covers both follow-a-journal and save-a-search.
+    - **Discovered** table — `discovered(subscription_id, doi,
+      openalex_id, title, authors_json, journal, year,
+      published_date, abstract, is_oa, oa_url, fetched_at)`,
+      `UNIQUE(subscription_id, doi)`, ON DELETE CASCADE so
+      removing a sub cleans up. Separate from `papers` so
+      unimported hits don't pollute the library.
+    - **Refresh** — third daemon thread in BrowserWindow,
+      `_feed_refresher`. Wakes every 15 min, walks
+      `stale_subscriptions`, refreshes those whose own
+      `fetch_interval_hours` (or the 6 h default) has expired.
+      Prunes `discovered` rows older than 60 days every fourth
+      pass.
+    - **Subscriptions window** (`pdforg/feed_window.py`) —
+      opened from the hamburger menu. Top strip of pills
+      (current follows, click to filter the body, × to
+      remove). "Add…" popover with Journal / Topic toggle;
+      journal mode runs `find_journal_by_name` (rows=100 +
+      exact-title re-rank, or ISSN-direct when input matches
+      `\d{4}-?\d{3}[\dxX]`). Body is a card list of
+      discovered articles with title / journal / date /
+      authors / abstract + a "Get PDF" button that routes
+      through `BrowserWindow.add_reference_from_viewer` so
+      the existing ghost-import path is reused.
 
-  **UI surface:** new tab in the existing Discover dialog —
-  "Watch" — listing recent items with per-subscription custom
-  filters. Each row has the same "Save to library" / "Get
-  PDF" affordances the existing Discover author-search results
-  have, so importing follows the established ghost-add path.
+  **Still open:**
+    - **Custom-feed filters.** Wispar's `FeedFilter` shape:
+      `(name, journals: Set<String>, include: String,
+      exclude: String, date_mode, date_after, date_before)`.
+      Filter purely client-side over `discovered` rows
+      (no extra fetch on filter change), tokenised
+      include/exclude over `title + abstract + journal`.
+      Multiple filters per user; a feed switcher in the
+      header.
+    - **"Already in library" badge.** When a discovered
+      article's DOI matches a row in `papers`, render an
+      in-library glyph instead of (or alongside) the
+      Get-PDF button. Reuses
+      `BrowserWindow.find_existing_by_doi` already used by
+      the reference popover.
+    - **Per-subscription cadence override UI.** The schema
+      column exists; no UI yet to set it. Power-user need
+      (Science weekly, bioRxiv hourly).
+    - **Live-update notification.** The refresher already
+      calls `_on_feed_updated`; the open feed window
+      auto-refreshes. Could surface a transient toast
+      "N new articles in <subscription>" on the main
+      browser too.
+    - **`crossref_query` kind.** Reserved in the schema; UI
+      and fetcher branch not wired. Wispar's saved-query
+      model supports CrossRef arbitrary filter strings too.
 
   **What we're explicitly NOT taking from Wispar:**
-    - PocketBase cross-device sync (we'd use git-sync or
-      sidecar-sync, not vendored cloud).
-    - Background notifications (Wispar is a journal-alert
-      mobile app; we're a desktop library manager).
-    - A separate articles table — we'd have `discovered` and
-      reuse `papers` for actual library entries. The two
-      tables join on DOI / OpenAlex ID for "already in
-      library" highlighting.
-
-  Scope estimate: subscriptions table + refresh loop is one
-  evening; the custom-filter UI is a second evening; polish
-  + dialog wiring is a third.
+    - PocketBase cross-device sync (use git-sync or
+      sidecar-sync if anything).
+    - Background OS-level notifications (Wispar is a
+      mobile alert app; we're a desktop library manager).
 
 - **Author-awards chip on paper cards.** A small badge when an
   author is a recipient of a high-prestige scientific award. Two

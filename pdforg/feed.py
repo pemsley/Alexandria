@@ -1,0 +1,321 @@
+"""Subscription feed: fetch newest articles for followed journals
+and saved searches.
+
+Two flavours, mirroring Wispar:
+    * `journal_issn`: hit CrossRef `/works` filtered by ISSN(s),
+      sorted by deposit date desc. This is the canonical "what
+      did this journal publish lately" query.
+    * `openalex_query`: hit OpenAlex `/works` with a free-text
+      `search=`, sorted by `publication_date` desc.
+
+The results are normalised into a single dict shape with
+`doi`/`openalex_id`/`title`/`authors`/`journal`/`year`/
+`published_date`/`abstract`/`is_oa`/`oa_url` so the caller
+(see `index.upsert_discovered`) can persist them uniformly.
+
+This module is deliberately UI-free; the browser wires it into
+a background refresher thread alongside the existing citation
+refresher.
+"""
+
+import json
+import re
+import urllib.parse
+
+from . import metrics
+from .metrics import (
+    OPENALEX_MAILTO, OPENALEX_UA, CROSSREF_UA, _http_get_json,
+    _normalize_doi, _reconstruct_abstract, _strip_openalex_id,
+)
+
+
+# Eight-digit ISSN with optional dash, case-insensitive checksum char.
+_ISSN_RE = re.compile(r"^\d{4}-?\d{3}[\dxX]$")
+
+
+FEED_FETCH_ROWS = 50
+
+
+def fetch_journal_articles(issns, limit=FEED_FETCH_ROWS):
+    """Newest articles in the journal identified by `issns` (a
+    list of ISSN strings; a journal may have multiple — e.g.
+    Science has print 0036-8075 and online 1095-9203). Sorted
+    by Crossref's `created` field, descending."""
+    if not issns:
+        return []
+    issn_filter = ",".join("issn:" + i.strip() for i in issns if i.strip())
+    if not issn_filter:
+        return []
+    params = [
+        ("filter", issn_filter),
+        ("sort",   "created"),
+        ("order",  "desc"),
+        ("rows",   str(limit)),
+        ("select", "DOI,title,issued,created,published-online,"
+                   "published-print,author,container-title,abstract"),
+    ]
+    if OPENALEX_MAILTO:
+        params.append(("mailto", OPENALEX_MAILTO))
+    url = ("https://api.crossref.org/works?"
+           + urllib.parse.urlencode(params))
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": CROSSREF_UA,
+                 "Accept": "application/json"},
+        timeout=20)
+    if not data:
+        return []
+    items = (data.get("message") or {}).get("items") or []
+    return [_normalize_crossref_item(it) for it in items if it]
+
+
+def fetch_openalex_query_articles(query, limit=FEED_FETCH_ROWS):
+    """Free-text OpenAlex search, sorted by publication date desc.
+    Used for topic subscriptions ("T cells", "ribosome
+    structures", ...).
+
+    Filters applied:
+      * `type:article|review|preprint` — drops OpenAlex's datasets,
+        book chapters, retractions, etc. which clutter a topic
+        feed.
+      * `to_publication_date:<today>` — OpenAlex stores some
+        future-dated placeholders (e.g. 2050-01-01) for scheduled
+        publications; without this cap they monopolise the head
+        of a desc sort.
+    """
+    if not query or not query.strip():
+        return []
+    import datetime
+    today = datetime.date.today().isoformat()
+    filt = "type:article|review|preprint,to_publication_date:" + today
+    params = [
+        ("search",   query.strip()),
+        ("filter",   filt),
+        ("sort",     "publication_date:desc"),
+        ("per_page", str(limit)),
+        ("select",   "id,doi,title,publication_year,publication_date,"
+                     "primary_location,authorships,abstract_inverted_index,"
+                     "open_access"),
+    ]
+    if OPENALEX_MAILTO:
+        params.append(("mailto", OPENALEX_MAILTO))
+    url = ("https://api.openalex.org/works?"
+           + urllib.parse.urlencode(params))
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": OPENALEX_UA,
+                 "Accept": "application/json"},
+        timeout=20)
+    if not data:
+        return []
+    return [_normalize_openalex_item(w)
+            for w in (data.get("results") or []) if w]
+
+
+# CrossRef offers a free-form `query=` parameter too; we don't
+# wire it as a subscription kind because OpenAlex's search is
+# better-tokenised for topical interest. CrossRef stays the
+# canonical source for the ISSN-scoped journal feed.
+
+
+def _crossref_pick_date(item):
+    """Pick the most informative date from a CrossRef item. Order:
+    `published-online`, `published-print`, `issued`. Each is a
+    `{"date-parts": [[y, m, d]]}` dict."""
+    for k in ("published-online", "published-print", "issued"):
+        v = item.get(k)
+        if not v:
+            continue
+        parts = v.get("date-parts") or []
+        if parts and parts[0]:
+            return parts[0]
+    return None
+
+
+def _normalize_crossref_item(item):
+    title = item.get("title") or []
+    if isinstance(title, list):
+        title = title[0] if title else None
+    journal = item.get("container-title") or []
+    if isinstance(journal, list):
+        journal = journal[0] if journal else None
+    date_parts = _crossref_pick_date(item)
+    year = date_parts[0] if date_parts else None
+    pub_date = None
+    if date_parts:
+        ymd = (date_parts + [None, None])[:3]
+        if ymd[0] is not None:
+            pub_date = "{:04d}".format(int(ymd[0]))
+            if ymd[1] is not None:
+                pub_date += "-{:02d}".format(int(ymd[1]))
+                if ymd[2] is not None:
+                    pub_date += "-{:02d}".format(int(ymd[2]))
+    authors = []
+    for a in (item.get("author") or []):
+        given = a.get("given") or ""
+        family = a.get("family") or ""
+        full = (given + " " + family).strip()
+        if full:
+            authors.append(full)
+    # CrossRef abstracts are JATS-flavoured XML; we strip the
+    # outermost <jats:p> if present and otherwise hand the raw
+    # string back. UI can render it lightly.
+    abstract = item.get("abstract")
+    if abstract and isinstance(abstract, str):
+        abstract = abstract.strip()
+    return {
+        "doi":            _normalize_doi(item.get("DOI")),
+        "openalex_id":    None,
+        "title":          title,
+        "authors":        authors,
+        "journal":        journal,
+        "year":           year,
+        "published_date": pub_date,
+        "abstract":       abstract,
+        "is_oa":          False,    # CrossRef doesn't carry OA flag
+        "oa_url":         None,
+    }
+
+
+def _normalize_openalex_item(w):
+    pl = w.get("primary_location") or {}
+    src = pl.get("source") or {}
+    authors = []
+    for a in (w.get("authorships") or []):
+        n = (a.get("author") or {}).get("display_name")
+        if n:
+            authors.append(n)
+    inv = w.get("abstract_inverted_index")
+    abstract = _reconstruct_abstract(inv) if inv else None
+    oa = w.get("open_access") or {}
+    return {
+        "doi":            _normalize_doi(w.get("doi")),
+        "openalex_id":    _strip_openalex_id(w.get("id")),
+        "title":          w.get("title"),
+        "authors":        authors,
+        "journal":        src.get("display_name"),
+        "year":           w.get("publication_year"),
+        "published_date": w.get("publication_date"),
+        "abstract":       abstract,
+        "is_oa":          bool(oa.get("is_oa")),
+        "oa_url":         oa.get("oa_url"),
+    }
+
+
+def find_journal_by_name(query, limit=100):
+    """Resolve a user-typed journal name (or ISSN) to a list of
+    CrossRef journal records — each has `title`, `ISSN` (list),
+    `publisher`. Used by the "Follow journal" dialog so the user
+    can pick the right ISSN(s) rather than typing them by hand.
+
+    When `query` looks like an ISSN we hit the by-ISSN endpoint
+    directly. Otherwise we walk CrossRef's `/journals?query=`,
+    pulling a wide page (default 100) and re-ranking. The
+    substring/fuzzy matcher ranks by deposit volume, so popular
+    flagship journals like `Science` get drowned out by long-tail
+    sound-alikes (`ScienceAsia`, `ScienceBank`, ...); the real
+    Science journal appears past row 25 on a query for "Science".
+    Exact-title matches are pulled to the top, then prefix
+    matches, then word-boundary substring matches, before falling
+    back to CrossRef's own order.
+
+    Returns [] on lookup failure; the caller can decide to show
+    an error message."""
+    if not query or not query.strip():
+        return []
+    q = query.strip()
+    # ISSN-shaped query: skip the search and go straight to the
+    # /journals/{issn} endpoint. Faster and avoids the ranking
+    # problem entirely.
+    if _ISSN_RE.match(q):
+        issn_url = "https://api.crossref.org/journals/" + q
+        data = _http_get_json(
+            issn_url,
+            headers={"User-Agent": CROSSREF_UA,
+                     "Accept": "application/json"},
+            timeout=15)
+        if not data:
+            return []
+        msg = data.get("message") or {}
+        issns = msg.get("ISSN") or []
+        if isinstance(issns, str):
+            issns = [issns]
+        if not issns:
+            return []
+        return [{
+            "title":     msg.get("title"),
+            "issns":     [i for i in issns if i],
+            "publisher": msg.get("publisher"),
+        }]
+    params = [
+        ("query", q),
+        ("rows",  str(limit)),
+    ]
+    if OPENALEX_MAILTO:
+        params.append(("mailto", OPENALEX_MAILTO))
+    url = ("https://api.crossref.org/journals?"
+           + urllib.parse.urlencode(params))
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": CROSSREF_UA,
+                 "Accept": "application/json"},
+        timeout=15)
+    if not data:
+        return []
+    raw = []
+    for it in (data.get("message") or {}).get("items") or []:
+        issn = it.get("ISSN") or []
+        if isinstance(issn, str):
+            issn = [issn]
+        raw.append({
+            "title":     it.get("title"),
+            "issns":     [i for i in issn if i],
+            "publisher": it.get("publisher"),
+        })
+    qlow = q.lower()
+
+    def rank(entry):
+        title = (entry.get("title") or "").lower()
+        if title == qlow:
+            return 0
+        # "Science" before "ScienceAsia" before "Asian Science":
+        # word-boundary prefix beats mid-word match.
+        if title.startswith(qlow + " ") or title == qlow:
+            return 1
+        if title.startswith(qlow):
+            return 2
+        # Has the query as a whitespace-bounded word.
+        if (" " + qlow + " ") in (" " + title + " "):
+            return 3
+        return 9
+
+    raw.sort(key=rank)
+    # Drop entries with no ISSN — they can't be followed.
+    return [e for e in raw if e.get("issns")]
+
+
+def refresh_subscription(conn, subscription, limit=FEED_FETCH_ROWS):
+    """Fetch the latest articles for one subscription row and
+    upsert them into `discovered`. Returns (n_fetched,
+    n_new_rows). Does NOT touch `last_fetched` — callers do that
+    via `index.mark_subscription_fetched` only when the fetch
+    succeeded, so transient network failures retry on the next
+    refresher pass."""
+    from . import index
+    kind = subscription["kind"]
+    query = subscription["query"]
+    if kind == "journal_issn":
+        issns = [s.strip() for s in (query or "").split(",") if s.strip()]
+        articles = fetch_journal_articles(issns, limit=limit)
+    elif kind == "openalex_query":
+        articles = fetch_openalex_query_articles(query, limit=limit)
+    elif kind == "crossref_query":
+        # Reserved for future use; not wired into the UI yet.
+        articles = []
+    else:
+        return 0, 0
+    new_count = 0
+    for a in articles:
+        if index.upsert_discovered(conn, subscription["id"], a):
+            new_count += 1
+    return len(articles), new_count

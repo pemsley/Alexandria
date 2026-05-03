@@ -23,7 +23,7 @@ from gi.repository import Gtk, Gdk, GLib, Gio, GObject, Pango, Adw
 from . import (index, edit_dialog, importer, metrics, sidecar, extract,
                viewer, marks_config, prefs, watcher as watcher_mod,
                author_works, bibtex_import, bibtex_export, ris_export,
-               opener, references_pdf, discover, csl_format)
+               csl_export, opener, references_pdf, discover, csl_format)
 
 LIBRARY_ROOT = prefs.get_library_root()
 
@@ -800,6 +800,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         export_section = Gio.Menu()
         export_section.append("Export BibTeX…",  "win.export-bibtex")
         export_section.append("Export RIS…",     "win.export-ris")
+        export_section.append("Export CSL JSON…", "win.export-csl-json")
         import_menu.append_section(None, export_section)
         import_btn = Gtk.MenuButton()
         import_btn.set_label("Import")
@@ -991,6 +992,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             ("import-bibtex", self._on_import_bibtex),
             ("export-bibtex", self._on_export_bibtex),
             ("export-ris",    self._on_export_ris),
+            ("export-csl-json", self._on_export_csl_json),
             ("discover",      self._open_discover),
             ("preferences",   self._open_preferences),
         ):
@@ -1214,6 +1216,54 @@ class BrowserWindow(Adw.ApplicationWindow):
             written, skipped = ris_export.export_rows_to_file(rows, path)
         except Exception as e:
             print("RIS export failed:", e)
+            self._toast("Export failed: {}".format(e), timeout=6)
+            return
+
+        msg = "Exported {} entries to {}".format(
+            written, os.path.basename(path))
+        if skipped:
+            msg += " ({} skipped — sidecar missing)".format(skipped)
+        self._toast(msg)
+
+    # --- Export CSL JSON (mirror of BibTeX/RIS exports) -----------------
+
+    def _on_export_csl_json(self, _btn):
+        dlg = Gtk.FileDialog()
+        dlg.set_title("Export CSL JSON")
+        dlg.set_initial_name("alexandria-export.json")
+        csl_filter = Gtk.FileFilter()
+        csl_filter.set_name("CSL JSON (*.json)")
+        csl_filter.add_pattern("*.json")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(csl_filter)
+        dlg.set_filters(filters)
+        dlg.set_default_filter(csl_filter)
+        dlg.save(self, None, self._on_csl_save_chosen)
+
+    def _on_csl_save_chosen(self, dlg, result):
+        try:
+            f = dlg.save_finish(result)
+        except GLib.Error:
+            return
+        if f is None:
+            return
+        path = f.get_path()
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+
+        query = self.search.get_text() or None
+        mark_filter = self._MARK_FILTER_VALUES[
+            self.mark_filter_dd.get_selected()]
+        sort_key, sort_direction = self._current_sort()
+        rows = index.search(self.conn, query, mark_filter=mark_filter,
+                            sort_key=sort_key, sort_direction=sort_direction)
+
+        try:
+            written, skipped = csl_export.export_rows_to_file(rows, path)
+        except Exception as e:
+            print("CSL JSON export failed:", e)
             self._toast("Export failed: {}".format(e), timeout=6)
             return
 

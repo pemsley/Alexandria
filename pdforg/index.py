@@ -3,6 +3,7 @@
 DB lives on local disk (XDG state dir), never on NFS.
 """
 
+import datetime
 import json
 import os
 import re
@@ -393,6 +394,55 @@ def set_author_score(conn, openalex_id, result, self_excluded=True):
     conn.commit()
 
 
+CREATE_SUBSCRIPTIONS = """
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    query TEXT NOT NULL,
+    fetch_interval_hours INTEGER,
+    last_fetched TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_kind
+    ON subscriptions(kind);
+
+CREATE TABLE IF NOT EXISTS discovered (
+    id INTEGER PRIMARY KEY,
+    subscription_id INTEGER NOT NULL REFERENCES subscriptions(id)
+        ON DELETE CASCADE,
+    doi TEXT,
+    openalex_id TEXT,
+    title TEXT,
+    authors_json TEXT,
+    journal TEXT,
+    year INTEGER,
+    published_date TEXT,
+    abstract TEXT,
+    is_oa INTEGER DEFAULT 0,
+    oa_url TEXT,
+    fetched_at TEXT NOT NULL,
+    UNIQUE(subscription_id, doi)
+);
+CREATE INDEX IF NOT EXISTS idx_discovered_fetched_at
+    ON discovered(fetched_at);
+CREATE INDEX IF NOT EXISTS idx_discovered_doi
+    ON discovered(doi);
+"""
+
+
+# Default cadence for the feed refresher when a subscription has
+# no per-row override. 6 h matches Wispar's default and keeps us
+# well inside CrossRef/OpenAlex polite-pool budgets even with many
+# subscriptions.
+FEED_FETCH_INTERVAL_HOURS = 6
+
+# How long discovered rows live before getting pruned. Keeps the
+# table from growing without bound; user has plenty of time to
+# Get-PDF anything interesting.
+DISCOVERED_RETENTION_DAYS = 60
+
+
 def open_db(path=DEFAULT_DB_PATH):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     # check_same_thread=False because the GUI shares this connection with
@@ -406,8 +456,134 @@ def open_db(path=DEFAULT_DB_PATH):
     _migrate(conn)
     conn.executescript(CREATE_INDEXES)
     conn.executescript(CREATE_AUTHOR_SCORES)
+    conn.executescript(CREATE_SUBSCRIPTIONS)
     _ensure_fts(conn)
     return conn
+
+
+# --- Subscriptions / discovered ---------------------------------------
+
+def list_subscriptions(conn):
+    """All subscriptions, newest first. Returns list of dict-like rows."""
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM subscriptions ORDER BY id DESC").fetchall()]
+
+
+def add_subscription(conn, kind, name, query, fetch_interval_hours=None):
+    """Create a new subscription. `kind` is one of
+    'journal_issn' | 'openalex_query' | 'crossref_query'.
+    `query` is kind-specific: comma-separated ISSNs for
+    'journal_issn', the raw search string otherwise. Returns the
+    new row id."""
+    if kind not in ("journal_issn", "openalex_query", "crossref_query"):
+        raise ValueError("unknown subscription kind: " + repr(kind))
+    cur = conn.execute(
+        "INSERT INTO subscriptions"
+        " (kind, name, query, fetch_interval_hours, created_at)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (kind, name, query, fetch_interval_hours,
+         date.today().isoformat()))
+    conn.commit()
+    return cur.lastrowid
+
+
+def remove_subscription(conn, subscription_id):
+    """Drop a subscription. ON DELETE CASCADE removes its
+    discovered rows too."""
+    conn.execute(
+        "DELETE FROM subscriptions WHERE id=?", (subscription_id,))
+    conn.commit()
+
+
+def mark_subscription_fetched(conn, subscription_id, when_iso=None):
+    """Stamp the subscription as freshly refreshed. `when_iso`
+    defaults to an ISO datetime (not just a date) so the
+    staleness check in `stale_subscriptions` can compare against
+    the current time at sub-day resolution."""
+    conn.execute(
+        "UPDATE subscriptions SET last_fetched=? WHERE id=?",
+        (when_iso
+         or datetime.datetime.now().isoformat(timespec="seconds"),
+         subscription_id))
+    conn.commit()
+
+
+def stale_subscriptions(conn,
+                        default_interval_hours=FEED_FETCH_INTERVAL_HOURS):
+    """Subscriptions whose last_fetched is older than their
+    fetch_interval_hours (or `default_interval_hours` when the
+    column is NULL), or that have never been fetched. Returns
+    list of dict rows, oldest-fetched first."""
+    rows = conn.execute(
+        "SELECT * FROM subscriptions ORDER BY"
+        " (last_fetched IS NULL) DESC, last_fetched ASC").fetchall()
+    out = []
+    now = datetime.datetime.now()
+    for r in rows:
+        last = r["last_fetched"]
+        interval_h = r["fetch_interval_hours"] or default_interval_hours
+        if not last:
+            out.append(dict(r))
+            continue
+        try:
+            last_dt = datetime.datetime.fromisoformat(last)
+        except ValueError:
+            out.append(dict(r))
+            continue
+        if (now - last_dt).total_seconds() >= interval_h * 3600.0:
+            out.append(dict(r))
+    return out
+
+
+def upsert_discovered(conn, subscription_id, article):
+    """Insert a discovered article (a dict with doi/title/...) if
+    we haven't seen this (subscription, doi) pair before. No-op
+    when the article carries no DOI — the UNIQUE constraint needs
+    something to dedup on and OpenAlex IDs alone aren't enough
+    to fence the dup-detection across providers.
+
+    Returns True if a row was inserted, False if it was a dup."""
+    doi = article.get("doi")
+    if not doi:
+        return False
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO discovered"
+        " (subscription_id, doi, openalex_id, title, authors_json,"
+        "  journal, year, published_date, abstract, is_oa, oa_url,"
+        "  fetched_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (subscription_id,
+         doi.lower(),
+         article.get("openalex_id"),
+         article.get("title"),
+         json.dumps(article.get("authors") or [],
+                    ensure_ascii=False) if article.get("authors")
+         else None,
+         article.get("journal"),
+         article.get("year"),
+         article.get("published_date"),
+         article.get("abstract"),
+         1 if article.get("is_oa") else 0,
+         article.get("oa_url"),
+         datetime.datetime.now().isoformat(timespec="seconds")))
+    return cur.rowcount > 0
+
+
+def discovered_for(conn, subscription_id, limit=200):
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM discovered WHERE subscription_id=?"
+        " ORDER BY published_date DESC, fetched_at DESC LIMIT ?",
+        (subscription_id, limit)).fetchall()]
+
+
+def prune_old_discovered(conn,
+                         retention_days=DISCOVERED_RETENTION_DAYS):
+    cutoff = (datetime.datetime.now()
+              - datetime.timedelta(days=retention_days)).isoformat()
+    cur = conn.execute(
+        "DELETE FROM discovered WHERE fetched_at < ?", (cutoff,))
+    conn.commit()
+    return cur.rowcount
 
 
 def normalize_doi(doi):

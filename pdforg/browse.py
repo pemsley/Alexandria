@@ -3505,6 +3505,15 @@ def main(argv):
     # the system) and gives us native HeaderBar / Toast support.
     app = Adw.Application(application_id="io.github.pemsley.Alexandria")
 
+    # Thread the conn through a mutable closure so the `shutdown`
+    # handler can close it after the last window is gone. SQLite
+    # cleanup matters here: WAL-mode databases need a graceful close
+    # to flip the WAL pointer; otherwise the *next* launch sees a
+    # dirty WAL and (depending on the OS/filesystem) can fail to
+    # acquire its lock — the "disk I/O error on launch" symptom
+    # documented in the Watcher BACKLOG entry.
+    state = {"conn": None}
+
     def on_activate(app):
         # Libadwaita owns the dark/light decision via Adw.StyleManager.
         # If the user has the legacy GtkSettings:gtk-application-prefer-
@@ -3528,10 +3537,36 @@ def main(argv):
             _show_db_error_and_quit(app, str(e))
             return
 
+        state["conn"] = conn
         win = BrowserWindow(app, conn)
         win.present()
 
+    def on_shutdown(_app):
+        # Fires after the last window is destroyed and the main loop
+        # is exiting. Daemon refresher threads are already being
+        # torn down by interpreter shutdown; closing the conn here
+        # gives SQLite the chance to checkpoint the WAL even if a
+        # thread was mid-write when killed.
+        conn = state.get("conn")
+        if conn is None:
+            return
+        try:
+            # A WAL checkpoint before close pushes all committed
+            # pages into the main DB so the WAL can be safely
+            # truncated. Without this, a crash or kill mid-write
+            # would leave the WAL in a "needs recovery" state that
+            # the next open has to detect and fix.
+            try:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
+            conn.close()
+        except Exception as e:
+            print("shutdown: conn close failed:", e)
+        state["conn"] = None
+
     app.connect("activate", on_activate)
+    app.connect("shutdown", on_shutdown)
     return app.run(None)
 
 

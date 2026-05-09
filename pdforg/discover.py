@@ -235,8 +235,11 @@ class DiscoverWindow(Adw.Window):
         stats_row.append(stats)
         if r.get("top_topic"):
             chip = Gtk.Label()
+            # Mid-purple — the original `#5a2a82` was rich on light
+            # backgrounds but unreadable on Adwaita dark. A brighter
+            # tone holds against both extremes.
             chip.set_markup(
-                "<small><span foreground='#5a2a82'>★ {}</span></small>".format(
+                "<small><span foreground='#a06acc'>★ {}</span></small>".format(
                     GLib.markup_escape_text(r["top_topic"])))
             stats_row.append(chip)
         info.append(stats_row)

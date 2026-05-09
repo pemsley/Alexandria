@@ -763,6 +763,11 @@ def compute_citing_impact(openalex_id, exclude_self_cites=True,
             cursor = (data.get("meta") or {}).get("next_cursor")
             if cursor:
                 time.sleep(polite_delay)
+        # Also sleep between distinct works — without this, an
+        # author with many low-cite works (one page of citers
+        # each) would burst back-to-back through the polite pool.
+        if polite_delay:
+            time.sleep(polite_delay)
 
     out = {"computed_at": today_iso()}
     for kind, b in buckets.items():

@@ -656,13 +656,23 @@ class AuthorWorksWindow(Gtk.Window):
 
     def _apply_works_only(self, works):
         if not works:
-            self.status.set_markup(
-                "<span alpha='75%'>No works found.</span>")
+            self.status.set_markup(self._empty_status_markup())
             return False
         self.status.set_markup(self._works_status_markup(len(works)))
         for w in works:
             self.list_box.append(self._make_work_row(w))
         return False
+
+    def _empty_status_markup(self):
+        """Pick the right "nothing to show" message. When the
+        OpenAlex session breaker is tripped, the empty result is
+        a rate-limit symptom, not "the author really has no
+        works" — say so explicitly."""
+        if metrics.openalex_paused_until() > 0:
+            return ("<span foreground='#cc6633'>Search blocked by "
+                    "OpenAlex — daily quota exhausted. Resumes at "
+                    "00:00 UTC.</span>")
+        return "<span alpha='75%'>No works found.</span>"
 
     def _works_status_markup(self, n):
         sort_label = ("most recent" if self._works_sort == "recent"
@@ -670,6 +680,17 @@ class AuthorWorksWindow(Gtk.Window):
         return "<span alpha='75%'>{} {} works</span>".format(n, sort_label)
 
     def _apply_results(self, profile, works, coauths=None):
+        # OpenAlex circuit breaker tripped → profile is None and
+        # works is []. Surface the rate-limit reason rather than
+        # leaving the "Loading…" line stuck and saying "No works
+        # found" on the empty body.
+        if not profile and not works and metrics.openalex_paused_until() > 0:
+            blocked = ("<span size='small' foreground='#cc6633'>"
+                       "Search blocked by OpenAlex — daily quota "
+                       "exhausted. Resumes at 00:00 UTC.</span>")
+            self.stats_lbl.set_markup(blocked)
+            self.status.set_markup(blocked)
+            return
         if profile:
             bits = []
             if profile.get("works_count"):
@@ -706,8 +727,7 @@ class AuthorWorksWindow(Gtk.Window):
                 self.coauth_box.append(btn)
 
         if not works:
-            self.status.set_markup(
-                "<span alpha='75%'>No works found.</span>")
+            self.status.set_markup(self._empty_status_markup())
             return
         self.status.set_markup(self._works_status_markup(len(works)))
         for w in works:

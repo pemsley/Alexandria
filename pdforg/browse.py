@@ -291,12 +291,15 @@ def citation_stars_markup(n):
 # Colour-coded sparkline tiers, indexed by peak citations-per-year.
 # Saturated hues mixed roughly half-and-half with mid-grey so they stay
 # visually quiet on the card. Below 10/yr we just use the theme's
-# foreground colour (no signal to communicate).
+# foreground colour (no signal to communicate). The top tier matches
+# the goldenrod foreground used by the Citation-Classic-Double star
+# row (`#b8860b`) so a paper at that citation level reads as one
+# colour-coordinated unit instead of olive-bars-above-gold-stars.
 _SPARKLINE_TIERS = (
     (10, None),                  # < 10  → theme grey
     (20, (0x44, 0xaa, 0xaa)),    # < 20  → muted cyan
     (40, (0x44, 0xaa, 0x44)),    # < 40  → muted green
-    (None, (0xaa, 0xaa, 0x44)),  # else  → muted yellow
+    (None, (0xb8, 0x86, 0x0b)),  # else  → goldenrod, matches stars
 )
 
 

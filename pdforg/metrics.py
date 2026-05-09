@@ -54,6 +54,13 @@ _HTTP_RETRY_AFTER_GIVE_UP_SECONDS = 60.0
 # translate into hours of futile retries clogging the UI.
 _openalex_paused_until = 0.0  # monotonic seconds
 
+# Most-recent `X-RateLimit-Remaining` we saw on a successful
+# OpenAlex response. None until we've had at least one successful
+# call this session. Background workers gate on this so they back
+# off *before* triggering the breaker rather than after.
+_openalex_credits_remaining = None  # int or None
+_openalex_credits_seen_at = 0.0     # monotonic seconds
+
 
 def openalex_paused_until():
     """Return monotonic time at which the OpenAlex circuit breaker
@@ -64,6 +71,22 @@ def openalex_paused_until():
     return _openalex_paused_until
 
 
+def openalex_credits_remaining():
+    """Most-recent X-RateLimit-Remaining count observed on an
+    OpenAlex response this session, or None if we haven't seen
+    one yet. Used by background workers to throttle proactively
+    instead of waiting for a 429."""
+    return _openalex_credits_remaining
+
+
+def openalex_credits_below(buffer):
+    """True when we know we're running low — observed credits
+    less than `buffer`. Returns False when we have no
+    observation yet (don't gate on unknown state)."""
+    return (_openalex_credits_remaining is not None
+            and _openalex_credits_remaining < buffer)
+
+
 def _trip_openalex_breaker(seconds):
     """Set the circuit breaker for `seconds` from now. Capped at
     24 h so a wildly-large Retry-After doesn't lock us out
@@ -71,6 +94,23 @@ def _trip_openalex_breaker(seconds):
     global _openalex_paused_until
     seconds = min(max(float(seconds), 0.0), 86400.0)
     _openalex_paused_until = time.monotonic() + seconds
+
+
+def _note_openalex_credits(headers):
+    """Stash `X-RateLimit-Remaining` from an OpenAlex response.
+    No-op if the header is missing or unparseable."""
+    if not headers:
+        return
+    raw = headers.get("X-RateLimit-Remaining")
+    if raw is None:
+        return
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return
+    global _openalex_credits_remaining, _openalex_credits_seen_at
+    _openalex_credits_remaining = n
+    _openalex_credits_seen_at = time.monotonic()
 
 
 def _is_openalex_url(url):
@@ -91,12 +131,20 @@ def _http_get_json(url, headers, timeout):
     if _is_openalex_url(url) and _openalex_paused_until > time.monotonic():
         return None
     attempt = 0
+    is_oa_url = _is_openalex_url(url)
     while True:
         try:
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout) as resp:
+                # Capture credits remaining for the rate-limit
+                # gate before reading the body — cheap, and the
+                # body read could in principle fail.
+                if is_oa_url:
+                    _note_openalex_credits(resp.headers)
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
+            if is_oa_url and e.headers is not None:
+                _note_openalex_credits(e.headers)
             retry_ok = e.code == 429 or 500 <= e.code < 600
             if not retry_ok or attempt >= _HTTP_MAX_RETRIES:
                 return None
@@ -532,8 +580,12 @@ def classify_paper(title):
     return "idea"
 
 
+CITING_IMPACT_TOP_N_DEFAULT = 20
+
+
 def compute_citing_impact(openalex_id, exclude_self_cites=True,
-                          polite_delay=0.0):
+                          polite_delay=0.0,
+                          top_n=CITING_IMPACT_TOP_N_DEFAULT):
     """Citing-paper impact for an author, bucketed by the kind
     of work being cited (software / method / idea).
 
@@ -558,14 +610,24 @@ def compute_citing_impact(openalex_id, exclude_self_cites=True,
         }
     or None when the author ID is malformed.
 
-    Captures something h-index doesn't: which kind of contribution
-    propagates. Self-cite filtering happens server-side via
-    OpenAlex's filter negation. Pagination via cursor.
+    `top_n` caps the per-author cost: we sort works by
+    `cited_by_count` desc and only walk the citers of the top
+    `top_n`. The metric's bucket totals come from "citers of
+    this author's N most-cited papers" rather than "citers of
+    all their papers". Tail papers contribute proportionally
+    little to the metric anyway (Cowtan's Coot paper alone has
+    more citers than the next 20 combined); the cost saving is
+    5–10× on prolific authors. Setting `top_n=None` walks all
+    works (~700 API calls for laureate-tier careers).
 
-    Cost: O(N + M/200) API calls — 50–500 for typical careers,
-    ~minutes for laureate-tier ones. HTTP RTT alone keeps us
-    under the 10 req/s polite-pool limit; `polite_delay` defaults
-    to 0."""
+    `n_works` in each returned bucket reflects the *sampled*
+    work count, not the author's total — so a software-heavy
+    career capped at top_n=20 might show `software: n_works=10,
+    method: n_works=3, idea: n_works=7`. Total works for the
+    author is available separately via `fetch_author_profile`.
+
+    Self-cite filtering happens server-side via OpenAlex's
+    filter negation. Pagination via cursor."""
     aid = _normalize_author_id(openalex_id)
     if aid is None:
         return None
@@ -574,7 +636,7 @@ def compute_citing_impact(openalex_id, exclude_self_cites=True,
     # classify; everything else is for the metric. Cursor
     # pagination + minimal `select` keeps this to a couple of
     # calls for typical authors.
-    works = []  # list of (wid, kind)
+    works = []  # list of (wid, kind, cited_by_count)
     cursor = "*"
     while cursor:
         params = [
@@ -599,10 +661,19 @@ def compute_citing_impact(openalex_id, exclude_self_cites=True,
             if not wid.startswith("W"):
                 continue
             kind = classify_paper(w.get("title"))
-            works.append((wid, kind))
+            cbc = w.get("cited_by_count") or 0
+            works.append((wid, kind, cbc))
         cursor = (data.get("meta") or {}).get("next_cursor")
         if cursor:
             time.sleep(polite_delay)
+
+    # Top-N sampling: walk only the most-cited works. The metric is
+    # dominated by these anyway — for Cowtan, top-20 by citation
+    # count covers >95 % of all his citers. Skips a 5–10× cost
+    # multiplier on prolific authors at negligible accuracy loss.
+    if top_n is not None and len(works) > top_n:
+        works.sort(key=lambda t: t[2], reverse=True)
+        works = works[:top_n]
 
     # Initialise empty buckets so the return shape is consistent
     # even for authors with zero works.
@@ -611,7 +682,7 @@ def compute_citing_impact(openalex_id, exclude_self_cites=True,
         "method":   {"total": 0, "seen": set(), "n_works": 0},
         "idea":     {"total": 0, "seen": set(), "n_works": 0},
     }
-    for _wid, kind in works:
+    for _wid, kind, _cbc in works:
         buckets[kind]["n_works"] += 1
 
     if not works:
@@ -625,12 +696,12 @@ def compute_citing_impact(openalex_id, exclude_self_cites=True,
             "computed_at": today_iso(),
         }
 
-    # Step 2: for each Work, paginate through papers that cite it
-    # and add to that Work's bucket. Per-bucket dedup so a citing
-    # paper that hits multiple software works only counts once for
-    # software; the same paper can land in multiple buckets if it
-    # cites different kinds of works by this author.
-    for wid, kind in works:
+    # Step 2: for each sampled Work, paginate through papers that
+    # cite it and add to that Work's bucket. Per-bucket dedup so a
+    # citing paper that hits multiple software works only counts
+    # once for software; the same paper can land in multiple
+    # buckets if it cites different kinds of works by this author.
+    for wid, kind, _cbc in works:
         bucket = buckets[kind]
         seen = bucket["seen"]
         cursor = "*"

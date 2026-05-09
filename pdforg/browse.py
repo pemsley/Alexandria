@@ -28,6 +28,13 @@ from . import (index, edit_dialog, importer, metrics, sidecar, extract,
 
 LIBRARY_ROOT = prefs.get_library_root()
 
+# Headroom we want to leave on the daily OpenAlex quota for
+# foreground actions (your searches, popovers, the citation +
+# feed refreshers). When `X-RateLimit-Remaining` drops below
+# this, the heaviest background consumer (author-score
+# refresher) bows out for the session.
+_AUTHOR_SCORE_CREDIT_BUFFER = 1500
+
 
 # Display flags. Future plan: surface these via a "Display Options"
 # popover with Compact / Standard / Verbose presets. For now they are
@@ -1673,12 +1680,22 @@ class BrowserWindow(Adw.ApplicationWindow):
             if self._asc_stop.is_set():
                 return
             # This refresher is THE heaviest OpenAlex consumer in
-            # the app (compute_citing_impact = O(works × citers)
-            # API calls per author). When the daily-quota breaker
-            # trips we stop the whole walk for the session — no
-            # point burning cycles on calls we know will 429.
+            # the app (compute_citing_impact = O(top_n × citers
+            # per work) API calls per author). Two gates:
+            #
+            # 1. Hard breaker — daily quota exhausted, server is
+            #    rejecting us. Stop the whole walk for the session.
+            # 2. Soft budget — credits remaining below the buffer.
+            #    Stop walking so we leave headroom for foreground
+            #    actions and the lighter refreshers.
             if metrics.openalex_paused_until() > 0:
                 print("[author-score] OpenAlex paused, stopping refresher")
+                return
+            if metrics.openalex_credits_below(_AUTHOR_SCORE_CREDIT_BUFFER):
+                remaining = metrics.openalex_credits_remaining()
+                print("[author-score] OpenAlex credits at {}, below buffer "
+                      "{} — stopping refresher".format(
+                          remaining, _AUTHOR_SCORE_CREDIT_BUFFER))
                 return
             if aid in self._asc_failed_session:
                 continue

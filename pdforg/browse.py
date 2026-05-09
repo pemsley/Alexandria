@@ -149,6 +149,35 @@ def make_mark_badge(mark, labels=None):
     return frame
 
 
+def make_license_chip(label, url=None):
+    """A small chip showing the paper's license — green for CC family,
+    muted for publisher-copyright. Returns None when label is empty.
+    Tooltip carries the canonical CrossRef license URL when known."""
+    if not label:
+        return None
+    if label.startswith("CC-BY") or label in ("CC0", "Public Domain"):
+        # Permissive licenses — green so the reader's eye is drawn to
+        # "this one's freely reusable".
+        fg = "#338033"
+    else:
+        # Publisher-copyright. Muted so it sits in the background;
+        # the *absence* of a CC chip is the user-relevant signal.
+        fg = "#888888"
+    frame = Gtk.Frame()
+    frame.set_valign(Gtk.Align.CENTER)
+    lbl = Gtk.Label()
+    lbl.set_markup(
+        '<span foreground="{}" weight="bold"><small>{}</small></span>'
+        .format(fg, GLib.markup_escape_text(label)))
+    lbl.set_margin_start(5)
+    lbl.set_margin_end(5)
+    lbl.set_margin_top(1)
+    lbl.set_margin_bottom(1)
+    lbl.set_tooltip_text(url or label)
+    frame.set_child(lbl)
+    return frame
+
+
 def make_preprint_badge():
     """A small 'PRE' chip to flag preprint entries (no published
     version known)."""
@@ -561,6 +590,14 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     pre_chip = make_preprint_status(row, conn, parent_window)
     if pre_chip is not None:
         title_row.append(pre_chip)
+    try:
+        lic_label = row["license_label"] if "license_label" in row.keys() else None
+        lic_url   = row["license_url"]   if "license_url"   in row.keys() else None
+    except Exception:
+        lic_label, lic_url = None, None
+    lic_chip = make_license_chip(lic_label, lic_url)
+    if lic_chip is not None:
+        title_row.append(lic_chip)
     title = Gtk.Label()
     title.set_markup("<b>{}</b>".format(
         safe_pango_markup(row["title"] or "(untitled)")))
@@ -1555,6 +1592,21 @@ class BrowserWindow(Adw.ApplicationWindow):
                             rec["authors"] = oa_names
                     if cby:
                         rec["citations_by_year"] = cby
+                    # One-shot license fetch from CrossRef. Cheap
+                    # (one polite-pool call) and runs inside the
+                    # same stale-row pass as the citation refresh,
+                    # so a paper grows its license chip the first
+                    # time the refresher visits it. Skip if we
+                    # already have one — license rarely changes
+                    # post-publication.
+                    if not rec.get("license"):
+                        try:
+                            lic = metrics.fetch_license(doi)
+                            if lic:
+                                rec["license"] = lic
+                        except Exception as e:
+                            print("[citations] license fetch "
+                                  "failed for {}: {}".format(doi, e))
                     sidecar.write(row["sidecar_path"], rec)
                     # Push the updated record into the index too so the
                     # next reload picks up the new keywords.

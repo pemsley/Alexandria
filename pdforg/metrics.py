@@ -1114,6 +1114,103 @@ def _crossref_references(doi, limit=50):
     return out
 
 
+# Pattern → human label. Order matters: longer/more-specific
+# patterns first, so `by-nc-sa` doesn't match the `by` rule.
+_CC_LICENSE_PATTERNS = (
+    ("creativecommons.org/licenses/by-nc-nd",   "CC-BY-NC-ND"),
+    ("creativecommons.org/licenses/by-nc-sa",   "CC-BY-NC-SA"),
+    ("creativecommons.org/licenses/by-nc",      "CC-BY-NC"),
+    ("creativecommons.org/licenses/by-sa",      "CC-BY-SA"),
+    ("creativecommons.org/licenses/by-nd",      "CC-BY-ND"),
+    ("creativecommons.org/licenses/by",         "CC-BY"),
+    ("creativecommons.org/publicdomain/zero",   "CC0"),
+    ("creativecommons.org/publicdomain/mark",   "Public Domain"),
+)
+
+
+def classify_license_url(url):
+    """Map a CrossRef license URL to a compact human label
+    ("CC-BY-4.0", "CC-BY-NC", "© Elsevier", …) for the license
+    chip. Returns None on empty input."""
+    if not url:
+        return None
+    u = url.strip().lower()
+    if not u:
+        return None
+    # CC licenses carry a version segment (`/by/4.0/`); pull it out
+    # so the chip reads "CC-BY-4.0" rather than just "CC-BY".
+    for pattern, base in _CC_LICENSE_PATTERNS:
+        if pattern in u:
+            m = re.search(r"/(\d+\.\d+)(/|$)", u)
+            return "{}-{}".format(base, m.group(1)) if m else base
+    # Publisher proprietary licenses — `elsevier.com/tdm/userlicense`,
+    # `springernature.com/tdm`, `wiley.com/...`. Surface as
+    # "© <publisher>" so the chip is informative without listing
+    # every license URL ever minted.
+    for host_hint, label in (
+            ("elsevier.com",       "© Elsevier"),
+            ("springer.com",       "© Springer"),
+            ("springernature.com", "© Springer Nature"),
+            ("nature.com",         "© Nature"),
+            ("wiley.com",          "© Wiley"),
+            ("onlinelibrary.wiley", "© Wiley"),
+            ("acs.org",            "© ACS"),
+            ("rsc.org",            "© RSC"),
+            ("iucr.org",           "© IUCr"),
+            ("aps.org",            "© APS"),
+            ("ieee.org",           "© IEEE"),
+            ("oup.com",            "© OUP"),
+            ("cambridge.org",      "© Cambridge"),
+            ("sagepub.com",        "© SAGE"),
+            ("tandfonline.com",    "© T&F"),
+            ("aip.org",            "© AIP"),
+    ):
+        if host_hint in u:
+            return label
+    return "© Publisher"
+
+
+def fetch_license(doi):
+    """Fetch a CrossRef record for `doi` and extract a license entry
+    suitable for a card chip. Returns `{url, label, content_version}`
+    or None when CrossRef has no record / no license field.
+
+    CrossRef returns a `license` array on `/works/{doi}` — entries
+    have `URL`, `content-version` (`vor` = version of record, `am` =
+    accepted manuscript, `tdm` = text-data-mining, `unspecified`),
+    and `start.date-parts`. We pick the most authoritative entry —
+    `vor` first, then `unspecified`, then anything else — so the
+    chip reflects what a reader actually gets when they open the
+    publisher copy."""
+    if not doi:
+        return None
+    qdoi = urllib.parse.quote(doi, safe="")
+    url = "https://api.crossref.org/works/" + qdoi
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": CROSSREF_UA, "Accept": "application/json"},
+        timeout=15)
+    if not data:
+        return None
+    licenses = ((data.get("message") or {}).get("license")) or []
+    if not licenses:
+        return None
+    priority = {"vor": 0, "unspecified": 1, "am": 2, "tdm": 3}
+    licenses_sorted = sorted(
+        licenses,
+        key=lambda l: priority.get((l.get("content-version") or "").lower(), 9))
+    pick = licenses_sorted[0]
+    pick_url = (pick.get("URL") or "").strip() or None
+    label = classify_license_url(pick_url)
+    if not label:
+        return None
+    return {
+        "url":             pick_url,
+        "label":           label,
+        "content_version": pick.get("content-version") or None,
+    }
+
+
 def _crossref_count(doi):
     qdoi = urllib.parse.quote(doi, safe="")
     url = "https://api.crossref.org/works/" + qdoi

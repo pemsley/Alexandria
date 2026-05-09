@@ -463,18 +463,6 @@ need anything beyond the polite pool we already use; identifying
 ourselves via `mailto:` in `User-Agent` is in place via
 `extract.CROSSREF_USER_AGENT`.
 
-- **Use CrossRef's `reference` array as a third bibliography
-  source.** `/works/{doi}` returns a `reference` field when the
-  publisher deposited the bibliography (Springer, Wiley, IOP,
-  increasingly Elsevier). Each entry is structured: `{ key, DOI,
-  author, year, journal-title, volume, first-page, unstructured }`.
-  Insert this as a fallback between OpenAlex's `referenced_works`
-  (currently primary) and our PDF text parser (currently fallback)
-  in `metrics.fetch_references`. Bypasses every PDF parsing
-  hazard — column merges, hanging indents, year-paren splitter
-  bugs — for the meaningful fraction of papers where the
-  publisher deposited references. ~30 LOC. Highest impact.
-
 - **Crossmark / `update-to` chip.** `GET /works/{doi}/update`
   returns updates pointing to this paper. Render a chip on the
   card: "⚠ Correction issued (2023)", "⚠ Retracted",
@@ -483,21 +471,9 @@ ourselves via `mailto:` in `User-Agent` is in place via
   paper, runs during the existing citation-refresh pass. ~50 LOC
   + chip rendering.
 
-- **Preprint↔published-version via `relation` field.** Replace
-  `metrics.find_published_version`'s OpenAlex title-search
-  heuristic with CrossRef's authoritative `relation:
-  { is-preprint-of, is-version-of, has-version }` field on the
-  preprint's own DOI record. Cheaper (no search), more accurate
-  (publisher-deposited). ~20 LOC, simplifies an existing path.
-
 - **Funder chip.** `funder: [{ name, award: [...] }]` on
   `/works/{doi}`. Card chip "Funded by NIH R01-…". Quick win for
   biomedical users. ~10 LOC + chip rendering.
-
-- **License chip.** `license: [{ URL, content-version, start }]`.
-  Coloured chip — green for CC-BY, amber for paywalled, etc.
-  Distinguishes OA vs paywalled at a glance without opening the
-  paper. ~10 LOC + chip rendering.
 
 - **Honour `X-Rate-Limit-Limit` / `X-Rate-Limit-Interval`
   headers.** CrossRef returns these on every response and asks

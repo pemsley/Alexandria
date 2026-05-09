@@ -97,7 +97,9 @@ CREATE TABLE IF NOT EXISTS papers (
     authorships_json TEXT,
     citations_by_year_json TEXT,
     published_version_json TEXT,
-    is_supplementary INTEGER DEFAULT 0
+    is_supplementary INTEGER DEFAULT 0,
+    license_label TEXT,
+    license_url   TEXT
 );
 """
 
@@ -142,6 +144,10 @@ def _migrate(conn):
         conn.execute("ALTER TABLE papers ADD COLUMN highlights_text TEXT")
     if "comments_text" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN comments_text TEXT")
+    if "license_label" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN license_label TEXT")
+    if "license_url" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN license_url TEXT")
     conn.commit()
     _reencode_unicode_columns(conn)
     _backfill_highlight_text(conn)
@@ -696,6 +702,9 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
     first_author, last_author = _derive_first_last_author(record)
     h_blob = _highlights_blob(record)
     c_blob = _comments_blob(record)
+    lic = record.get("license") or {}
+    license_label = lic.get("label") if isinstance(lic, dict) else None
+    license_url = lic.get("url") if isinstance(lic, dict) else None
     conn.execute("""
         INSERT INTO papers
             (pdf_path, sidecar_path, thumb_path, title, authors_json,
@@ -705,8 +714,9 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
              first_author, last_author, authorships_json,
              citations_by_year_json, published_version_json,
              is_supplementary,
-             highlights_text, comments_text)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             highlights_text, comments_text,
+             license_label, license_url)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(pdf_path) DO UPDATE SET
             sidecar_path=excluded.sidecar_path,
             thumb_path=excluded.thumb_path,
@@ -732,7 +742,9 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
             published_version_json=excluded.published_version_json,
             is_supplementary=excluded.is_supplementary,
             highlights_text=excluded.highlights_text,
-            comments_text=excluded.comments_text
+            comments_text=excluded.comments_text,
+            license_label=excluded.license_label,
+            license_url=excluded.license_url
     """, (pdf_path, sidecar_path, thumb_path,
           record.get("title"), authors_json,
           record.get("year"), record.get("doi"), record.get("journal"),
@@ -747,7 +759,8 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
           first_author, last_author, authorships_json,
           cby_json, pv_json,
           1 if record.get("is_supplementary") else 0,
-          h_blob, c_blob))
+          h_blob, c_blob,
+          license_label, license_url))
     conn.commit()
 
 

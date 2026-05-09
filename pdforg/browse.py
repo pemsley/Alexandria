@@ -992,6 +992,15 @@ class BrowserWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._feed_refresher,
                          daemon=True).start()
 
+        # One-shot license backfill. CrossRef-only, so it doesn't
+        # touch the OpenAlex budget; walks every paper that has a
+        # DOI but no cached `license_label` and fills the chip in.
+        # Independent of the 30-day citation-refresh window so
+        # recently-refreshed libraries still pick up license info.
+        self._lic_stop = threading.Event()
+        threading.Thread(target=self._license_backfill,
+                         daemon=True).start()
+
         # GFileMonitor-based library watcher: react to external file
         # changes in LIBRARY_ROOT (drops via Files / cp / sync tools,
         # plus sidecar rewrites from `pdforg-import --refresh`).
@@ -1628,6 +1637,59 @@ class BrowserWindow(Adw.ApplicationWindow):
         self._reload(self.search.get_text() or None)
         return False
 
+    def _license_backfill(self, initial_delay_seconds=10.0,
+                          pause_seconds=3.0):
+        """One-shot pass that fills `license_label` / `license_url`
+        for every paper with a DOI but no cached license. Uses
+        CrossRef only, so it doesn't compete with the OpenAlex
+        budget. Stops cleanly via `_lic_stop`; daemon thread, so
+        closing the window kills it anyway."""
+        if self._lic_stop.wait(initial_delay_seconds):
+            return
+        try:
+            rows = index.rows_missing_license(self.conn)
+        except Exception as e:
+            print("[license] index lookup failed:", e)
+            return
+        if not rows:
+            return
+        filled = 0
+        for row in rows:
+            if self._lic_stop.is_set():
+                return
+            doi = row.get("doi")
+            if not doi:
+                continue
+            try:
+                lic = metrics.fetch_license(doi)
+            except Exception as e:
+                print("[license] fetch failed for {}: {}".format(doi, e))
+                lic = None
+            if not lic:
+                if self._lic_stop.wait(pause_seconds):
+                    return
+                continue
+            try:
+                rec = sidecar.read(row["sidecar_path"])
+                rec["license"] = lic
+                sidecar.write(row["sidecar_path"], rec)
+                th = row.get("thumb_path")
+                mtime = os.path.getmtime(row["sidecar_path"])
+                index.upsert(self.conn, row["pdf_path"],
+                             row["sidecar_path"], th, rec, mtime)
+                filled += 1
+            except Exception as e:
+                print("[license] sidecar write failed for {}: {}"
+                      .format(row.get("pdf_path"), e))
+            if self._lic_stop.wait(pause_seconds):
+                return
+        if filled:
+            print("[license] backfilled {} row(s)".format(filled))
+            # Repaint cards so newly-filled chips appear without
+            # the user having to scroll or reload.
+            GLib.idle_add(lambda: (self._reload(self.search.get_text() or None),
+                                    False)[1])
+
     def _feed_refresher(self, initial_delay_seconds=20.0,
                         check_interval_seconds=900.0,
                         per_sub_pause_seconds=2.0,
@@ -1706,8 +1768,9 @@ class BrowserWindow(Adw.ApplicationWindow):
                 pass
         return False
 
-    def _author_score_refresher(self, initial_delay_seconds=60.0,
-                                pause_seconds=30.0):
+    def _author_score_refresher(self, initial_delay_seconds=180.0,
+                                pause_seconds=60.0,
+                                per_call_delay_seconds=0.2):
         """Slowly pre-fill the `author_scores` cache for every
         distinct OpenAlex author across the library, so the
         author-dialog's citing-impact chip resolves from cache
@@ -1752,8 +1815,17 @@ class BrowserWindow(Adw.ApplicationWindow):
             if aid in self._asc_failed_session:
                 continue
             try:
+                # Capped at ~5 req/s within one author's compute
+                # (polite_delay=0.2). OpenAlex's polite pool tops
+                # out at 10 req/s, and we kept bursting through
+                # that on prolific authors — the per-minute Cloud-
+                # flare throttle then 429'd us with Retry-After
+                # in the hundreds of seconds. Half the rate keeps
+                # us under the burst ceiling with headroom for
+                # foreground actions running on the same pool.
                 result = metrics.compute_citing_impact(
-                    aid, exclude_self_cites=True, polite_delay=0.0)
+                    aid, exclude_self_cites=True,
+                    polite_delay=per_call_delay_seconds)
             except Exception as e:
                 print("author-score refresher: compute failed for {}: {}"
                       .format(aid, e))
@@ -2427,6 +2499,10 @@ class BrowserWindow(Adw.ApplicationWindow):
             pass
         try:
             self._feed_stop.set()
+        except Exception:
+            pass
+        try:
+            self._lic_stop.set()
         except Exception:
             pass
         try:

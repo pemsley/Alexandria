@@ -400,6 +400,66 @@ def set_author_score(conn, openalex_id, result, self_excluded=True):
     conn.commit()
 
 
+CREATE_AUTHOR_WORKS_CACHE = """
+CREATE TABLE IF NOT EXISTS author_works_cache (
+    openalex_id  TEXT NOT NULL,
+    sort_key     TEXT NOT NULL,
+    works_json   TEXT NOT NULL,
+    computed_at  TEXT NOT NULL,
+    PRIMARY KEY (openalex_id, sort_key)
+);
+"""
+
+
+# Days a cached works-list row is considered fresh. Shorter than
+# `author_scores` because the most-recent ordering picks up new
+# publications faster than citation tallies move.
+AUTHOR_WORKS_TTL_DAYS = 7
+
+
+def get_author_works_cache(conn, openalex_id, sort_key):
+    """Return a cached works list as `{works, computed_at}` or None
+    when there's no row. Freshness is the caller's call."""
+    if not openalex_id or not sort_key:
+        return None
+    row = conn.execute(
+        "SELECT works_json, computed_at FROM author_works_cache "
+        "WHERE openalex_id = ? AND sort_key = ?",
+        (openalex_id, sort_key)).fetchone()
+    if row is None:
+        return None
+    try:
+        works = json.loads(row["works_json"])
+    except Exception:
+        return None
+    return {"works": works, "computed_at": row["computed_at"]}
+
+
+def set_author_works_cache(conn, openalex_id, sort_key, works):
+    """Persist a works list for (`openalex_id`, `sort_key`)."""
+    if not openalex_id or not sort_key or works is None:
+        return
+    conn.execute(
+        "INSERT OR REPLACE INTO author_works_cache "
+        "(openalex_id, sort_key, works_json, computed_at) "
+        "VALUES (?, ?, ?, ?)",
+        (openalex_id, sort_key,
+         json.dumps(works, ensure_ascii=False),
+         date.today().isoformat()))
+    conn.commit()
+
+
+def clear_author_works_cache(conn, openalex_id):
+    """Drop every cached sort for this author. Hook the refresh
+    button up to this so the next fetch goes to OpenAlex."""
+    if not openalex_id:
+        return
+    conn.execute(
+        "DELETE FROM author_works_cache WHERE openalex_id = ?",
+        (openalex_id,))
+    conn.commit()
+
+
 CREATE_SUBSCRIPTIONS = """
 CREATE TABLE IF NOT EXISTS subscriptions (
     id INTEGER PRIMARY KEY,
@@ -468,6 +528,7 @@ def open_db(path=DEFAULT_DB_PATH):
     _migrate(conn)
     conn.executescript(CREATE_INDEXES)
     conn.executescript(CREATE_AUTHOR_SCORES)
+    conn.executescript(CREATE_AUTHOR_WORKS_CACHE)
     conn.executescript(CREATE_SUBSCRIPTIONS)
     _migrate_discovered(conn)
     _ensure_fts(conn)
@@ -780,6 +841,22 @@ def stale_citation_rows(conn, max_age_days=30, limit=None):
         sql += " LIMIT ?"
         params.append(int(limit))
     return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def rows_missing_license(conn, limit=None):
+    """Rows with a DOI but no `license_label` cached. Drives the
+    one-shot license-backfill pass in the browser — independent of
+    the citation refresh window so a recently-refreshed library
+    still picks up license chips without waiting 30 days."""
+    sql = """
+        SELECT * FROM papers
+        WHERE doi IS NOT NULL AND doi <> ''
+          AND (license_label IS NULL OR license_label = '')
+        ORDER BY added_date ASC
+    """
+    if limit:
+        sql += " LIMIT {}".format(int(limit))
+    return [dict(r) for r in conn.execute(sql).fetchall()]
 
 
 def update_citations(conn, pdf_path, count, source, fetched_iso):

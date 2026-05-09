@@ -94,6 +94,21 @@ def _author_score_is_fresh(cached):
     return age_days < index.AUTHOR_SCORE_TTL_DAYS
 
 
+def _author_works_cache_is_fresh(cached):
+    """True when a cached `author_works_cache` row is younger than
+    its TTL. Stale rows are dropped on read so the next switch
+    fetches anew."""
+    when = (cached or {}).get("computed_at")
+    if not when:
+        return False
+    try:
+        d = datetime.date.fromisoformat(when[:10])
+    except ValueError:
+        return False
+    age_days = (datetime.date.today() - d).days
+    return age_days < index.AUTHOR_WORKS_TTL_DAYS
+
+
 # Venue chips. Some OpenAlex `works` results are legitimately
 # different in nature from a journal paper (Zenodo uploads can be
 # datasets, slides, code archives, or grey-literature drafts; JoVE
@@ -472,6 +487,20 @@ class AuthorWorksWindow(Gtk.Window):
         self._sort_cited_btn.connect("toggled", self._on_sort_toggled, "cited")
         sort_row.append(self._sort_recent_btn)
         sort_row.append(self._sort_cited_btn)
+
+        # Refresh button — drops both sort caches for this author
+        # and re-fetches. Sits to the right of the segmented sort
+        # control with a small gap; icon-only so it doesn't compete
+        # for attention with the sort labels.
+        refresh_btn = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+        refresh_btn.set_tooltip_text(
+            "Re-fetch works from OpenAlex (clears the 7-day cache "
+            "for this author).")
+        refresh_btn.add_css_class("flat")
+        refresh_btn.set_margin_start(8)
+        refresh_btn.connect("clicked", self._on_refresh_works)
+        sort_row.append(refresh_btn)
+
         outer.append(sort_row)
 
         # --- Status + results list ------------------------------------
@@ -518,12 +547,35 @@ class AuthorWorksWindow(Gtk.Window):
 
     def _do_fetch(self, orcid, oa_id):
         profile = metrics.fetch_author_profile(orcid=orcid, openalex_id=oa_id)
-        works = metrics.fetch_works_by_author(
-            orcid=orcid, openalex_id=oa_id, limit=50,
-            sort=self._works_sort)
+        works = self._cached_or_fetch_works(orcid, oa_id, self._works_sort)
         coauths = metrics.fetch_coauthors(
             orcid=orcid, openalex_id=oa_id, limit=12)
         GLib.idle_add(self._apply_results, profile, works, coauths)
+
+    def _cached_or_fetch_works(self, orcid, oa_id, sort_key):
+        """Try the works-list cache first; on hit and fresh, return
+        it. Otherwise hit OpenAlex and persist. Cache is keyed off
+        the OpenAlex author ID — ORCID-only authors miss the cache,
+        but `fetch_works_by_author` then yields the OpenAlex ID via
+        its results and we can't backfill cleanly here. Acceptable
+        v1: ORCID-only callers always go to the API."""
+        if oa_id:
+            try:
+                cached = index.get_author_works_cache(
+                    self.conn, oa_id, sort_key)
+            except Exception:
+                cached = None
+            if cached and _author_works_cache_is_fresh(cached):
+                return cached["works"]
+        works = metrics.fetch_works_by_author(
+            orcid=orcid, openalex_id=oa_id, limit=50, sort=sort_key)
+        if oa_id and works:
+            try:
+                index.set_author_works_cache(
+                    self.conn, oa_id, sort_key, works)
+            except Exception as e:
+                print("[author_works] cache write failed:", e)
+        return works
 
     # --- Citing-impact (cached) ----------------------------------------
 
@@ -617,6 +669,21 @@ class AuthorWorksWindow(Gtk.Window):
 
     # --- Sort toggle ---------------------------------------------------
 
+    def _on_refresh_works(self, _btn):
+        """Drop the cache for this author and re-fetch the current
+        sort. The other sort's cache is dropped too, so flipping
+        the toggle after a refresh also goes to OpenAlex."""
+        oa_id = self.authorship.get("openalex_id")
+        if oa_id:
+            try:
+                index.clear_author_works_cache(self.conn, oa_id)
+            except Exception as e:
+                print("[author_works] cache clear failed:", e)
+        self.list_box_clear()
+        self.status.set_markup(
+            "<span alpha='75%'>Refreshing from OpenAlex…</span>")
+        self._spawn_works_only_fetch()
+
     def _on_sort_toggled(self, btn, sort_key):
         # Only react to the *activation* event — the deactivated peer
         # also fires "toggled".
@@ -649,9 +716,7 @@ class AuthorWorksWindow(Gtk.Window):
             daemon=True).start()
 
     def _do_works_only_fetch(self, orcid, oa_id):
-        works = metrics.fetch_works_by_author(
-            orcid=orcid, openalex_id=oa_id, limit=50,
-            sort=self._works_sort)
+        works = self._cached_or_fetch_works(orcid, oa_id, self._works_sort)
         GLib.idle_add(self._apply_works_only, works)
 
     def _apply_works_only(self, works):

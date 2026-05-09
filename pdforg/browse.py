@@ -3231,16 +3231,35 @@ class BrowserWindow(Adw.ApplicationWindow):
         for _key, label in self._SORT_KEY_VALUES:
             sl.append(label)
         dd = Gtk.DropDown(model=sl)
-        dd.set_selected(0)  # added_date
+        # Restore the last-used sort key from the prefs file
+        # (default: added_date / index 0). Set BEFORE connect so
+        # the restore doesn't fire a spurious notify::selected and
+        # trigger a no-op reload.
+        stored = prefs.load().get("sort_key")
+        stored_idx = 0
+        if stored:
+            for i, (k, _label) in enumerate(self._SORT_KEY_VALUES):
+                if k == stored:
+                    stored_idx = i
+                    break
+        dd.set_selected(stored_idx)
         dd.set_tooltip_text("Sort by")
         dd.connect("notify::selected", self._on_sort_changed)
         return dd
 
     def _build_sort_dir_btn(self):
         btn = Gtk.ToggleButton()
-        btn.set_icon_name("view-sort-descending-symbolic")
-        btn.set_active(True)  # default: DESC
-        btn.set_tooltip_text("Descending (click for ascending)")
+        # Active = DESC (matches the icon). Restore from prefs;
+        # default DESC keeps newly-imported papers at row 0.
+        stored = prefs.load().get("sort_direction")
+        is_desc = (stored != "ASC")  # treat anything not 'ASC' as DESC
+        btn.set_active(is_desc)
+        btn.set_icon_name(
+            "view-sort-descending-symbolic" if is_desc
+            else "view-sort-ascending-symbolic")
+        btn.set_tooltip_text(
+            "Descending (click for ascending)" if is_desc
+            else "Ascending (click for descending)")
         btn.connect("toggled", self._on_sort_dir_toggled)
         return btn
 
@@ -3252,7 +3271,21 @@ class BrowserWindow(Adw.ApplicationWindow):
         direction = "DESC" if self.sort_dir_btn.get_active() else "ASC"
         return key, direction
 
+    def _persist_sort_choice(self):
+        """Stash the current sort key + direction into the prefs
+        file. Best-effort — failure to write doesn't matter for
+        this session, the choice is already in-memory."""
+        key, direction = self._current_sort()
+        try:
+            data = prefs.load()
+            data["sort_key"] = key
+            data["sort_direction"] = direction
+            prefs.save(data)
+        except Exception as e:
+            print("prefs: could not persist sort choice:", e)
+
     def _on_sort_changed(self, _dd, _pspec):
+        self._persist_sort_choice()
         self._reload(self.search.get_text() or None)
 
     def _on_sort_dir_toggled(self, btn):
@@ -3262,6 +3295,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         else:
             btn.set_icon_name("view-sort-ascending-symbolic")
             btn.set_tooltip_text("Ascending (click for descending)")
+        self._persist_sort_choice()
         self._reload(self.search.get_text() or None)
 
     def _refresh_mark_filter_dd(self):

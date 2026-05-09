@@ -117,7 +117,15 @@ def _is_openalex_url(url):
     return "openalex.org" in (url or "")
 
 
-def _http_get_json(url, headers, timeout):
+class OpenAlexQuotaExhausted(Exception):
+    """Raised by `_http_get_json` when a persistent HTTP 429 with a
+    long Retry-After indicates the daily quota is exhausted, and the
+    caller asked to be told (raise_on_quota=True). Interactive code
+    paths use this to show a clear status message instead of an
+    empty-results page."""
+
+
+def _http_get_json(url, headers, timeout, raise_on_quota=False):
     """GET `url`, return parsed JSON dict, or None on persistent failure.
 
     Retries on HTTP 429 (Retry-After honoured, capped) and 5xx
@@ -126,9 +134,19 @@ def _http_get_json(url, headers, timeout):
     Honours the OpenAlex circuit breaker — once tripped by a
     hard 429 (Retry-After > 60s), subsequent OpenAlex calls fail
     instantly until the breaker times out. CrossRef and Unpaywall
-    are unaffected."""
+    are unaffected.
+
+    If `raise_on_quota` is True, a final 429 (or a call made while
+    the OpenAlex breaker is already open) raises
+    `OpenAlexQuotaExhausted` instead of returning None, so
+    interactive callers can distinguish quota exhaustion from
+    "no data"."""
     # Circuit-breaker gate: bail before opening a socket.
     if _is_openalex_url(url) and _openalex_paused_until > time.monotonic():
+        if raise_on_quota:
+            raise OpenAlexQuotaExhausted(
+                "OpenAlex daily quota exhausted "
+                "(HTTP 429 — try again later)")
         return None
     attempt = 0
     is_oa_url = _is_openalex_url(url)
@@ -147,6 +165,10 @@ def _http_get_json(url, headers, timeout):
                 _note_openalex_credits(e.headers)
             retry_ok = e.code == 429 or 500 <= e.code < 600
             if not retry_ok or attempt >= _HTTP_MAX_RETRIES:
+                if e.code == 429 and raise_on_quota:
+                    raise OpenAlexQuotaExhausted(
+                        "OpenAlex daily quota exhausted "
+                        "(HTTP 429 — try again later)")
                 return None
             if e.code == 429:
                 ra = e.headers.get("Retry-After") if e.headers else None
@@ -159,10 +181,14 @@ def _http_get_json(url, headers, timeout):
                 # call immediately. No point sleeping 30 s, the
                 # next call will 429 too.
                 if (delay > _HTTP_RETRY_AFTER_GIVE_UP_SECONDS
-                        and _is_openalex_url(url)):
+                        and is_oa_url):
                     _trip_openalex_breaker(delay)
                     print("[metrics] OpenAlex rate-limited, pausing "
                           "for {:.0f} s".format(delay))
+                    if raise_on_quota:
+                        raise OpenAlexQuotaExhausted(
+                            "OpenAlex daily quota exhausted "
+                            "(HTTP 429 — try again later)")
                     return None
                 delay = min(max(delay, 0.5), _HTTP_RETRY_AFTER_CAP_SECONDS)
             else:
@@ -2112,7 +2138,8 @@ def search_authors(name=None, institution=None, orcid=None, limit=15):
     data = _http_get_json(
         url,
         headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
-        timeout=20)
+        timeout=20,
+        raise_on_quota=True)
     if not data:
         return []
     out = []
@@ -2197,7 +2224,8 @@ def search_works(query, limit=25, sort="relevance", year_min=None,
     data = _http_get_json(
         url,
         headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
-        timeout=20)
+        timeout=20,
+        raise_on_quota=True)
     if not data:
         return []
     out = []

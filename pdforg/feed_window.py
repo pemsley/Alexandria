@@ -508,6 +508,11 @@ class FeedWindow(Adw.Window):
         outer.set_margin_top(6)
         outer.set_margin_bottom(6)
 
+        # Is this article already in the library? Drives the
+        # "In library" badge in the title row and swaps the
+        # "Add" button for "Show in library" below.
+        existing = self._existing_in_library(art.get("doi"))
+
         # Title row: title + optional kind chip (Correction / News /
         # Editorial / etc.). Title is selectable so the user can
         # copy-paste it into a chat for triage.
@@ -558,6 +563,17 @@ class FeedWindow(Adw.Window):
                     GLib.markup_escape_text(oa_lbl)))
             oa_badge.set_valign(Gtk.Align.START)
             title_row.append(oa_badge)
+
+        if existing:
+            lib_badge = Gtk.Label()
+            lib_badge.set_markup(
+                "<span size='small' foreground='#2a7a2a'>"
+                "<b>✓ In library</b></span>")
+            lib_badge.set_valign(Gtk.Align.START)
+            lib_badge.set_tooltip_text(
+                "This DOI is already imported. Click "
+                "“Show in library” to jump to the card.")
+            title_row.append(lib_badge)
 
         outer.append(title_row)
 
@@ -617,12 +633,29 @@ class FeedWindow(Adw.Window):
             view_btn.connect("clicked",
                              lambda _b, a=art: self._on_view(a))
             btn_row.append(view_btn)
-            # The "Add" affordance is meant for adding research to
-            # the library. Skip it for News / Editorial / Comment /
-            # Correspondence / Correction / Retracted / Concern —
-            # the kind-chip's presence is the signal that this
-            # isn't a primary research paper worth filing.
-            if chip is None:
+            # If the DOI is already in the library, the right
+            # action is "go to the card" — don't offer Add (which
+            # would just dedup-fail) and don't hide the affordance
+            # entirely. The kind-chip filter still applies: News /
+            # Editorial / Correction rows never grow a library
+            # affordance because they aren't filed as papers.
+            if existing:
+                show_btn = Gtk.Button(label="Show in library")
+                show_btn.add_css_class("flat")
+                show_btn.set_tooltip_text(
+                    "Jump to this paper in the main library window.")
+                show_btn.connect(
+                    "clicked",
+                    lambda _b, p=existing.get("pdf_path"):
+                        self._on_show_in_library(p))
+                btn_row.append(show_btn)
+            elif chip is None:
+                # The "Add" affordance is meant for adding research
+                # to the library. Skip it for News / Editorial /
+                # Comment / Correspondence / Correction / Retracted
+                # / Concern — the kind-chip's presence is the signal
+                # that this isn't a primary research paper worth
+                # filing.
                 add_btn = Gtk.Button(label="Add")
                 add_btn.add_css_class("flat")
                 add_btn.set_tooltip_text(
@@ -636,6 +669,29 @@ class FeedWindow(Adw.Window):
         frame = Gtk.Frame()
         frame.set_child(outer)
         return frame
+
+    def _existing_in_library(self, doi):
+        """Return the index row dict for a paper already in the
+        library matching this DOI, or None. Used to render the
+        "In library" badge and swap the Add button on the card."""
+        if not doi:
+            return None
+        if not hasattr(self.parent_window, "find_existing_by_doi"):
+            return None
+        try:
+            return self.parent_window.find_existing_by_doi(doi)
+        except Exception:
+            return None
+
+    def _on_show_in_library(self, pdf_path):
+        """Focus the existing card in the BrowserWindow."""
+        if not pdf_path:
+            return
+        try:
+            self.parent_window.present()
+            self.parent_window.show_paper_in_library(pdf_path)
+        except Exception:
+            pass
 
     def _on_view(self, art):
         """Open the article's DOI URL in the user's default
@@ -682,6 +738,12 @@ class FeedWindow(Adw.Window):
                 self.parent_window._toast(message, timeout=5)
             except Exception:
                 pass
+            # Re-render the feed so the just-added row picks up the
+            # "In library" badge and the Add button swaps to
+            # "Show in library". Marshal back to the GTK thread —
+            # `on_done` may be called from a worker.
+            if success:
+                GLib.idle_add(self._refresh_feed)
 
         self.parent_window.add_reference_from_viewer(
             br, also_get_pdf=also_get_pdf, on_done=on_done)

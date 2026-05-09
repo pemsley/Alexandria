@@ -510,11 +510,54 @@ ourselves via `mailto:` in `User-Agent` is in place via
   emits similar headers. ~40 LOC in a new `_polite_get_json`
   wrapper around `_http_get_json`.
 
+## OpenAlex client
+
+- **Migrate to PyAlex for all OpenAlex HTTP.** Today `metrics.py`
+  has 17 OpenAlex callsites, each driving `_http_get_json`
+  through a hand-rolled retry/throttle loop. PyAlex
+  (`docs.openalex.org` reference client, see entry in
+  `chat-stuff/competitors.md`) does the same job better in the
+  parts that matter:
+    - **Proactive throttling** based on `X-RateLimit-Remaining`
+      rather than only reacting to a 429 after the fact. Our
+      circuit breaker stops the bleeding; PyAlex stops the
+      cause.
+    - **Cursor pagination as a generator** instead of the manual
+      while-cursor loop we repeat in every helper.
+    - **Filter/sort DSL** — `Works().filter(...).sort(...)`
+      replaces `urlencode([("filter", ...), ("sort", ...)])`.
+    - **Absorbs upstream API churn** (e.g. the credits-USD
+      pricing introduced this week) as part of its maintenance
+      cycle. We won't notice when it happens.
+
+  **Scope: full migration**, not a half-step. Doing only the
+  heaviest helper (`compute_citing_impact`) leaves us with two
+  patterns to maintain forever; the win comes from one consistent
+  shape across `metrics.py`.
+
+  **What changes:**
+    - Add `pyalex` to `requirements-flatpak.txt` /
+      `python-deps.yaml`. Pure-Python on PyPI, no transitive
+      pain expected.
+    - Rewrite `metrics.fetch_*` helpers around PyAlex's
+      typed objects. Public signatures of each helper stay the
+      same so call sites in `browse.py` / `feed_window.py` /
+      `author_works.py` / `viewer.py` don't change.
+    - Adapt our session circuit breaker into PyAlex's retry
+      hook (or wrap PyAlex calls in a thin guard that checks
+      `openalex_paused_until()` first).
+    - Keep CrossRef and Unpaywall paths on the existing
+      `_http_get_json` — they're roughly half our HTTP work and
+      PyAlex doesn't help there.
+
+  **Why not yet:** real refactor surface across ~15 helpers; want
+  the daily quota back so each migrated helper can be verified
+  live before the next is touched. Bring up after midnight UTC
+  some evening when there's a clear session to spend.
+
 ## Sorting & filtering
 - Tag chips + filter sidebar
 - FTS to include mark labels
-- Persist sort choice across sessions (currently session-only —
-  default `added_date DESC` is restored on every launch).
 
 ## Export
 - BibTeX export (single, filtered, whole library).

@@ -530,27 +530,31 @@ ourselves via `mailto:` in `User-Agent` is in place via
 
 ## Watcher
 - Recursive subdir watching (currently flat on `LIBRARY_ROOT`)
-- **Clean process shutdown on window close.** Symptom: closing
-  the browser window often leaves the Python process alive in the
-  background (`ps aux | grep pdforg-browse` shows zombies from
-  earlier sessions). They keep file descriptors open on
-  `~/.local/state/Alexandria/library.db`, which means the next
-  launch of Alexandria fails to acquire a WAL lock and aborts
-  with "disk I/O error" (now caught and surfaced as a friendly
-  dialog, but the underlying problem still requires `pkill -f
-  pdforg-browse` to recover). Likely cause: the
-  `LibraryWatcher.GFileMonitor` thread or one of the background
-  refresh threads (citation refresh, cited-by fetch, cache write)
-  is keeping the GLib main loop / Python interpreter alive after
-  the window's close-request fires. Fix candidates:
-    - Wire `BrowserWindow._on_close_request` to explicitly
-      `watcher.stop()` and join any short-lived background threads
-      with a small timeout before returning False.
-    - Mark all worker threads as `daemon=True` (some already are;
-      audit them all).
-    - On Adw.Application's `shutdown` signal, run a final
-      `conn.close()` so the DB lock is released cleanly even if a
-      thread is still finishing.
+- **Clean process shutdown on window close.** Largely done; one
+  refinement open. Original symptom: closing the browser window
+  often left the Python process alive in the background
+  (`ps aux | grep pdforg-browse` showed zombies from earlier
+  sessions). They kept file descriptors open on
+  `~/.local/state/Alexandria/library.db`, which meant the next
+  launch of Alexandria failed to acquire a WAL lock and aborted
+  with "disk I/O error". What's now in place:
+    - **All threads audited to `daemon=True`.** browse,
+      feed_window, viewer, author_works, discover, watcher.
+    - **`Adw.Application.shutdown`** is wired to
+      `PRAGMA wal_checkpoint(TRUNCATE)` + `conn.close()` so the
+      WAL gets flipped cleanly even if a thread was mid-write
+      when killed. Fires after the last window closes and
+      before the interpreter exits.
+    - **`_on_close_request`** sets stop events on all three
+      refreshers (`_cit_stop`, `_asc_stop`, `_feed_stop`) and
+      calls `library_watcher.stop()`.
+
+  **Still open:** explicit thread join-with-timeout in
+  `_on_close_request`. Daemon threads are killed at interpreter
+  exit; a brief 50–100 ms join would give them a chance to finish
+  any in-progress sidecar write before the conn closes. Would
+  need to store thread references on `self.` — refactor cost only
+  worth paying if the zombie symptom recurs.
 
 ## Multi-host / NFS
 See `docs/design/database-and-nfs.md` for the full concurrency

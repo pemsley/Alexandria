@@ -641,9 +641,10 @@ fresh papers.
 ### Communication with Claude
 
   - How do we get Claude in the loop between our client and
-    OpenAlex? Look at Projects that use OpenAlex and provide (say)
-    an MCP gateway. See CiteLens and openalex-research-mcp and
-    Scientific-Papers-MCP.
+    OpenAlex? Look at projects that use OpenAlex and provide an
+    MCP gateway. Verified examples in
+    `chat-stuff/competitors.md` (long-tail section):
+    `openalex-research-mcp` and `Scientific-Papers-MCP`.
 
 ## Speculative / maybe-never
 

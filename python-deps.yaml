@@ -1,4 +1,4 @@
-# Generated with flatpak-pip-generator --requirements-file requirements-flatpak.txt --output python-deps --yaml
+# Generated with flatpak-pip-generator --requirements-file requirements-flatpak.txt --output python-deps --yaml --prefer-wheels lxml --runtime org.gnome.Sdk//50
 name: python-deps
 buildsystem: simple
 build-commands: []
@@ -22,35 +22,8 @@ modules:
         --prefix=${FLATPAK_DEST} "pypdf>=4.0" --no-build-isolation
     sources:
       - type: file
-        url: https://files.pythonhosted.org/packages/0c/d6/1d5c60cc17bbdf37c1552d9c03862fc6d32c5836732a0415b2d637edc2d0/pypdf-6.10.2-py3-none-any.whl
-        sha256: aa53be9826655b51c96741e5d7983ca224d898ac0a77896e64636810517624aa
-  - name: python3-pdfx
-    buildsystem: simple
-    build-commands:
-      - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
-        --prefix=${FLATPAK_DEST} "pdfx>=1.4" --no-build-isolation
-    sources:
-      - type: file
-        url: https://files.pythonhosted.org/packages/eb/56/b1ba7935a17738ae8453301356628e8147c79dbb825bcbc73dc7401f9846/cffi-2.0.0.tar.gz
-        sha256: 44d1b5909021139fe36001ae048dbdde8214afa20200eda0f64c068cac5d5529
-      - type: file
-        url: https://files.pythonhosted.org/packages/19/c7/fa589626997dd07bd87d9269342ccb74b1720384a4d739a1872bd84fbe68/chardet-4.0.0-py2.py3-none-any.whl
-        sha256: f864054d66fd9118f2e67044ac8981a54775ec5b67aed0441892edb553d21da5
-      - type: file
-        url: https://files.pythonhosted.org/packages/9f/a9/db8f313fdcd85d767d4973515e1db101f9c71f95fced83233de224673757/cryptography-48.0.0.tar.gz
-        sha256: 5c3932f4436d1cccb036cb0eaef46e6e2db91035166f1ad6505c3c9d5a635920
-      - type: file
-        url: https://files.pythonhosted.org/packages/93/f3/4fec7dabe8802ebec46141345bf714cd1fc7d93cb74ddde917e4b6d97d88/pdfminer.six-20201018-py3-none-any.whl
-        sha256: d78877ba8d8bf957f3bb636c4f73f4f6f30f56c461993877ac22c39c20837509
-      - type: file
-        url: https://files.pythonhosted.org/packages/4b/40/dad6848bf9886be5b3a297a57401f5e0ab04e0b81e158bbe74db62f1d377/pdfx-1.4.1-py2.py3-none-any.whl
-        sha256: f4a1cd631a105150f4938428b836d9e5102fbf77504e349f05404ad9cbb26e38
-      - type: file
-        url: https://files.pythonhosted.org/packages/0c/c3/44f3fbbfa403ea2a7c779186dc20772604442dde72947e7d01069cbe98e3/pycparser-3.0-py3-none-any.whl
-        sha256: b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
-      - type: file
-        url: https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl
-        sha256: a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0
+        url: https://files.pythonhosted.org/packages/07/b1/68feb7eb3b99f0c020b414234825f4a5d70e0126c18d933770e8c93a35fc/pypdf-6.11.0-py3-none-any.whl
+        sha256: 769394d5756d5b304c9b6bef88b54b1816b328e7e6fc9254e625529a15ed4ab8
   - name: python3-citeproc-py
     buildsystem: simple
     build-commands:
@@ -61,5 +34,12 @@ modules:
         url: https://files.pythonhosted.org/packages/52/c1/c5243f5520685e4dbfc8062ee02b24ce5a30dc5aab2c38d2dc5f1474bfd3/citeproc_py-0.9.3-py3-none-any.whl
         sha256: 963c3ef62ecee022899d5760667753b3321ec2b34e872027a2a2fc0a603356c2
       - type: file
-        url: https://files.pythonhosted.org/packages/28/30/9abc9e34c657c33834eaf6cd02124c61bdf5944d802aa48e69be8da3585d/lxml-6.1.0.tar.gz
-        sha256: bfd57d8008c4965709a919c3e9a98f76c2c7cb319086b3d26858250620023b13
+        url: https://files.pythonhosted.org/packages/15/3b/a20aecfab42bdf4f9b390590d345857ad3ffd7c51988d1c89c53a0c73faf/lxml-6.1.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+        sha256: 37fabd1452852636cf38ecdcc9dd5ca4bba7a35d6c53fa09725deeb894a87491
+        only-arches:
+          - x86_64
+      - type: file
+        url: https://files.pythonhosted.org/packages/f5/54/92ad98a94ac318dc4f97aaac22ff8d1b94212b2ae8af5b6e9b354bf825f7/lxml-6.1.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl
+        sha256: 419c58fc92cc3a2c3fa5f78c63dbf5da70c1fa9c1b25f25727ecee89a96c7de2
+        only-arches:
+          - aarch64

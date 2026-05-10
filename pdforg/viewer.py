@@ -917,166 +917,64 @@ class PdfViewerWindow(Gtk.Window):
         end_widget = (sx + dx, sy + dy)
         self._show_create_popover(page_idx, end_widget, sel_text, quads)
 
-    # Same-line tolerance (PDF points) when merging adjacent character
-    # rectangles into a single highlight strip.
-    _LINE_Y_TOLERANCE = 3.0
-    # Minimum x-gap between adjacent characters (in PDF points) for it
-    # to count as a column gutter rather than ordinary inter-word space.
-    _GUTTER_MIN_PTS = 10.0
-    # Line-start x-gap above which we treat two starts as belonging to
-    # different columns. Small enough to separate left-margin (x≈35)
-    # from right-column body (x≈165), large enough to keep an indented
-    # paragraph (x≈185) in the same cluster as the column it belongs to.
-    _COLUMN_BREAK_PTS = 30.0
-
     def _extract_selection(self, page_idx, sx, sy, ex, ey):
         """Return (text, quads) for a flowing text selection between
-        the drag start (sx, sy) and end (ex, ey), widget-Y-down PDF
-        points.
+        the drag start (sx, sy) and end (ex, ey), in widget-Y-down
+        PDF points.
 
-        Strategy:
+        Delegates to Poppler's own selection engine — the same code
+        path Evince / GNOME Papers use — instead of re-deriving
+        column flow from `get_text_layout()`. Poppler interprets the
+        rectangle as "select from the start point to the stop point
+        following reading order", not as a bounding box, so the
+        multi-column / left-margin-metadata layouts that defeated
+        the old heuristic now work.
 
-        1. `Poppler.Page.get_text_layout()` gives us one rectangle per
-           glyph in document order, aligned with `get_text()`'s string.
-
-        2. Detect which *column* the drag is in: collect every char
-           whose y falls within the drag's y-range, look at the x
-           positions, and find the gutters as the largest gaps. Pick
-           the column that contains the drag's x.
-
-        3. Constrain the candidate set to chars in that column, then
-           snap drag start / end to the nearest of those chars and
-           select the contiguous run between them in document order.
-
-        Steps 2 + 3 together fix the MDPI-style layout where Poppler's
-        document order interleaves a left-margin metadata block with
-        the right-column body."""
-        page = self.doc.get_page(page_idx)
-        _, ph = page.get_size()
-
+        `quads` keeps its existing contract: a list of
+        `[x, y_top, w, h]` in PDF points, origin top-left, Y-down —
+        exactly what `get_selected_region(scale=1.0, …)` yields, so
+        hit-testing (`_on_page_click`), the highlight renderer, and
+        the sidecar format are all unchanged."""
         try:
-            ok, rects = page.get_text_layout()
+            if not (0 <= page_idx < self.doc.get_n_pages()):
+                return "", []
+            page = self.doc.get_page(page_idx)
         except Exception:
-            ok, rects = False, []
-        if not ok or not rects:
+            page = None
+        if page is None:
             return "", []
+
+        # Poppler-glib selection uses a top-left origin, Y down, in
+        # PDF points at scale 1.0 — the same convention the drag
+        # coords are already in. x1,y1 = drag start; x2,y2 = drag
+        # end. Poppler orders them by reading flow internally, so we
+        # don't pre-sort the corners.
+        rect = Poppler.Rectangle()
+        rect.x1, rect.y1 = sx, sy
+        rect.x2, rect.y2 = ex, ey
+
+        style = Poppler.SelectionStyle.GLYPH
         try:
-            full_text = page.get_text() or ""
+            sel_text = page.get_selected_text(style, rect) or ""
         except Exception:
-            full_text = ""
-        if not full_text:
-            return "", []
-
-        cap = min(len(rects), len(full_text))
-        if cap == 0:
-            return "", []
-
-        # ---- Column detection ----------------------------------------
-        # Per-line LEFT EDGE positions cluster cleanly into columns
-        # (e.g. left-margin lines at x≈35, right-column lines at
-        # x≈166). Per-character x positions bridge the gutter visually
-        # and don't show a usable gap, so we work at the line level.
-        # Bucket each char by its baseline y, take the leftmost x on
-        # that line; sort and find the largest gap.
-        body_y_lo = ph * 0.10
-        body_y_hi = ph * 0.90
-        line_min_x = {}        # y_bucket -> min x1 on that line
-        for i in range(cap):
-            r = rects[i]
-            cy = ph - (r.y1 + r.y2) / 2.0
-            if not (body_y_lo <= cy <= body_y_hi):
-                continue
-            y_top = ph - r.y2
-            key = round(y_top / 3.0)   # 3-pt buckets glue same line
-            x_start = r.x1
-            if key not in line_min_x or x_start < line_min_x[key]:
-                line_min_x[key] = x_start
-        line_starts = sorted(line_min_x.values())
-
-        # Cluster line-starts: same cluster = same column. A "cluster
-        # break" is any gap larger than _COLUMN_BREAK_PTS in line-start
-        # x. col_lo = cluster's leftmost start (with small tolerance);
-        # col_hi = NEXT cluster's leftmost start (so we exclude both
-        # halves of an adjacent narrow column / margin block, not just
-        # everything left of a midpoint).
-        col_lo, col_hi = -1.0e9, 1.0e9
-        if len(line_starts) >= 2:
-            cluster_mins = [line_starts[0]]
-            for x in line_starts[1:]:
-                if x - cluster_mins[-1] > self._COLUMN_BREAK_PTS:
-                    cluster_mins.append(x)
-            if len(cluster_mins) >= 2:
-                mid_drag_x = (sx + ex) / 2.0
-                for i, cmin in enumerate(cluster_mins):
-                    next_cmin = (cluster_mins[i + 1]
-                                 if i + 1 < len(cluster_mins)
-                                 else 1.0e9)
-                    # 50pt slack on the lower side so a drag that
-                    # starts just to the left of the column (in the
-                    # gutter) still picks the right cluster.
-                    if cmin - 50.0 <= mid_drag_x < next_cmin - 5.0:
-                        col_lo = cmin - 5.0
-                        col_hi = next_cmin - 5.0
-                        break
-
-        def in_col(i):
-            r = rects[i]
-            cx = (r.x1 + r.x2) / 2.0
-            return col_lo <= cx <= col_hi
-
-        # ---- Snap drag start / end to nearest in-column chars --------
-        start_idx = end_idx = -1
-        best_s = best_e = float("inf")
-        for i in range(cap):
-            if not in_col(i):
-                continue
-            r = rects[i]
-            cx = (r.x1 + r.x2) / 2.0
-            cy = ph - (r.y1 + r.y2) / 2.0
-            ds = (cx - sx) * (cx - sx) + (cy - sy) * (cy - sy)
-            de = (cx - ex) * (cx - ex) + (cy - ey) * (cy - ey)
-            if ds < best_s:
-                best_s = ds
-                start_idx = i
-            if de < best_e:
-                best_e = de
-                end_idx = i
-        if start_idx < 0 or end_idx < 0:
-            return "", []
-
-        lo = min(start_idx, end_idx)
-        hi = max(start_idx, end_idx)
-
-        # ---- Build text + quads from chars[lo..hi] ∩ column ----------
-        selected_indices = [i for i in range(lo, hi + 1) if in_col(i)]
-        if not selected_indices:
-            return "", []
-
-        sel_text = "".join(full_text[i] for i in selected_indices).strip()
+            sel_text = ""
+        sel_text = sel_text.strip()
 
         quads = []
-        cur = None
-        for i in selected_indices:
-            r = rects[i]
-            w = r.x2 - r.x1
-            h = r.y2 - r.y1
-            if w <= 0 or h <= 0:
-                continue
-            x = r.x1
-            y_top = ph - r.y2
-            if cur is not None and abs(cur[1] - y_top) <= self._LINE_Y_TOLERANCE:
-                cur_x_end = cur[0] + cur[2]
-                new_x_end = x + w
-                cur[0] = min(cur[0], x)
-                cur[2] = max(cur_x_end, new_x_end) - cur[0]
-                cur[3] = max(cur[3], h)
-            else:
-                if cur is not None:
-                    quads.append(cur)
-                cur = [x, y_top, w, h]
-        if cur is not None:
-            quads.append(cur)
+        try:
+            region = page.get_selected_region(1.0, style, rect)
+        except Exception:
+            region = None
+        if region is not None:
+            for i in range(region.num_rectangles()):
+                rr = region.get_rectangle(i)
+                if rr.width <= 0 or rr.height <= 0:
+                    continue
+                quads.append([float(rr.x), float(rr.y),
+                              float(rr.width), float(rr.height)])
 
+        if not quads:
+            return "", []
         return sel_text, quads
 
     # --- Click on existing highlight ----------------------------------
@@ -1510,10 +1408,15 @@ class PdfViewerWindow(Gtk.Window):
         box.append(preview)
 
         btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        copy_btn = Gtk.Button(label="Copy")
+        copy_btn.set_tooltip_text(
+            "Copy the selected text to the clipboard without creating "
+            "a highlight.")
         hi_btn = Gtk.Button(label="Highlight")
         hi_btn.add_css_class("suggested-action")
         cm_btn = Gtk.Button(label="Highlight + Comment…")
         cancel_btn = Gtk.Button(label="Cancel")
+        btn_row.append(copy_btn)
         btn_row.append(hi_btn)
         btn_row.append(cm_btn)
         btn_row.append(cancel_btn)
@@ -1538,6 +1441,17 @@ class PdfViewerWindow(Gtk.Window):
             da.queue_draw()
             pop.popdown()
 
+        def _copy(_b):
+            # Put the extracted selection text on the system
+            # clipboard and dismiss — no highlight gets saved.
+            try:
+                clip = da.get_clipboard()
+                clip.set(sel_text or "")
+            except Exception as e:
+                print("[viewer] clipboard set failed:", e)
+            pop.popdown()
+
+        copy_btn.connect("clicked", _copy)
         hi_btn.connect("clicked", lambda _b: _commit(""))
         cm_btn.connect(
             "clicked",

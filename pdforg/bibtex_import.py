@@ -34,7 +34,7 @@ def _enrich_with_openalex(rec):
     if not doi:
         return
     (n, src, kw, abstract, authorships, cby,
-     oa_title, oa_year) = metrics.fetch_metrics(doi)
+     oa_title, oa_year, is_oa, oa_status) = metrics.fetch_metrics(doi)
     # Cross-contamination check — see importer._openalex_record_matches.
     from . import importer as _importer
     if not _importer._openalex_record_matches(
@@ -58,6 +58,10 @@ def _enrich_with_openalex(rec):
             rec["authors"] = oa_names
     if cby:
         rec["citations_by_year"] = cby
+    if is_oa is not None:
+        rec["is_oa"] = is_oa
+    if oa_status:
+        rec["oa_status"] = oa_status
 
 
 def _apply_bibtex_provenance(rec, br):

@@ -213,7 +213,7 @@ KEYWORD_LIMIT = 8
 
 def fetch_metrics(doi):
     """Return (count, source, keywords, abstract, authorships,
-    citations_by_year, oa_title, oa_year).
+    citations_by_year, oa_title, oa_year, is_oa, oa_status).
 
     `oa_title` and `oa_year` are the OpenAlex Work's title and
     publication_year — the caller can cross-check these against
@@ -222,25 +222,29 @@ def fetch_metrics(doi):
     another paper's DOI). They're None when the source is CrossRef
     or no data was returned.
 
+    `is_oa` / `oa_status` come from OpenAlex's `open_access` block:
+    a boolean plus a string in {`gold`, `hybrid`, `green`, `bronze`,
+    `diamond`, `closed`}. None when CrossRef-only or no data.
+
     `citations_by_year` is a list of {year, count} dicts,
     oldest-first (capped by OpenAlex at ~10 years). Any field may
     be None / [] depending on what OpenAlex / CrossRef returned."""
     if not doi:
-        return None, None, [], None, [], [], None, None
-    n, kw, abstract, authorships, cby, oa_title, oa_year = (
-        _openalex_metrics(doi))
+        return None, None, [], None, [], [], None, None, None, None
+    (n, kw, abstract, authorships, cby,
+     oa_title, oa_year, is_oa, oa_status) = _openalex_metrics(doi)
     if n is not None:
         return (n, "openalex", kw, abstract, authorships, cby,
-                oa_title, oa_year)
+                oa_title, oa_year, is_oa, oa_status)
     n = _crossref_count(doi)
     if n is not None:
-        return n, "crossref", [], None, [], [], None, None
-    return None, None, [], None, [], [], None, None
+        return n, "crossref", [], None, [], [], None, None, None, None
+    return None, None, [], None, [], [], None, None, None, None
 
 
 def fetch_citation_count(doi):
     """Backward-compatible wrapper returning just (count, source)."""
-    n, src, _, _, _, _, _, _ = fetch_metrics(doi)
+    n, src, _, _, _, _, _, _, _, _ = fetch_metrics(doi)
     return n, src
 
 
@@ -283,7 +287,7 @@ def _openalex_metrics(doi):
         headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
         timeout=15)
     if data is None:
-        return None, [], None, [], [], None, None
+        return None, [], None, [], [], None, None, None, None
     n = data.get("cited_by_count")
     if not isinstance(n, int):
         n = None
@@ -316,7 +320,18 @@ def _openalex_metrics(doi):
     cby.sort(key=lambda r: r["year"])
     oa_title = data.get("title") or data.get("display_name")
     oa_year = data.get("publication_year")
-    return n, kw, abstract, authorships, cby, oa_title, oa_year
+    # OpenAlex `open_access` block: `{is_oa: bool, oa_status: str,
+    # oa_url: str|None}`. Carry both fields so the card can render
+    # an OA badge for paywalled DOIs that lack a CrossRef license
+    # (Science / Nature / Cell typically don't deposit one).
+    open_access = data.get("open_access")
+    if open_access is None:
+        is_oa, oa_status = None, None
+    else:
+        is_oa = bool(open_access.get("is_oa"))
+        oa_status = open_access.get("oa_status") or None
+    return (n, kw, abstract, authorships, cby,
+            oa_title, oa_year, is_oa, oa_status)
 
 
 def _normalize_doi(doi):
@@ -1175,18 +1190,12 @@ def classify_license_url(url):
     return "© Publisher"
 
 
-def fetch_license(doi):
-    """Fetch a CrossRef record for `doi` and extract a license entry
-    suitable for a card chip. Returns `{url, label, content_version}`
-    or None when CrossRef has no record / no license field.
-
-    CrossRef returns a `license` array on `/works/{doi}` — entries
-    have `URL`, `content-version` (`vor` = version of record, `am` =
-    accepted manuscript, `tdm` = text-data-mining, `unspecified`),
-    and `start.date-parts`. We pick the most authoritative entry —
-    `vor` first, then `unspecified`, then anything else — so the
-    chip reflects what a reader actually gets when they open the
-    publisher copy."""
+def _fetch_crossref_work_message(doi):
+    """Internal helper: fetch `/works/{doi}` from CrossRef and
+    return the `message` dict, or None. Centralises the URL and
+    headers so the license / crossmark / count helpers don't drift
+    apart and so a future caller that wants several fields can
+    share a single HTTP call via `fetch_crossref_extras`."""
     if not doi:
         return None
     qdoi = urllib.parse.quote(doi, safe="")
@@ -1197,7 +1206,16 @@ def fetch_license(doi):
         timeout=15)
     if not data:
         return None
-    licenses = ((data.get("message") or {}).get("license")) or []
+    return data.get("message") or {}
+
+
+def _license_from_message(msg):
+    """Extract a `{url, label, content_version}` license dict from a
+    CrossRef /works/{doi} message, or None. Pulled out of
+    `fetch_license` so `fetch_crossref_extras` can share the HTTP
+    call. `vor` (version of record) wins over `unspecified` over
+    `am` over `tdm`."""
+    licenses = (msg or {}).get("license") or []
     if not licenses:
         return None
     priority = {"vor": 0, "unspecified": 1, "am": 2, "tdm": 3}
@@ -1213,6 +1231,101 @@ def fetch_license(doi):
         "url":             pick_url,
         "label":           label,
         "content_version": pick.get("content-version") or None,
+    }
+
+
+def fetch_license(doi):
+    """Fetch a CrossRef record for `doi` and extract a license entry
+    suitable for a card chip. Returns `{url, label, content_version}`
+    or None when CrossRef has no record / no license field."""
+    msg = _fetch_crossref_work_message(doi)
+    if msg is None:
+        return None
+    return _license_from_message(msg)
+
+
+# CrossRef `updated-by[].type` → (severity rank, chip label).
+# Severity rank decides which update wins when a paper has several
+# (a paper can be both corrected and later retracted). Lower rank =
+# more severe / more user-relevant.
+_CROSSMARK_TYPES = {
+    "retraction":             (0, "Retracted"),
+    "withdrawal":             (0, "Withdrawn"),
+    "partial_retraction":     (1, "Partial retraction"),
+    "expression_of_concern":  (2, "Concern"),
+    "removal":                (2, "Removed"),
+    "correction":             (3, "Correction"),
+    "corrigendum":            (3, "Corrigendum"),
+    "erratum":                (3, "Erratum"),
+    "clarification":          (4, "Clarification"),
+    "addendum":               (4, "Addendum"),
+    "new_version":            (5, "Updated"),
+    "new_edition":            (5, "New edition"),
+}
+
+
+def _crossmark_from_message(msg):
+    """Extract the most-severe Crossmark update from a CrossRef
+    /works/{doi} message. Returns `{type, label, doi, year,
+    severity}` or None.
+
+    `updated-by` lists updates *pointing to* this paper — a
+    retraction notice's DOI points back at the retracted paper via
+    this field. A paper can have several entries (corrected, then
+    later retracted); we surface the most severe, since "this
+    paper was retracted" matters more to the reader than "this
+    paper was also corrected"."""
+    if not msg:
+        return None
+    entries = msg.get("updated-by") or []
+    best = None  # (rank, dict)
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        t = (e.get("type") or "").lower()
+        rank_label = _CROSSMARK_TYPES.get(t)
+        if not rank_label:
+            continue
+        rank, label = rank_label
+        year = None
+        dp = ((e.get("updated") or {}).get("date-parts") or [[]])[0]
+        if dp:
+            try:
+                year = int(dp[0])
+            except (TypeError, ValueError):
+                pass
+        candidate = {
+            "type":     t,
+            "label":    label,
+            "doi":      (e.get("DOI") or "").lower() or None,
+            "year":     year,
+            "severity": rank,
+        }
+        if best is None or rank < best[0]:
+            best = (rank, candidate)
+    return best[1] if best else None
+
+
+def fetch_crossmark(doi):
+    """Return the most-severe Crossmark update pointing to `doi`, or
+    None. Same shape as `_crossmark_from_message`."""
+    msg = _fetch_crossref_work_message(doi)
+    if msg is None:
+        return None
+    return _crossmark_from_message(msg)
+
+
+def fetch_crossref_extras(doi):
+    """Single CrossRef call that returns both license and crossmark
+    info: `{license: ... | None, crossmark: ... | None}`. Used by
+    the backfill pass so we don't hit /works/{doi} twice per row.
+    Returns None when CrossRef has no record at all."""
+    msg = _fetch_crossref_work_message(doi)
+    if msg is None:
+        return None
+    return {
+        "license":   _license_from_message(msg),
+        "crossmark": _crossmark_from_message(msg),
     }
 
 

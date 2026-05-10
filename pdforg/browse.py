@@ -2692,26 +2692,10 @@ class BrowserWindow(Adw.ApplicationWindow):
         pop.set_child(outer)
         pop.popup()
 
-        # Try cache first.
-        try:
-            rec = sidecar.read(sc_path)
-        except Exception:
-            rec = None
-        cache = (rec or {}).get("references_cache") if rec else None
-        if cache and (cache.get("refs") or cache.get("refs_pdf")):
-            self._render_references(
-                status, list_box,
-                cache.get("refs") or [],
-                cache.get("refs_pdf") or [],
-                from_cache=True,
-                fetched_iso=cache.get("fetched"),
-                refs_source=cache.get("source"))
-            return
-
-        # No cache — fetch.
-        status.set_text("Loading…")
-        refresh_btn.set_sensitive(False)
-
+        # Define _fetch *before* the cache check. The cache-hit path
+        # below returns early without spawning the thread, but the
+        # refresh button (already wired via _do_refresh closure) needs
+        # _fetch in scope to do its job when the user clicks it.
         def _fetch(force=False):
             refs = []
             pdf_refs = []
@@ -2747,6 +2731,25 @@ class BrowserWindow(Adw.ApplicationWindow):
                           status, list_box, refresh_btn,
                           refs, pdf_refs, fetched_iso, refs_source)
 
+        # Try cache first.
+        try:
+            rec = sidecar.read(sc_path)
+        except Exception:
+            rec = None
+        cache = (rec or {}).get("references_cache") if rec else None
+        if cache and (cache.get("refs") or cache.get("refs_pdf")):
+            self._render_references(
+                status, list_box,
+                cache.get("refs") or [],
+                cache.get("refs_pdf") or [],
+                from_cache=True,
+                fetched_iso=cache.get("fetched"),
+                refs_source=cache.get("source"))
+            return
+
+        # No cache — fetch.
+        status.set_text("Loading…")
+        refresh_btn.set_sensitive(False)
         threading.Thread(target=_fetch, daemon=True).start()
 
     def _after_refs_fetch(self, status, list_box, refresh_btn,
@@ -2899,7 +2902,10 @@ class BrowserWindow(Adw.ApplicationWindow):
         outer.set_margin_bottom(10)
 
         cb = row["citations"] if "citations" in row.keys() else None
-        suffix = "  <small alpha='65%'>({} total)</small>".format(cb) if cb else ""
+        # <small> doesn't accept alpha in Pango markup; only <span>
+        # does. Wrap both attributes with a single <span>.
+        suffix = ("  <span size='small' alpha='65%'>({} total)</span>"
+                  .format(cb) if cb else "")
         title_markup = ("<b>Cited by</b>" + suffix +
                         "  <span size='small' alpha='65%'>(OpenAlex)</span>")
 
@@ -2934,24 +2940,10 @@ class BrowserWindow(Adw.ApplicationWindow):
         pop.set_child(outer)
         pop.popup()
 
-        # Try cache first.
-        try:
-            rec = sidecar.read(sc_path)
-        except Exception:
-            rec = None
-        cache = (rec or {}).get("cited_by_cache") if rec else None
-        if cache and (cache.get("recent") or cache.get("cited")):
-            self._render_cited_by(
-                status, list_box,
-                cache.get("recent") or [],
-                cache.get("cited") or [],
-                from_cache=True,
-                fetched_iso=cache.get("fetched"))
-            return
-
-        status.set_text("Loading…")
-        refresh_btn.set_sensitive(False)
-
+        # Define _fetch *before* the cache check. The cache-hit path
+        # below returns early without spawning the thread, but the
+        # refresh button (already wired via _do_refresh closure) needs
+        # _fetch in scope to do its job when the user clicks it.
         def _fetch(force=False):
             recent = []
             cited = []
@@ -2982,6 +2974,23 @@ class BrowserWindow(Adw.ApplicationWindow):
                           status, list_box, refresh_btn,
                           recent, cited, fetched_iso)
 
+        # Try cache first.
+        try:
+            rec = sidecar.read(sc_path)
+        except Exception:
+            rec = None
+        cache = (rec or {}).get("cited_by_cache") if rec else None
+        if cache and (cache.get("recent") or cache.get("cited")):
+            self._render_cited_by(
+                status, list_box,
+                cache.get("recent") or [],
+                cache.get("cited") or [],
+                from_cache=True,
+                fetched_iso=cache.get("fetched"))
+            return
+
+        status.set_text("Loading…")
+        refresh_btn.set_sensitive(False)
         threading.Thread(target=_fetch, daemon=True).start()
 
     def _after_cited_by_fetch(self, status, list_box, refresh_btn,

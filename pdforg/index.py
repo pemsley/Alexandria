@@ -4,15 +4,65 @@ DB lives on local disk (XDG state dir), never on NFS.
 """
 
 import datetime
+import hashlib
 import json
 import os
 import re
+import socket
 import sqlite3
 from datetime import date, timedelta
 
 XDG_STATE = os.environ.get("XDG_STATE_HOME") or os.path.join(
     os.path.expanduser("~"), ".local", "state")
-DEFAULT_DB_PATH = os.path.join(XDG_STATE, "Alexandria", "library.db")
+
+
+def _host_hash():
+    """Stable short hash of this machine's hostname. Used to give
+    each host its own SQLite cache filename when $HOME is shared
+    over NFS, so two hosts running Alexandria against the same
+    library can't trample each other's WAL.
+
+    4 hex chars = 16 bits, ~0.1 % birthday-paradox collision risk
+    at 10 hosts which is plenty for personal-cluster use. Stable
+    across runs because it's derived from `socket.gethostname()`
+    only; doesn't depend on uptime, IP, or kernel."""
+    raw = (socket.gethostname() or "host").split(".", 1)[0]
+    return hashlib.blake2s(raw.encode("utf-8"),
+                           digest_size=2).hexdigest()  # 4 hex chars
+
+
+_HOST_DB_NAME = "library." + _host_hash() + ".db"
+_LEGACY_DB_NAME = "library.db"
+DEFAULT_DB_PATH = os.path.join(XDG_STATE, "Alexandria", _HOST_DB_NAME)
+
+
+def _migrate_legacy_db(host_db_path):
+    """One-time rename of the pre-hash `library.db` to the host-
+    suffixed name on this machine. Runs in `open_db` before the
+    first connect.
+
+    If `host_db_path` already exists, leave the legacy file alone
+    — another launch has migrated us; the legacy file is
+    irrelevant (probably stale from before the migration).
+
+    If only the legacy file exists, rename it (plus its -wal /
+    -shm companions if present) to the new name. After the
+    rename, this host owns the file and SQLite reopens it under
+    the new name with no further surgery."""
+    if os.path.exists(host_db_path):
+        return
+    legacy = os.path.join(os.path.dirname(host_db_path), _LEGACY_DB_NAME)
+    if not os.path.exists(legacy):
+        return
+    for suffix in ("", "-wal", "-shm"):
+        src = legacy + suffix
+        dst = host_db_path + suffix
+        if os.path.exists(src) and not os.path.exists(dst):
+            try:
+                os.replace(src, dst)
+            except OSError as e:
+                print("legacy db rename {} → {} failed: {}"
+                      .format(src, dst, e))
 
 
 # Filesystem types we don't want SQLite's WAL file living on.
@@ -512,6 +562,7 @@ DISCOVERED_RETENTION_DAYS = 60
 
 def open_db(path=DEFAULT_DB_PATH):
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    _migrate_legacy_db(path)
     # check_same_thread=False because the GUI shares this connection with
     # background import / citation-refresh threads. SQLite itself
     # serialises access; WAL handles reader-writer concurrency.

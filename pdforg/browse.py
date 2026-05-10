@@ -2033,8 +2033,9 @@ class BrowserWindow(Adw.ApplicationWindow):
         """Surface a one-shot warning when the SQLite cache lives on
         NFS / SMB / sshfs. Fired from the constructor via
         GLib.idle_add. See docs/design/database-and-nfs.md for why
-        this matters."""
-        msg = ("Warning: library.db is on a network filesystem. "
+        this matters — even with the per-host DB filename, a network
+        FS is still a bad place for SQLite's WAL."""
+        msg = ("Warning: SQLite cache is on a network filesystem. "
                "Set XDG_STATE_HOME to a local-disk path.")
         t = Adw.Toast.new(msg)
         t.set_timeout(10)
@@ -3609,9 +3610,12 @@ def _show_db_error_and_quit(app, err):
     body = (
         "Alexandria can't open its database at:\n"
         "{}\n\n"
-        "Another Alexandria process may still be running, or a "
-        "previous session didn't shut down cleanly and is still "
-        "holding the database lock.\n\n"
+        "(The filename contains a 4-character host hash so each "
+        "machine has its own private SQLite cache — see "
+        "docs/design/database-and-nfs.md.)\n\n"
+        "Another Alexandria process on this host may still be "
+        "running, or a previous session didn't shut down cleanly "
+        "and is still holding the database lock.\n\n"
         "Try closing other Alexandria windows. If that doesn't help, "
         "run this in a terminal and try again:\n"
         "    pkill -f pdforg-browse\n\n"

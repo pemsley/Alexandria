@@ -21,8 +21,19 @@ process — possibly on more than one host — touches the same library?"
 
 `index.py` opens the SQLite database at:
 
-    $XDG_STATE_HOME/Alexandria/library.db
-    # default: ~/.local/state/Alexandria/library.db
+    $XDG_STATE_HOME/Alexandria/library.<host-hash>.db
+    # default: ~/.local/state/Alexandria/library.<host-hash>.db
+
+The `<host-hash>` is a 4-character `blake2s` digest of
+`socket.gethostname()` (stripped to the short name). Each host
+therefore gets its own DB file even when `$HOME` is NFS-mounted and
+shared — the two filenames simply don't collide. This is the
+**guardrail against the multi-host-on-shared-$HOME accident**: hostA
+launches Alexandria, forgets to close it; the next day hostB launches
+Alexandria against the same `$HOME`. Without per-host filenames, both
+processes would open the same DB over NFS and the WAL would corrupt
+silently. With per-host filenames, each just opens its own file and
+the worst case is duplicated import work, not a corrupted index.
 
 The comment at the top of `index.py` is explicit:
 
@@ -33,6 +44,15 @@ Two hosts editing the same library each have their own DB. There is
 no DB-level synchronisation between them, and no SQLite write
 contention either. A lost DB can be rebuilt by walking the library
 and re-importing each PDF; nothing irreplaceable lives there.
+
+### Legacy single-file migration
+
+Earlier versions used the unsuffixed name `library.db`. On first
+launch, `_migrate_legacy_db()` renames any pre-existing
+`library.db` (and its `-wal` / `-shm` companions) to
+`library.<host-hash>.db` so existing installs are picked up without
+a rebuild. The rename is a no-op if the host-hashed file already
+exists.
 
 The connection is opened with:
 
@@ -51,8 +71,10 @@ imports run.
 ### Caveat: NFS-mounted homes
 
 If `$HOME` is itself NFS-mounted, the default path lands on NFS too.
-We do not detect this and we do not warn. The user has two
-escape hatches, both environment-level:
+The per-host filename means two hosts won't share a DB file, but a
+single host's DB still gets the unreliable end of NFS file locking.
+A one-shot warning toast fires when the cache lives on NFS / SMB /
+sshfs. The user has two escape hatches, both environment-level:
 
 * `XDG_STATE_HOME=/tmp/<user>-state` (or any local-disk path) before
   launch.
@@ -163,11 +185,11 @@ scratch next time.
 * **Polling watcher fallback.** Schedule a periodic `os.scandir` of
   the library and diff mtimes; layer it on top of the GFileMonitor
   signal. Catches remote-NFS sidecar writes that inotify misses.
-* **Hostname-suffixed tmp paths.** Write to
-  `foo.pdf.meta.json.<host>.<pid>.tmp` instead of the shared
-  `foo.pdf.meta.json.tmp`. Doesn't fix last-rename-wins but
-  eliminates the corrupt-tmp variant where two writers stomp on
-  each other's tmp file mid-flush.
+* **Hostname-suffixed tmp paths for sidecars** — *shipped*.
+  `sidecar.write` now writes to `foo.pdf.meta.json.<host>.<pid>.tmp`
+  instead of the shared `foo.pdf.meta.json.tmp`. Doesn't fix
+  last-rename-wins but eliminates the corrupt-tmp variant where two
+  writers stomp on each other's tmp file mid-flush.
 * **Read-modify-write with mtime check before rename.** If the
   sidecar's mtime changed between the read and the rename, abort
   and re-merge. Catches the common case.

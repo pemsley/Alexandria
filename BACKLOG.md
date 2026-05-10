@@ -622,6 +622,26 @@ ourselves via `mailto:` in `User-Agent` is in place via
 See `docs/design/database-and-nfs.md` for the full concurrency
 model. Single-writer-at-a-time on a shared library is safe; two
 active editors on two hosts is not. These items would harden it.
+- **Sidecar mtime-prefilter for slow / high-latency filesystems.**
+  Today `importer.import_pdf`'s existing-branch does ~6 stats per
+  PDF (sidecar + thumb recent-guard, sidecar isfile, sidecar
+  getmtime, thumb-exists check inside `make_thumbnail`). On local
+  SSD that's free (~0.5 ms/PDF, 1800 PDF/s measured). On
+  NFS-over-bad-wifi each stat is a fresh round-trip at the
+  client's RTT — 100 PDFs × 6 × 30 ms ≈ 18 s before a byte of
+  JSON is read. Fix:
+    - One `os.scandir(library_root)` per directory: a single
+      round-trip returns every entry's mtime.
+    - For each `*.meta.json` entry, compare against
+      `papers.sidecar_mtime` already in the DB.
+    - Only `sidecar.read` + `index.upsert` for the rows whose
+      mtime moved (or that aren't in the DB at all).
+  Converts "N × 6 round-trips" into "1 scandir + 2 × N_changed
+  round-trips" — a quiescent library is near-free regardless of
+  latency. New entry-point `index.sync_from_sidecars(conn, root)`
+  to call at GUI startup, replacing the implicit walk via
+  `import_tree`. Composes naturally with the polling-watcher
+  fallback below — same primitive, different trigger.
 - **Polling watcher fallback over NFS.** `GFileMonitor` is
   inotify-backed, which doesn't fire for sidecar writes from
   another NFS client. Layer a periodic `os.scandir` of the library

@@ -428,6 +428,32 @@ def fetch_works_by_author(orcid=None, openalex_id=None, since=None,
             if u and u not in pdf_urls:
                 pdf_urls.append(u)
 
+        # License — OpenAlex's `primary_location.license` is a short
+        # code like "cc-by-4.0", "cc-by-nc-nd", "publisher-specific-oa".
+        # Cheaper than a per-row CrossRef call; matches the chip
+        # vocabulary we use elsewhere via `classify_license_url`
+        # when the code carries a CC URL fragment.
+        license_code = primary.get("license")
+        license_label = _label_from_openalex_license(license_code)
+        # Grants: keep only display name + award id; drop the
+        # OpenAlex funder ID URL noise. Most papers have 0-3
+        # grants; the row UI caps the displayed list anyway.
+        grants = []
+        for g in (w.get("grants") or []):
+            name = (g.get("funder_display_name") or "").strip()
+            if not name:
+                continue
+            grants.append({
+                "funder": name,
+                "award_id": (g.get("award_id") or "").strip() or None,
+            })
+        # Topics: keep only the first (most-confident) topic's
+        # display name. The full topic tree is interesting for
+        # filtering later, but per-row we only need the label.
+        topics_raw = w.get("topics") or []
+        top_topic = None
+        if topics_raw:
+            top_topic = (topics_raw[0] or {}).get("display_name") or None
         results.append({
             "openalex_id": _strip_openalex_id(w.get("id")),
             "doi": _normalize_doi(w.get("doi")),
@@ -441,10 +467,18 @@ def fetch_works_by_author(orcid=None, openalex_id=None, since=None,
             "authorships": authorships,
             "abstract": _reconstruct_abstract(w.get("abstract_inverted_index")),
             "is_oa": oa.get("is_oa"),
+            "oa_status": oa.get("oa_status"),
+            "license_code": license_code,
+            "license_label": license_label,
             "oa_url": oa.get("oa_url"),     # back-compat
             "pdf_url": pdf_url,             # primary direct PDF (or None)
             "pdf_urls": pdf_urls,           # all OA mirrors, primary first
             "landing_url": landing_url,     # HTML article page (or None)
+            "is_retracted": bool(w.get("is_retracted")),
+            "is_paratext":  bool(w.get("is_paratext")),
+            "fwci": w.get("fwci"),
+            "grants": grants,
+            "top_topic": top_topic,
         })
     return results
 
@@ -1146,6 +1180,37 @@ _CC_LICENSE_PATTERNS = (
     ("creativecommons.org/publicdomain/zero",   "CC0"),
     ("creativecommons.org/publicdomain/mark",   "Public Domain"),
 )
+
+
+def _label_from_openalex_license(code):
+    """Map OpenAlex's short `primary_location.license` code to the
+    chip label vocabulary used elsewhere. Returns None when there's
+    no recognisable license (the row then carries no chip rather
+    than a misleading default)."""
+    if not code:
+        return None
+    c = code.strip().lower()
+    if not c:
+        return None
+    # OpenAlex codes look like "cc-by-4.0", "cc-by-nc-nd", "cc0",
+    # "pd", "publisher-specific-oa", "implied-oa", "other-oa".
+    if c == "cc0" or c.startswith("cc0-"):
+        return "CC0"
+    if c == "pd" or c == "public-domain":
+        return "Public Domain"
+    cc_map = (
+        ("cc-by-nc-nd", "CC-BY-NC-ND"),
+        ("cc-by-nc-sa", "CC-BY-NC-SA"),
+        ("cc-by-nc",    "CC-BY-NC"),
+        ("cc-by-sa",    "CC-BY-SA"),
+        ("cc-by-nd",    "CC-BY-ND"),
+        ("cc-by",       "CC-BY"),
+    )
+    for prefix, base in cc_map:
+        if c.startswith(prefix):
+            m = re.search(r"(\d+\.\d+)$", c)
+            return "{}-{}".format(base, m.group(1)) if m else base
+    return None
 
 
 def classify_license_url(url):

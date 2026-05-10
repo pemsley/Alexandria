@@ -939,6 +939,33 @@ class AuthorWorksWindow(Gtk.Window):
             "<b>{}</b>".format(safe_pango_markup(title)))
         title_row.append(title_lbl)
 
+        # Retracted chip — highest-priority warning, drawn first
+        # so it sits closest to the title. OpenAlex carries the
+        # flag directly on the work, so this is free.
+        if w.get("is_retracted"):
+            rl = Gtk.Label()
+            rl.set_markup(
+                "<span size='small' foreground='#cc3333'>"
+                "<b>⚠ RETRACTED</b></span>")
+            rl.set_valign(Gtk.Align.START)
+            rl.set_tooltip_text(
+                "OpenAlex flags this work as retracted.")
+            title_row.append(rl)
+
+        # Paratext chip — editorials, tables of contents, masthead
+        # entries. Muted so it doesn't shout for attention; it's
+        # mostly a "this isn't a real paper" hint.
+        if w.get("is_paratext"):
+            pl = Gtk.Label()
+            pl.set_markup(
+                "<span size='small' foreground='#888888'>"
+                "<b>paratext</b></span>")
+            pl.set_valign(Gtk.Align.START)
+            pl.set_tooltip_text(
+                "Editorial / table-of-contents / masthead entry "
+                "rather than a research article.")
+            title_row.append(pl)
+
         # Venue chip (Zenodo / JoVE / bioRxiv / arXiv / ...). One
         # at most. Sits between the title and the in-library
         # badge, right-aligned visually because the title's
@@ -953,6 +980,21 @@ class AuthorWorksWindow(Gtk.Window):
                     fg, GLib.markup_escape_text(label)))
             chip_lbl.set_valign(Gtk.Align.START)
             title_row.append(chip_lbl)
+
+        # License / OA chip. Same chip factories as the main card
+        # in browse.py — lazy import to dodge the circular
+        # browse↔author_works dependency. Free data (already in the
+        # OpenAlex response we just consumed).
+        from .browse import make_license_chip, make_oa_chip
+        lic_chip = make_license_chip(w.get("license_label"), None)
+        if lic_chip is not None:
+            lic_chip.set_valign(Gtk.Align.START)
+            title_row.append(lic_chip)
+        else:
+            oa_chip = make_oa_chip(w.get("is_oa"), w.get("oa_status"))
+            if oa_chip is not None:
+                oa_chip.set_valign(Gtk.Align.START)
+                title_row.append(oa_chip)
 
         doi = w.get("doi")
         in_library = bool(doi and doi.lower() in self._existing)
@@ -975,7 +1017,34 @@ class AuthorWorksWindow(Gtk.Window):
                     GLib.markup_escape_text(_truncate_authors(w["authors"]))))
             box.append(auth_lbl)
 
-        # Year · Journal · Type · Citations.
+        # Funders. Up to two displayed; rest collapse to "+N more"
+        # so the row doesn't grow unbounded for heavily-funded
+        # consortium papers. Award IDs go into the tooltip.
+        grants = w.get("grants") or []
+        if grants:
+            visible = grants[:2]
+            extra = len(grants) - len(visible)
+            funder_bits = [g["funder"] for g in visible]
+            text = "Funded by " + ", ".join(funder_bits)
+            if extra > 0:
+                text += " · +{} more".format(extra)
+            tip_parts = []
+            for g in grants:
+                if g.get("award_id"):
+                    tip_parts.append("{} ({})".format(g["funder"],
+                                                       g["award_id"]))
+                else:
+                    tip_parts.append(g["funder"])
+            funder_lbl = Gtk.Label(xalign=0.0)
+            funder_lbl.set_wrap(True)
+            funder_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            funder_lbl.set_markup(
+                "<span size='small' alpha='75%'>{}</span>".format(
+                    GLib.markup_escape_text(text)))
+            funder_lbl.set_tooltip_text("\n".join(tip_parts))
+            box.append(funder_lbl)
+
+        # Year · Journal · Type · Citations · FWCI · Topic.
         meta_bits = []
         if w.get("publication_date"):
             meta_bits.append(w["publication_date"])
@@ -987,11 +1056,22 @@ class AuthorWorksWindow(Gtk.Window):
             meta_bits.append(w["type"])
         if w.get("citations"):
             meta_bits.append("cited {}×".format(w["citations"]))
+        # FWCI — Field-Weighted Citation Impact. >1 means above the
+        # field average; we render with 2 dp because the value is
+        # usually 0.05–10ish. Skip when missing or zero (zero often
+        # means "too new to score" rather than "actually zero").
+        fwci = w.get("fwci")
+        if isinstance(fwci, (int, float)) and fwci > 0:
+            meta_bits.append("FWCI {:.2f}".format(fwci))
+        if w.get("top_topic"):
+            meta_bits.append(w["top_topic"])
         if meta_bits:
             meta_lbl = Gtk.Label(xalign=0.0)
             meta_lbl.set_markup(
                 "<span size='small' alpha='75%'>{}</span>".format(
                     GLib.markup_escape_text("  ·  ".join(meta_bits))))
+            meta_lbl.set_wrap(True)
+            meta_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
             box.append(meta_lbl)
 
         # Action buttons.

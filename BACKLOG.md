@@ -300,6 +300,41 @@ Pending features, roughly grouped. Newest at the top of each section.
     - Background OS-level notifications (Wispar is a
       mobile alert app; we're a desktop library manager).
 
+- **Library-aware feed re-ranking (ASReview-inspired).** Today
+  the subscription feed shows new articles in publication order.
+  As the number of follows grows it becomes a low-signal
+  firehose; the user wants "papers most like what's already in
+  my library" first. Treat the library as implicit positives,
+  dismissed/ignored feed entries (after N days unread) as
+  implicit negatives, train a tiny scorer over `title +
+  abstract + auto_keywords + journal`, re-rank the feed by
+  that score.
+    - **v0 — TF-IDF cosine.** Sparse vector per paper from
+      title + abstract + keywords + journal. Score each feed
+      candidate by max-cosine-similarity against the library
+      (or top-k mean). No training, no model file. One
+      dependency: `scikit-learn`'s `TfidfVectorizer`, or
+      hand-rolled to stay light. Update incrementally as new
+      library rows arrive.
+    - **v1 — Logistic regression with explicit negatives.**
+      Once "dismiss" is a UI affordance on the feed, add
+      logistic regression on the TF-IDF vectors: library as
+      positive class, dismissed-or-aged-out as negative.
+      Refresh nightly. Show a ★/★★/★★★ relevance chip on
+      each card so the user can see why something ranked
+      high (top similar library paper? top topic overlap?).
+    - **What's NOT in scope.** Full active-learning loop
+      (label-one, retrain, label-next) — overkill at ~20 new
+      feed items/day, pointless cold-start cost. We don't have
+      ASReview's volume or its exhaustive-recall goal.
+    - **Why ASReview as inspiration.** Their published results
+      (Van de Schoot et al., *Nature Machine Intelligence* 2021)
+      show simple TF-IDF + linear classifier beats transformers
+      for systematic-review screening — small, sparse,
+      interpretable wins in the same regime we're in. See the
+      ASReview entry in `chat-stuff/competitors.md` for the
+      shape comparison.
+
 - **Author-awards chip on paper cards.** A small badge when an
   author is a recipient of a high-prestige scientific award. Two
   shipped tiers + a parked third:

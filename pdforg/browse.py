@@ -149,6 +149,81 @@ def make_mark_badge(mark, labels=None):
     return frame
 
 
+def make_crossmark_chip(label, severity, year=None, target_doi=None):
+    """A small chip flagging publisher-deposited Crossmark updates
+    (Retracted / Concern / Correction / etc.) on a paper. Severity-
+    coloured: retractions / withdrawals burn red, concerns / removals
+    burn red-orange, corrections amber, addenda / clarifications
+    grey. Returns None when label is empty."""
+    if not label:
+        return None
+    sev = severity if isinstance(severity, int) else 9
+    if sev <= 0:
+        fg = "#cc3333"   # retraction / withdrawal
+    elif sev == 1:
+        fg = "#cc3333"   # partial retraction
+    elif sev == 2:
+        fg = "#cc6633"   # concern / removal
+    elif sev == 3:
+        fg = "#ee8800"   # correction / corrigendum / erratum
+    else:
+        fg = "#888888"   # clarification / addendum / new edition
+    frame = Gtk.Frame()
+    frame.set_valign(Gtk.Align.CENTER)
+    lbl = Gtk.Label()
+    text = "⚠ " + label if sev <= 2 else label
+    lbl.set_markup(
+        '<span foreground="{}" weight="bold"><small>{}</small></span>'
+        .format(fg, GLib.markup_escape_text(text)))
+    lbl.set_margin_start(5)
+    lbl.set_margin_end(5)
+    lbl.set_margin_top(1)
+    lbl.set_margin_bottom(1)
+    tt = label
+    if year:
+        tt = "{} ({})".format(label, year)
+    if target_doi:
+        tt = "{} — see {}".format(tt, target_doi)
+    lbl.set_tooltip_text(tt)
+    frame.set_child(lbl)
+    return frame
+
+
+def make_oa_chip(is_oa, oa_status):
+    """Open-access badge from OpenAlex's `open_access` block. Shown
+    only when we *know* a paper is OA — `is_oa is None` (unknown)
+    and `is_oa is False` (paywalled) both render no chip; the
+    chip's absence is the "we don't know / not OA" signal.
+
+    Hidden when a license chip will already render (caller's job)
+    so we don't stack two redundant OA indicators on the title."""
+    if not is_oa:
+        return None
+    label_map = {
+        "gold":    "Gold OA",
+        "hybrid":  "Hybrid OA",
+        "green":   "Green OA",
+        "bronze":  "Bronze OA",
+        "diamond": "Diamond OA",
+    }
+    label = label_map.get((oa_status or "").lower(), "Open Access")
+    frame = Gtk.Frame()
+    frame.set_valign(Gtk.Align.CENTER)
+    lbl = Gtk.Label()
+    lbl.set_markup(
+        '<span foreground="#338033" weight="bold"><small>{}</small></span>'
+        .format(GLib.markup_escape_text(label)))
+    lbl.set_margin_start(5)
+    lbl.set_margin_end(5)
+    lbl.set_margin_top(1)
+    lbl.set_margin_bottom(1)
+    lbl.set_tooltip_text(
+        "OpenAlex says this paper is open access ({}).".format(
+            oa_status or "status unknown"))
+    frame.set_child(lbl)
+    return frame
+
+
 def make_license_chip(label, url=None):
     """A small chip showing the paper's license — green for CC family,
     muted for publisher-copyright. Returns None when label is empty.
@@ -593,6 +668,19 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     pre_chip = make_preprint_status(row, conn, parent_window)
     if pre_chip is not None:
         title_row.append(pre_chip)
+    # Crossmark chip — retraction / correction / etc. Drawn before
+    # the license chip so the more critical signal lands closer to
+    # the title.
+    try:
+        cm_label = row["crossmark_label"] if "crossmark_label" in row.keys() else None
+        cm_sev   = row["crossmark_severity"] if "crossmark_severity" in row.keys() else None
+        cm_year  = row["crossmark_year"] if "crossmark_year" in row.keys() else None
+        cm_doi   = row["crossmark_doi"] if "crossmark_doi" in row.keys() else None
+    except Exception:
+        cm_label = cm_sev = cm_year = cm_doi = None
+    cm_chip = make_crossmark_chip(cm_label, cm_sev, cm_year, cm_doi)
+    if cm_chip is not None:
+        title_row.append(cm_chip)
     try:
         lic_label = row["license_label"] if "license_label" in row.keys() else None
         lic_url   = row["license_url"]   if "license_url"   in row.keys() else None
@@ -601,6 +689,19 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     lic_chip = make_license_chip(lic_label, lic_url)
     if lic_chip is not None:
         title_row.append(lic_chip)
+    else:
+        # No CrossRef license — fall back to OpenAlex's is_oa /
+        # oa_status. Catches Science / Nature / Cell etc. where
+        # CrossRef carries no license but OpenAlex knows the OA
+        # status via PubMed Central or institutional deposits.
+        try:
+            is_oa_v = row["is_oa"] if "is_oa" in row.keys() else None
+            oa_st   = row["oa_status"] if "oa_status" in row.keys() else None
+        except Exception:
+            is_oa_v, oa_st = None, None
+        oa_chip = make_oa_chip(is_oa_v, oa_st)
+        if oa_chip is not None:
+            title_row.append(oa_chip)
     title = Gtk.Label()
     title.set_markup("<b>{}</b>".format(
         safe_pango_markup(row["title"] or "(untitled)")))
@@ -995,13 +1096,14 @@ class BrowserWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._feed_refresher,
                          daemon=True).start()
 
-        # One-shot license backfill. CrossRef-only, so it doesn't
-        # touch the OpenAlex budget; walks every paper that has a
-        # DOI but no cached `license_label` and fills the chip in.
-        # Independent of the 30-day citation-refresh window so
-        # recently-refreshed libraries still pick up license info.
+        # One-shot CrossRef-extras backfill. CrossRef-only, so it
+        # doesn't touch the OpenAlex budget; one /works/{doi} call
+        # per row fills both the license chip and the Crossmark
+        # chip (retraction / correction / etc.) for free. Walks
+        # every paper that has a DOI but no cached license; runs
+        # independently of the 30-day citation-refresh window.
         self._lic_stop = threading.Event()
-        threading.Thread(target=self._license_backfill,
+        threading.Thread(target=self._crossref_extras_backfill,
                          daemon=True).start()
 
         # GFileMonitor-based library watcher: react to external file
@@ -1574,7 +1676,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             if not doi:
                 continue
             (n, src, kw, abstract, authorships, cby,
-             oa_title, oa_year) = metrics.fetch_metrics(doi)
+             oa_title, oa_year, is_oa, oa_status) = metrics.fetch_metrics(doi)
             if n is None:
                 self._cit_failed_session.add(row["pdf_path"])
             else:
@@ -1604,21 +1706,31 @@ class BrowserWindow(Adw.ApplicationWindow):
                             rec["authors"] = oa_names
                     if cby:
                         rec["citations_by_year"] = cby
-                    # One-shot license fetch from CrossRef. Cheap
-                    # (one polite-pool call) and runs inside the
-                    # same stale-row pass as the citation refresh,
-                    # so a paper grows its license chip the first
-                    # time the refresher visits it. Skip if we
-                    # already have one — license rarely changes
-                    # post-publication.
-                    if not rec.get("license"):
+                    if is_oa is not None:
+                        rec["is_oa"] = is_oa
+                    if oa_status:
+                        rec["oa_status"] = oa_status
+                    # One-shot CrossRef-extras fetch (license +
+                    # crossmark). Cheap — one polite-pool call —
+                    # and piggybacks on the citation-refresh visit
+                    # so a paper grows its chips the first time
+                    # this refresher reaches it. Skip when both
+                    # are already cached. License rarely changes;
+                    # crossmark *can* (a retraction issued later
+                    # is exactly the case we want to catch), but
+                    # the dedicated backfill loop revisits stale
+                    # rows on demand via the refresh affordance.
+                    if not (rec.get("license") and rec.get("crossmark")):
                         try:
-                            lic = metrics.fetch_license(doi)
-                            if lic:
-                                rec["license"] = lic
+                            extras = metrics.fetch_crossref_extras(doi)
+                            if extras:
+                                if extras.get("license") and not rec.get("license"):
+                                    rec["license"] = extras["license"]
+                                if extras.get("crossmark"):
+                                    rec["crossmark"] = extras["crossmark"]
                         except Exception as e:
-                            print("[citations] license fetch "
-                                  "failed for {}: {}".format(doi, e))
+                            print("[citations] CrossRef-extras "
+                                  "fetch failed for {}: {}".format(doi, e))
                     sidecar.write(row["sidecar_path"], rec)
                     # Push the updated record into the index too so the
                     # next reload picks up the new keywords.
@@ -1640,19 +1752,18 @@ class BrowserWindow(Adw.ApplicationWindow):
         self._reload(self.search.get_text() or None)
         return False
 
-    def _license_backfill(self, initial_delay_seconds=10.0,
-                          pause_seconds=3.0):
-        """One-shot pass that fills `license_label` / `license_url`
-        for every paper with a DOI but no cached license. Uses
-        CrossRef only, so it doesn't compete with the OpenAlex
-        budget. Stops cleanly via `_lic_stop`; daemon thread, so
-        closing the window kills it anyway."""
+    def _crossref_extras_backfill(self, initial_delay_seconds=10.0,
+                                   pause_seconds=3.0):
+        """One-shot pass that fills `license_*` and `crossmark_*` for
+        every paper with a DOI but no cached license. One CrossRef
+        call per row covers both, so it doesn't compete with the
+        OpenAlex budget. Stops cleanly via `_lic_stop`."""
         if self._lic_stop.wait(initial_delay_seconds):
             return
         try:
-            rows = index.rows_missing_license(self.conn)
+            rows = index.rows_missing_crossref_extras(self.conn)
         except Exception as e:
-            print("[license] index lookup failed:", e)
+            print("[crossref] index lookup failed:", e)
             return
         if not rows:
             return
@@ -1664,17 +1775,21 @@ class BrowserWindow(Adw.ApplicationWindow):
             if not doi:
                 continue
             try:
-                lic = metrics.fetch_license(doi)
+                extras = metrics.fetch_crossref_extras(doi)
             except Exception as e:
-                print("[license] fetch failed for {}: {}".format(doi, e))
-                lic = None
-            if not lic:
+                print("[crossref] fetch failed for {}: {}".format(doi, e))
+                extras = None
+            if not extras or not (extras.get("license")
+                                  or extras.get("crossmark")):
                 if self._lic_stop.wait(pause_seconds):
                     return
                 continue
             try:
                 rec = sidecar.read(row["sidecar_path"])
-                rec["license"] = lic
+                if extras.get("license"):
+                    rec["license"] = extras["license"]
+                if extras.get("crossmark"):
+                    rec["crossmark"] = extras["crossmark"]
                 sidecar.write(row["sidecar_path"], rec)
                 th = row.get("thumb_path")
                 mtime = os.path.getmtime(row["sidecar_path"])
@@ -1682,12 +1797,12 @@ class BrowserWindow(Adw.ApplicationWindow):
                              row["sidecar_path"], th, rec, mtime)
                 filled += 1
             except Exception as e:
-                print("[license] sidecar write failed for {}: {}"
+                print("[crossref] sidecar write failed for {}: {}"
                       .format(row.get("pdf_path"), e))
             if self._lic_stop.wait(pause_seconds):
                 return
         if filled:
-            print("[license] backfilled {} row(s)".format(filled))
+            print("[crossref] backfilled {} row(s)".format(filled))
             # Repaint cards so newly-filled chips appear without
             # the user having to scroll or reload.
             GLib.idle_add(lambda: (self._reload(self.search.get_text() or None),

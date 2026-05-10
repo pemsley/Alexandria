@@ -149,7 +149,14 @@ CREATE TABLE IF NOT EXISTS papers (
     published_version_json TEXT,
     is_supplementary INTEGER DEFAULT 0,
     license_label TEXT,
-    license_url   TEXT
+    license_url   TEXT,
+    crossmark_label    TEXT,
+    crossmark_type     TEXT,
+    crossmark_severity INTEGER,
+    crossmark_doi      TEXT,
+    crossmark_year     INTEGER,
+    is_oa     INTEGER,
+    oa_status TEXT
 );
 """
 
@@ -198,6 +205,21 @@ def _migrate(conn):
         conn.execute("ALTER TABLE papers ADD COLUMN license_label TEXT")
     if "license_url" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN license_url TEXT")
+    if "crossmark_label" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN crossmark_label TEXT")
+    if "crossmark_type" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN crossmark_type TEXT")
+    if "crossmark_severity" not in cols:
+        conn.execute(
+            "ALTER TABLE papers ADD COLUMN crossmark_severity INTEGER")
+    if "crossmark_doi" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN crossmark_doi TEXT")
+    if "crossmark_year" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN crossmark_year INTEGER")
+    if "is_oa" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN is_oa INTEGER")
+    if "oa_status" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN oa_status TEXT")
     conn.commit()
     _reencode_unicode_columns(conn)
     _backfill_highlight_text(conn)
@@ -817,6 +839,26 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
     lic = record.get("license") or {}
     license_label = lic.get("label") if isinstance(lic, dict) else None
     license_url = lic.get("url") if isinstance(lic, dict) else None
+    cm = record.get("crossmark") or {}
+    if isinstance(cm, dict):
+        crossmark_label = cm.get("label")
+        crossmark_type = cm.get("type")
+        crossmark_severity = cm.get("severity")
+        crossmark_doi = cm.get("doi")
+        crossmark_year = cm.get("year")
+    else:
+        crossmark_label = crossmark_type = None
+        crossmark_severity = crossmark_doi = crossmark_year = None
+    # OpenAlex OA flag — None when unknown, 0/1 otherwise. The chip
+    # renderer differentiates "unknown" (no chip) from "known
+    # paywalled" (no chip either, intentionally — the *absence* of
+    # the OA chip is the paywalled signal).
+    is_oa_raw = record.get("is_oa")
+    if is_oa_raw is None:
+        is_oa_int = None
+    else:
+        is_oa_int = 1 if is_oa_raw else 0
+    oa_status_v = record.get("oa_status") or None
     conn.execute("""
         INSERT INTO papers
             (pdf_path, sidecar_path, thumb_path, title, authors_json,
@@ -827,8 +869,11 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
              citations_by_year_json, published_version_json,
              is_supplementary,
              highlights_text, comments_text,
-             license_label, license_url)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             license_label, license_url,
+             crossmark_label, crossmark_type, crossmark_severity,
+             crossmark_doi, crossmark_year,
+             is_oa, oa_status)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(pdf_path) DO UPDATE SET
             sidecar_path=excluded.sidecar_path,
             thumb_path=excluded.thumb_path,
@@ -856,7 +901,14 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
             highlights_text=excluded.highlights_text,
             comments_text=excluded.comments_text,
             license_label=excluded.license_label,
-            license_url=excluded.license_url
+            license_url=excluded.license_url,
+            crossmark_label=excluded.crossmark_label,
+            crossmark_type=excluded.crossmark_type,
+            crossmark_severity=excluded.crossmark_severity,
+            crossmark_doi=excluded.crossmark_doi,
+            crossmark_year=excluded.crossmark_year,
+            is_oa=excluded.is_oa,
+            oa_status=excluded.oa_status
     """, (pdf_path, sidecar_path, thumb_path,
           record.get("title"), authors_json,
           record.get("year"), record.get("doi"), record.get("journal"),
@@ -872,7 +924,10 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
           cby_json, pv_json,
           1 if record.get("is_supplementary") else 0,
           h_blob, c_blob,
-          license_label, license_url))
+          license_label, license_url,
+          crossmark_label, crossmark_type, crossmark_severity,
+          crossmark_doi, crossmark_year,
+          is_oa_int, oa_status_v))
     conn.commit()
 
 
@@ -894,11 +949,14 @@ def stale_citation_rows(conn, max_age_days=30, limit=None):
     return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
-def rows_missing_license(conn, limit=None):
-    """Rows with a DOI but no `license_label` cached. Drives the
-    one-shot license-backfill pass in the browser — independent of
-    the citation refresh window so a recently-refreshed library
-    still picks up license chips without waiting 30 days."""
+def rows_missing_crossref_extras(conn, limit=None):
+    """Rows with a DOI but no cached license info. Drives the
+    one-shot CrossRef-backfill pass in the browser — independent of
+    the 30-day citation-refresh window. A single CrossRef call per
+    row fills *both* license and crossmark, so we key off
+    `license_label` and let crossmark come along for the ride
+    (crossmark is often null even when license is set — most
+    papers never get retracted)."""
     sql = """
         SELECT * FROM papers
         WHERE doi IS NOT NULL AND doi <> ''

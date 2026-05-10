@@ -293,14 +293,41 @@ def _download_pdf(url, target_path, timeout=60):
     except OSError as e:
         return False, str(e)
     if size < 1024 or head != b"%PDF-":
+        # urllib succeeded (HTTP 200) but the body is HTML — a
+        # Cloudflare interstitial wrapped in a successful response,
+        # not a 403. The IUCr "Radiation damage" case fits this
+        # exactly. Retry via curl, which sees the real PDF.
+        looks_like_html = (head[:5].lower().startswith(b"<htm")
+                           or head[:5] == b"<!DOC"[:5])
+        if looks_like_html:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            ok, curl_msg = _curl_download(url, tmp, timeout)
+            if ok:
+                # Re-run the sanity check on whatever curl fetched.
+                try:
+                    size = os.path.getsize(tmp)
+                    with open(tmp, "rb") as f:
+                        head = f.read(5)
+                except OSError as e:
+                    return False, str(e)
+                if size >= 1024 and head == b"%PDF-":
+                    os.rename(tmp, target_path)
+                    return True, ""
+            try:
+                if os.path.isfile(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            return False, ("server returned HTML, not a PDF — likely "
+                           "an anti-bot challenge or login wall; curl "
+                           "fallback also did not yield a PDF")
         try:
             os.remove(tmp)
         except OSError:
             pass
-        # Most likely we got an HTML challenge / login page.
-        if head[:5].lower().startswith(b"<htm") or head[:5] == b"<!DOC"[:5]:
-            return False, ("server returned HTML, not a PDF — likely "
-                           "an anti-bot challenge or login wall")
         return False, "downloaded data isn't a PDF (size={}, head={!r})".format(
             size, head)
     os.rename(tmp, target_path)

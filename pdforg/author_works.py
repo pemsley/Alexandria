@@ -201,15 +201,41 @@ def _filename_for(doi, oa_url):
     return None
 
 
+def _curl_download(url, tmp_path, timeout):
+    """Subprocess curl fallback. Used when urllib hits a Cloudflare
+    403 — Cloudflare TLS-fingerprints Python's `ssl` module and
+    rejects it before the request body is even read. System curl
+    presents a different TLS ClientHello that Cloudflare accepts.
+    Returns (ok, msg). Curl ships in the GNOME Flatpak runtime, so
+    this works inside the sandbox too."""
+    try:
+        proc = subprocess.run(
+            ["curl", "-sS", "-L",
+             "--max-time", str(int(timeout)),
+             "-A", "pdforg/0.1 (mailto:alexandria@example.org)",
+             "-o", tmp_path,
+             url],
+            capture_output=True, timeout=timeout + 5)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, "curl fallback failed: {}".format(e)
+    if proc.returncode != 0:
+        err = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+        return False, "curl: {}".format(err or "exit {}".format(proc.returncode))
+    return True, ""
+
+
 def _download_pdf(url, target_path, timeout=60):
     """Download `url` to `target_path` atomically (.tmp + rename).
     Returns (ok, msg). The returned msg is empty on success and
-    a short user-friendly explanation otherwise."""
+    a short user-friendly explanation otherwise.
+
+    Tries urllib first; on a Cloudflare 403 (the IUCr / Wiley etc.
+    case — TLS-fingerprint rejection rather than a JS challenge),
+    retries via subprocess curl which uses a different TLS stack."""
     tmp = target_path + ".tmp"
     # Pretend to be a normal browser: many publishers (and Cloudflare-
     # protected sites in particular) will 403 anything that doesn't
-    # look like one. This still won't get past a JS challenge — see
-    # the 403 handler below.
+    # look like one.
     headers = {
         "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) "
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -231,15 +257,27 @@ def _download_pdf(url, target_path, timeout=60):
         if e.code == 403 and "cloudflare" in (
                 (e.headers.get("server") or "").lower()
                 if e.headers else ""):
-            return False, ("blocked by Cloudflare bot challenge — "
-                           "click View to download in your browser")
-        if e.code == 403:
-            return False, ("HTTP 403 Forbidden — the publisher refused "
-                           "the download. Use View to see the paper in "
-                           "your browser.")
-        if e.code == 404:
-            return False, "HTTP 404 — the PDF URL is no longer valid"
-        return False, "HTTP {} {}".format(e.code, e.reason or "")
+            # Cloudflare rejected the urllib request on TLS
+            # fingerprint. Retry via curl, which presents a
+            # different ClientHello and is usually accepted.
+            ok, curl_msg = _curl_download(url, tmp, timeout)
+            if not ok:
+                try:
+                    if os.path.isfile(tmp):
+                        os.remove(tmp)
+                except OSError:
+                    pass
+                return False, ("blocked by Cloudflare; curl fallback "
+                               "also failed ({})".format(curl_msg))
+            # Fall through to the PDF sanity-check below.
+        else:
+            if e.code == 403:
+                return False, ("HTTP 403 Forbidden — the publisher refused "
+                               "the download. Use View to see the paper in "
+                               "your browser.")
+            if e.code == 404:
+                return False, "HTTP 404 — the PDF URL is no longer valid"
+            return False, "HTTP {} {}".format(e.code, e.reason or "")
     except (urllib.error.URLError, OSError, TimeoutError) as e:
         try:
             if os.path.isfile(tmp):

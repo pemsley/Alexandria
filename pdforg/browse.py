@@ -681,6 +681,22 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     cm_chip = make_crossmark_chip(cm_label, cm_sev, cm_year, cm_doi)
     if cm_chip is not None:
         title_row.append(cm_chip)
+    title = Gtk.Label()
+    title.set_markup("<b>{}</b>".format(
+        safe_pango_markup(row["title"] or "(untitled)")))
+    title.set_halign(Gtk.Align.START)
+    title.set_wrap(True)
+    title.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+    title.set_max_width_chars(80)
+    title.set_selectable(True)
+    title.set_hexpand(True)
+    title_row.append(title)
+
+    # License / OA chip sits to the right of the title — it's
+    # informational rather than critical, so the title gets the
+    # left edge and the chip rides the right margin. The title
+    # has hexpand=True above, so anything appended after it gets
+    # pushed all the way over.
     try:
         lic_label = row["license_label"] if "license_label" in row.keys() else None
         lic_url   = row["license_url"]   if "license_url"   in row.keys() else None
@@ -688,6 +704,7 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
         lic_label, lic_url = None, None
     lic_chip = make_license_chip(lic_label, lic_url)
     if lic_chip is not None:
+        lic_chip.set_valign(Gtk.Align.START)
         title_row.append(lic_chip)
     else:
         # No CrossRef license — fall back to OpenAlex's is_oa /
@@ -701,17 +718,8 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
             is_oa_v, oa_st = None, None
         oa_chip = make_oa_chip(is_oa_v, oa_st)
         if oa_chip is not None:
+            oa_chip.set_valign(Gtk.Align.START)
             title_row.append(oa_chip)
-    title = Gtk.Label()
-    title.set_markup("<b>{}</b>".format(
-        safe_pango_markup(row["title"] or "(untitled)")))
-    title.set_halign(Gtk.Align.START)
-    title.set_wrap(True)
-    title.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
-    title.set_max_width_chars(80)
-    title.set_selectable(True)
-    title.set_hexpand(True)
-    title_row.append(title)
     text.append(title_row)
 
     # Authors row: clickable, opens a popover with the full list and

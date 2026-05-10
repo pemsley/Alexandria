@@ -288,11 +288,17 @@ def import_pdf(conn, pdf_path):
         # rename. Adopt the existing row instead of creating a new one.
         return _adopt_renamed(conn, pdf_path, by_hash, sha), "renamed"
 
-    # Otherwise extract metadata and proceed with normal dedup logic.
+    if by_hash:
+        # Byte-identical copy of a PDF already in the library and the
+        # original is still on disk. Skip _build_record's poppler
+        # extraction — we already know the metadata.
+        return by_hash, "duplicate"
+
+    # No hash match: extract metadata and dedup by DOI.
     rec = _build_record(pdf_path)
     rec["sha256"] = sha
-    dup = by_hash or index.find_duplicate(conn, doi=rec.get("doi"),
-                                          exclude_path=pdf_path)
+    dup = index.find_duplicate(conn, doi=rec.get("doi"),
+                               exclude_path=pdf_path)
     if dup:
         return dup, "duplicate"
 

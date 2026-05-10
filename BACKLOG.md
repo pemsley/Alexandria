@@ -531,6 +531,49 @@ ourselves via `mailto:` in `User-Agent` is in place via
   live before the next is touched. Bring up after midnight UTC
   some evening when there's a clear session to spend.
 
+- **SemOpenAlex as a side-channel for ontology + federated
+  queries.** Not a rate-limit workaround — see the writeup in
+  `chat-stuff/competitors.md`. SemOpenAlex (Färber et al.,
+  KIT/metaphacts; ISWC 2023 best paper) is a public no-auth
+  SPARQL endpoint at `semopenalex.org/sparql` projecting the
+  OpenAlex AWS snapshot into RDF (~26B triples, CC0). Monthly
+  stale, undocumented per-query timeouts on a shared GraphDB
+  instance — so it can't replace our live REST traffic for
+  cite counts / find-by-DOI / find-published-version. What it
+  *uniquely* offers:
+    - **`owl:sameAs` to ORCID, ROR, Wikidata, DBpedia** as
+      first-class triples. Federated SPARQL via `SERVICE
+      <https://query.wikidata.org/sparql>` joins across
+      knowledge graphs in one round-trip. A "Wikidata-linked"
+      chip on the author dialog drops out of one query rather
+      than an OpenAlex call + a Wikidata call + a manual join.
+    - **SKOS concept hierarchy traversal** via `skos:broader+`
+      in a single query — enables a parent/child topic browser
+      for the subscription feed's topic-of-interest affordance.
+    - **Cross-source identifier resolution** — given a DOI,
+      return ORCID + ROR + Wikidata + DBpedia IDs in one shot
+      for use by future "Look up author in Wikipedia",
+      "Validate institution against ROR", etc.
+
+  **What it'd take.** New module `pdforg/semopenalex.py` wrapping
+  `SPARQLWrapper` (PyPI, light dependency) or hand-rolled
+  HTTP-to-`application/sparql-results+json`. Each feature ships
+  as its own helper with explicit fallback when the endpoint is
+  slow or down — SPARQL endpoints fail differently from REST
+  APIs and the caller has to be ready.
+
+  **Use only for the features REST can't cover.** Specifically
+  *not* a substitute for any current `metrics.py` helper. Keep
+  the existing OpenAlex REST path for everything live; use
+  SemOpenAlex only when crossing into Wikidata / ORCID / ROR
+  enrichment or doing ontology traversal.
+
+  Caveats flagged in the survey: snapshot freshness only
+  documented up to 2023-03-28 in the paper; the "monthly
+  refresh" cadence is a pipeline goal, not a measured fact; no
+  public SPARQL-vs-REST latency benchmarks for this endpoint.
+  Verify any of these before building against them.
+
 ## Sorting & filtering
 - Tag chips + filter sidebar
 - FTS to include mark labels

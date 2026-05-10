@@ -61,8 +61,14 @@ def _attach_copy_link_menu(button, url):
     gesture.connect("pressed", on_press)
     button.add_controller(gesture)
 
-LIBRARY_ROOT = os.environ.get(
-    "PDFORG_LIBRARY", os.path.expanduser("~/pdfs"))
+from . import prefs as _prefs
+
+# Read on import — same shape as `browse.LIBRARY_ROOT`. Previously
+# this module had its own `os.environ.get("PDFORG_LIBRARY", "~/pdfs")`
+# fallback, which ignored the Preferences-set root entirely and
+# dropped "Add to Archive" downloads into `~/pdfs` instead of the
+# real library directory.
+LIBRARY_ROOT = _prefs.get_library_root()
 
 
 def _fmt_compact(n):

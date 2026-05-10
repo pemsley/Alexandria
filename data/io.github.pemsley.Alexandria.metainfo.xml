@@ -40,7 +40,7 @@
   <url type="homepage">https://github.com/pemsley/Alexandria</url>
   <url type="bugtracker">https://github.com/pemsley/Alexandria/issues</url>
 
-  <developer>
+  <developer id="io.github.pemsley">
     <name>Paul Emsley</name>
   </developer>
 

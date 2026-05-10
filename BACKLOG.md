@@ -117,6 +117,33 @@ Pending features, roughly grouped. Newest at the top of each section.
   point as well as a real workflow improvement. (See
   `chat-stuff/competitors.md`.)
 
+- **"Fetch when inside the firewall" waiting list.** When the
+  user is off-campus they often find a paper they *can't* get now
+  but *could* get through their institution's subscription once
+  back inside the firewall (or on VPN/EZproxy). Today the only
+  option is "remember to do it later", which doesn't scale.
+  Sketch:
+    - A per-paper "Add to fetch-later list" action on any card /
+      ghost / discovered row where the PDF couldn't be retrieved.
+      Stores `{doi, title, added_at, source_url}` in a small
+      `fetch_queue` table (sibling of `subscriptions`).
+    - A "Fetch list" view (hamburger), like the Subscriptions
+      window: shows queued items, manual "Try now" per row, and
+      a bulk "Try all".
+    - **Auto-trigger when the network changes.** The hard part is
+      knowing we're "inside" again. Options, cheapest first:
+      (a) manual "I'm on the network now → try all" button (v1);
+      (b) detect a successful reach of the EZproxy host / a
+      user-configured "inside" probe URL and surface a toast
+      "You can now fetch N waiting papers";
+      (c) watch for default-route / DNS-suffix change (Linux:
+      poll `/proc/net/route` or netlink) as the trigger for (b).
+    - Composes with the EZproxy item above (that's the fetch
+      mechanism) and the Subscriptions refresher pattern (that's
+      the background-loop shape). v1 is just the table + the
+      manual "Try all" button; the network-aware auto-trigger is
+      the nice-to-have follow-up.
+
 ## Viewer (poppler) v2
 - Text selection + hit-testing (cairo overlay → page coords) — done v1.
 - Highlighting / annotation ("stabilo" mode) — done v1.

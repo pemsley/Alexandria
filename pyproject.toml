@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alexandria"
-version = "0.1.0"
+version = "0.0.1"
 description = "Alexandria — a GTK4 personal library of scientific papers, with annotations, citation tracking, and OpenAlex integration"
 readme = "README.md"
 license = "GPL-3.0-or-later"

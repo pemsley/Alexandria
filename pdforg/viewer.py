@@ -843,6 +843,17 @@ class PdfViewerWindow(Gtk.Window):
             sidecar_mod.write(self.sidecar_path, rec)
         except Exception as e:
             print("viewer: sidecar write failed:", e)
+            return
+        # Tell the library window to refresh — the watcher
+        # suppresses our own sidecar writes, so the comment-count
+        # chip wouldn't update otherwise. Debounced on the browser
+        # side, so save-spamming is fine.
+        pw = self.parent_window
+        if pw is not None and hasattr(pw, "notify_sidecar_changed"):
+            try:
+                pw.notify_sidecar_changed("annotation saved")
+            except Exception:
+                pass
 
     def _attach_click_controller(self, da, page_idx):
         """Per-page primary-button click. Handles citation-link jumps

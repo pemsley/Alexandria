@@ -32,7 +32,7 @@ install-data:
 	-gtk-update-icon-cache   $(ICON_BASE) 2>/dev/null
 
 uninstall: uninstall-data
-	-$(PYTHON) -m pip uninstall -y pdforg
+	-$(PYTHON) -m pip uninstall -y alexandria
 
 uninstall-data:
 	-rm -f $(DESKTOP_DIR)/$(DESKTOP)

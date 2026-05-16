@@ -35,6 +35,31 @@ Pending features, roughly grouped. Newest at the top of each section.
       keep search strictly per-catalog?
     - Sidecar paths and ghost-import dirs (`.alexandria-bibtex/`)
       are still per-catalog.
+    - **Forward-compatibility note (v0.1.0).** Today's on-disk
+      decisions don't paint us in: `*.pdf.alexandria` is a
+      per-file extension, identical inside a flat library or a
+      `<category>/` subdir; the per-host SQLite filename
+      `library.<host-hash>.db` extends naturally to
+      `$XDG_STATE_HOME/Alexandria/<category>/library.<host-hash>.db`
+      — one state dir per category, otherwise identical. The
+      backwards-compatible migration: an existing v0.1.0 flat
+      library is treated as the implicit `default` category; no
+      file moves needed on upgrade. Categories are an additive
+      change against the v0.1.0 format.
+    - **Shared folders (read: someone else's directory).** Not
+      really an Alexandria feature — it's a permissions topic.
+      Outside Flatpak it's pure Unix: the user mounts /
+      symlinks / chmods their shared library somewhere and
+      Alexandria reads it. Inside Flatpak the sandbox only
+      sees `xdg-documents` by default; advanced users grant
+      additional paths via Flatseal or `flatpak override --user
+      --filesystem=/path/to/share`. Document the Flatseal path
+      in README under "advanced setup" rather than build a
+      bespoke "Shared Folders" UI. Cross-host concurrency over
+      a shared library is still bound by the
+      single-writer-at-a-time guarantee documented in
+      `docs/design/database-and-nfs.md` — two simultaneous
+      editors on two hosts is the unsolved race.
 - **Import from DOI (paste):** small dialog with a DOI entry field. Fetch
   metadata via OpenAlex/CrossRef, then attempt to fetch the open-access
   PDF (when `is_oa` and `oa_url` are present); if no OA copy, save a

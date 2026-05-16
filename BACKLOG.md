@@ -694,7 +694,7 @@ active editors on two hosts is not. These items would harden it.
   JSON is read. Fix:
     - One `os.scandir(library_root)` per directory: a single
       round-trip returns every entry's mtime.
-    - For each `*.meta.json` entry, compare against
+    - For each `*.alexandria` entry, compare against
       `papers.sidecar_mtime` already in the DB.
     - Only `sidecar.read` + `index.upsert` for the rows whose
       mtime moved (or that aren't in the DB at all).

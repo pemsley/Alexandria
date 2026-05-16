@@ -7,7 +7,7 @@ of events:
   background thread. DELETED / MOVED_OUT → drop the index row.
   RENAMED in-place → re-import; SHA-256 detection adopts the row.
 
-* Sidecar files (`*.meta.json`): CHANGED / CHANGES_DONE_HINT /
+* Sidecar files (`*.alexandria`): CHANGED / CHANGES_DONE_HINT /
   CREATED → re-read the sidecar and refresh the index row. This is
   what makes `pdforg-import --refresh` invisibly update the running
   browser — the CLI rewrites the JSON, the watcher sees it, the row

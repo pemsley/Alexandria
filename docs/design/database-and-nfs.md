@@ -24,16 +24,51 @@ process — possibly on more than one host — touches the same library?"
     $XDG_STATE_HOME/Alexandria/library.<host-hash>.db
     # default: ~/.local/state/Alexandria/library.<host-hash>.db
 
-The `<host-hash>` is a 4-character `blake2s` digest of
-`socket.gethostname()` (stripped to the short name). Each host
-therefore gets its own DB file even when `$HOME` is NFS-mounted and
-shared — the two filenames simply don't collide. This is the
-**guardrail against the multi-host-on-shared-$HOME accident**: hostA
-launches Alexandria, forgets to close it; the next day hostB launches
-Alexandria against the same `$HOME`. Without per-host filenames, both
-processes would open the same DB over NFS and the WAL would corrupt
-silently. With per-host filenames, each just opens its own file and
-the worst case is duplicated import work, not a corrupted index.
+The `<host-hash>` is a 4-character `blake2s` digest of a **stable
+host identifier**, picked in this order (see `_stable_host_id` in
+`index.py`):
+
+1. `/etc/machine-id` (Linux systemd).
+2. `/var/lib/dbus/machine-id` (pre-systemd Linux).
+3. macOS `IOPlatformUUID` via `ioreg -d2 -c IOPlatformExpertDevice`.
+4. Last-resort sentinel file
+   `$XDG_STATE_HOME/Alexandria/host-id` containing a UUID we
+   generate on first launch.
+
+The first three are host-specific even when `$HOME` is NFS-mounted
+and shared — so each host gets its own DB filename and the two
+files simply don't collide. This is the **guardrail against the
+multi-host-on-shared-$HOME accident**: hostA launches Alexandria,
+forgets to close it; the next day hostB launches Alexandria against
+the same `$HOME`. Without per-host filenames, both processes would
+open the same DB over NFS and the WAL would corrupt silently. With
+per-host filenames, each just opens its own file and the worst case
+is duplicated import work, not a corrupted index.
+
+### Why not `socket.gethostname()`
+
+The initial implementation hashed `socket.gethostname()`. That turns
+out to be **not stable on macOS** — the hostname returned by
+`gethostname()` changes when the machine joins a different network
+(mDNS picks a new `<name>.local`), gets a new DHCP lease, or wakes
+from sleep on a foreign LAN. A drifting hostname means a drifting
+DB filename, which made the user's library appear to "go missing"
+on a different network even on a single-machine install. The
+sources listed above are stable: `machine-id` is generated at
+install time; `IOPlatformUUID` is set in the hardware at
+manufacturing time.
+
+### Sentinel fallback caveat
+
+The sentinel-UUID fallback (#4) is *not* host-specific when `$HOME`
+is shared — two hosts reading the same sentinel will compute the
+same hash and open the same DB, defeating the multi-host
+protection. We accept this because the platforms where NFS-shared
+`$HOME` is realistic (Linux server installs, university cluster
+login nodes) all have `/etc/machine-id`, and macOS has
+`IOPlatformUUID`. The sentinel only kicks in on something exotic
+where neither is available, in which case the user almost certainly
+isn't sharing `$HOME` across machines anyway.
 
 The comment at the top of `index.py` is explicit:
 
@@ -45,14 +80,20 @@ no DB-level synchronisation between them, and no SQLite write
 contention either. A lost DB can be rebuilt by walking the library
 and re-importing each PDF; nothing irreplaceable lives there.
 
-### Legacy single-file migration
+### Legacy / stale-hash adoption
 
-Earlier versions used the unsuffixed name `library.db`. On first
-launch, `_migrate_legacy_db()` renames any pre-existing
-`library.db` (and its `-wal` / `-shm` companions) to
-`library.<host-hash>.db` so existing installs are picked up without
-a rebuild. The rename is a no-op if the host-hashed file already
-exists.
+`_migrate_legacy_db()` runs in `open_db` before the connect, and
+adopts an existing DB into the current stable-host-hashed name:
+
+- Pre-host-hash installs (`library.db`) — renamed once.
+- Pre-stable-host-id installs (`library.<old-hostname-hash>.db`,
+  from the brief window where the hash was driven by
+  `gethostname()`) — also renamed once.
+
+If exactly one candidate is found, it's renamed (with its `-wal` /
+`-shm` companions). If multiple candidates are found, the migrator
+refuses to guess and logs to stderr; the user moves the right one
+manually. If no candidates exist (fresh install), nothing happens.
 
 The connection is opened with:
 
@@ -116,7 +157,7 @@ at a freshly-truncated file.
 When host A writes a sidecar, the local-host expectation is:
 
 1. GFileMonitor on host A's library directory fires `_on_changed`
-   for the new/modified `*.meta.json`.
+   for the new/modified `*.alexandria`.
 2. The watcher re-reads the sidecar and upserts the local DB row.
 3. The GUI redraws.
 
@@ -128,7 +169,7 @@ This story breaks down across NFS clients. **inotify watches local
 kernel inode events; it does not see writes from other NFS
 clients.** So:
 
-* Host A writes `foo.pdf.meta.json` to the share → host A sees
+* Host A writes `foo.pdf.alexandria` to the share → host A sees
   it instantly.
 * Host B's GFileMonitor stays silent until B does its own stat
   (refresh button, restart, reload). Eventually-consistent at best.
@@ -141,7 +182,7 @@ default and we do not force it.
 
 ### Concurrent same-file writes — clobber
 
-Both hosts use the same tmp filename `foo.pdf.meta.json.tmp`. If A
+Both hosts use the same tmp filename `foo.pdf.alexandria.tmp`. If A
 and B write the same record at the same wall-clock moment:
 
 1. Both writers open the same tmp path.
@@ -186,8 +227,8 @@ scratch next time.
   the library and diff mtimes; layer it on top of the GFileMonitor
   signal. Catches remote-NFS sidecar writes that inotify misses.
 * **Hostname-suffixed tmp paths for sidecars** — *shipped*.
-  `sidecar.write` now writes to `foo.pdf.meta.json.<host>.<pid>.tmp`
-  instead of the shared `foo.pdf.meta.json.tmp`. Doesn't fix
+  `sidecar.write` now writes to `foo.pdf.alexandria.<host>.<pid>.tmp`
+  instead of the shared `foo.pdf.alexandria.tmp`. Doesn't fix
   last-rename-wins but eliminates the corrupt-tmp variant where two
   writers stomp on each other's tmp file mid-flush.
 * **Read-modify-write with mtime check before rename.** If the

@@ -1483,7 +1483,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         # alongside the in-library copy. Required inside Flatpak (the
         # FileChooser portal hands us a transient bind-mount that
         # disappears once the app stops referencing it) and a
-        # quality-of-life win outside it (no scattered .meta.json
+        # quality-of-life win outside it (no scattered .alexandria
         # files on the user's Desktop / Downloads).
         library_root = prefs.get_library_root()
         n = len(paths)
@@ -3803,6 +3803,14 @@ def main(argv):
         except sqlite3.OperationalError as e:
             _show_db_error_and_quit(app, str(e))
             return
+
+        # One-shot rename of any legacy `*.pdf.meta.json` sidecars
+        # to `*.pdf.alexandria` (pre-v0.1.0 on-disk-format change).
+        # Both calls are idempotent — they cost a directory walk
+        # and a no-op SQL UPDATE on libraries that have already
+        # migrated.
+        sidecar.migrate_library_sidecars(LIBRARY_ROOT)
+        index.migrate_sidecar_paths(conn)
 
         state["conn"] = conn
         win = BrowserWindow(app, conn)

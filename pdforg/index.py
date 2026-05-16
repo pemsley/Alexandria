@@ -8,61 +8,153 @@ import hashlib
 import json
 import os
 import re
-import socket
 import sqlite3
+import subprocess
+import sys
+import uuid
 from datetime import date, timedelta
 
 XDG_STATE = os.environ.get("XDG_STATE_HOME") or os.path.join(
     os.path.expanduser("~"), ".local", "state")
 
 
-def _host_hash():
-    """Stable short hash of this machine's hostname. Used to give
-    each host its own SQLite cache filename when $HOME is shared
-    over NFS, so two hosts running Alexandria against the same
-    library can't trample each other's WAL.
+def _stable_host_id():
+    """Return a string that identifies this machine and is stable
+    across reboots, network changes, OS updates, and DHCP lease
+    renewals. Used by `_host_hash` to derive the per-host DB
+    filename.
 
-    4 hex chars = 16 bits, ~0.1 % birthday-paradox collision risk
-    at 10 hosts which is plenty for personal-cluster use. Stable
-    across runs because it's derived from `socket.gethostname()`
-    only; doesn't depend on uptime, IP, or kernel."""
-    raw = (socket.gethostname() or "host").split(".", 1)[0]
-    return hashlib.blake2s(raw.encode("utf-8"),
-                           digest_size=2).hexdigest()  # 4 hex chars
+    First attempt was `socket.gethostname()` — it's not stable on
+    macOS (the hostname changes with network membership, and the
+    `*.local` mDNS name changes with the network's mDNS state).
+    Without a stable identifier, the per-host DB filename shifts
+    underneath the user and their library appears to "go missing"
+    on a different network. The sources below are stable.
+
+    Tried in order:
+    1. `/etc/machine-id` (systemd) — host-specific even when $HOME
+       is NFS-mounted; the right answer on modern Linux.
+    2. `/var/lib/dbus/machine-id` — same, pre-systemd Linux.
+    3. macOS `IOPlatformUUID` via `ioreg` — host-specific, set at
+       hardware manufacturing time. Stable across OS reinstalls.
+    4. Sentinel file at `$XDG_STATE_HOME/Alexandria/host-id` —
+       random UUID generated on first launch. Caveat: when $HOME
+       is NFS-mounted and shared, two hosts will read the *same*
+       sentinel and compute the same hash, defeating the NFS
+       protection. Acceptable fallback because the other sources
+       cover the platforms (Linux + macOS) where NFS-shared $HOME
+       is realistic."""
+    for p in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        try:
+            with open(p, "r") as f:
+                v = f.read().strip()
+            if v:
+                return v
+        except OSError:
+            pass
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(
+                ["ioreg", "-d2", "-c", "IOPlatformExpertDevice"],
+                capture_output=True, text=True, timeout=5)
+            for line in out.stdout.split("\n"):
+                if "IOPlatformUUID" in line:
+                    parts = line.split('"')
+                    if len(parts) >= 4:
+                        return parts[-2]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    sentinel = os.path.join(XDG_STATE, "Alexandria", "host-id")
+    try:
+        with open(sentinel, "r") as f:
+            v = f.read().strip()
+        if v:
+            return v
+    except OSError:
+        pass
+    v = str(uuid.uuid4())
+    try:
+        os.makedirs(os.path.dirname(sentinel), exist_ok=True)
+        with open(sentinel, "w") as f:
+            f.write(v + "\n")
+    except OSError:
+        pass
+    return v
+
+
+def _host_hash():
+    """4-character hex tag for this host, used in the per-host
+    SQLite cache filename. See `_stable_host_id` for the
+    identifier source."""
+    return hashlib.blake2s(_stable_host_id().encode("utf-8"),
+                           digest_size=2).hexdigest()
 
 
 _HOST_DB_NAME = "library." + _host_hash() + ".db"
 _LEGACY_DB_NAME = "library.db"
 DEFAULT_DB_PATH = os.path.join(XDG_STATE, "Alexandria", _HOST_DB_NAME)
 
+# Pattern for any `library.<hash>.db` filename — used by the
+# migrator to spot stale-hash DBs left over from the brittle
+# hostname-based design.
+_HOSTHASH_DB_RE = re.compile(r"^library\.[0-9a-f]{4}\.db$")
+
 
 def _migrate_legacy_db(host_db_path):
-    """One-time rename of the pre-hash `library.db` to the host-
-    suffixed name on this machine. Runs in `open_db` before the
-    first connect.
+    """Adopt an existing legacy or stale-hash DB into the current
+    stable-host-hashed filename. Runs in `open_db` before connect.
 
-    If `host_db_path` already exists, leave the legacy file alone
-    — another launch has migrated us; the legacy file is
-    irrelevant (probably stale from before the migration).
+    Three cases:
+    1. `library.<current-host-hash>.db` already exists → no-op.
+    2. Only `library.db` (pre-host-hash era) exists → rename it.
+    3. Exactly one `library.<other-hash>.db` exists (the host's
+       previous identifier produced a different hash — most
+       commonly because the early host-hash design used
+       `socket.gethostname()` which isn't stable on macOS) →
+       rename it.
 
-    If only the legacy file exists, rename it (plus its -wal /
-    -shm companions if present) to the new name. After the
-    rename, this host owns the file and SQLite reopens it under
-    the new name with no further surgery."""
+    Multiple `library.<*>.db` candidates is ambiguous — we refuse
+    to guess and log to stderr. The user has to move the one they
+    want to `host_db_path` manually."""
     if os.path.exists(host_db_path):
         return
-    legacy = os.path.join(os.path.dirname(host_db_path), _LEGACY_DB_NAME)
-    if not os.path.exists(legacy):
+    parent = os.path.dirname(host_db_path)
+    target_base = os.path.basename(host_db_path)
+    try:
+        entries = os.listdir(parent)
+    except OSError:
         return
+    candidates = []
+    for name in entries:
+        if name == target_base:
+            continue
+        if name == _LEGACY_DB_NAME:
+            candidates.append(name)
+        elif _HOSTHASH_DB_RE.match(name):
+            candidates.append(name)
+    if not candidates:
+        return
+    if len(candidates) > 1:
+        print(("Alexandria: multiple legacy DBs found in {} "
+               "({}). Leaving them in place — the new DB will "
+               "start empty. Move the one you want to {} "
+               "manually.").format(parent,
+                                   ", ".join(sorted(candidates)),
+                                   target_base),
+              file=sys.stderr)
+        return
+    src_base = candidates[0]
     for suffix in ("", "-wal", "-shm"):
-        src = legacy + suffix
+        src = os.path.join(parent, src_base + suffix)
         dst = host_db_path + suffix
         if os.path.exists(src) and not os.path.exists(dst):
             try:
                 os.replace(src, dst)
             except OSError as e:
                 print("legacy db rename {} → {} failed: {}"
-                      .format(src, dst, e))
+                      .format(src, dst, e), file=sys.stderr)
+    print("Alexandria: adopted {} as {}".format(src_base, target_base),
+          file=sys.stderr)
 
 
 # Filesystem types we don't want SQLite's WAL file living on.
@@ -617,6 +709,22 @@ def _migrate_discovered(conn):
     if "oa_status" not in cols:
         conn.execute("ALTER TABLE discovered ADD COLUMN oa_status TEXT")
     conn.commit()
+
+
+def migrate_sidecar_paths(conn, legacy_suffix=".meta.json",
+                          new_suffix=".alexandria"):
+    """Rewrite `papers.sidecar_path` from the legacy suffix to the
+    new one. Companion to `sidecar.migrate_library_sidecars` — that
+    one moves the files on disk; this one fixes the DB rows that
+    still point at the old names. Idempotent: SQLite's REPLACE on a
+    string that doesn't contain the legacy suffix is a no-op.
+    Returns the number of rows updated."""
+    cur = conn.execute(
+        "UPDATE papers SET sidecar_path = REPLACE(sidecar_path, ?, ?) "
+        "WHERE sidecar_path LIKE ?",
+        (legacy_suffix, new_suffix, "%" + legacy_suffix))
+    conn.commit()
+    return cur.rowcount
 
 
 # --- Subscriptions / discovered ---------------------------------------

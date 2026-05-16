@@ -8,7 +8,7 @@ Each entry becomes either:
   with `bibtex_key`, `bibtex_type` and `bibtex_extra`.
 
 * a *ghost* row (when there's no usable file) — a sidecar file is
-  created in `LIBRARY_ROOT/.alexandria-bibtex/<key>.meta.json`, the
+  created in `LIBRARY_ROOT/.alexandria-bibtex/<key>.alexandria`, the
   index row's `pdf_path` is the synthetic `bibtex:<key>`, and there
   is no PDF / thumbnail. The card UI shows it without Open / Rename
   buttons and offers a "Get PDF" action instead.
@@ -107,7 +107,7 @@ def _import_with_pdf(conn, br, file_path):
 
 def _create_ghost(conn, br, library_root):
     """Create a PDF-less sidecar for a BibTeX entry. The sidecar lives
-    in `LIBRARY_ROOT/.alexandria-bibtex/<key>.meta.json` and the
+    in `LIBRARY_ROOT/.alexandria-bibtex/<key>.alexandria` and the
     index row uses `pdf_path = bibtex:<key>`."""
     key = br.get("bibtex_key")
     if not key:

@@ -1,7 +1,10 @@
 """Per-PDF sidecar metadata file (the canonical store).
 
-Lives next to the PDF as <pdf>.meta.json. Plain JSON, hand-editable,
-survives any DB schema change.
+Lives next to the PDF as <pdf>.alexandria. Plain JSON (the
+extension is a UX signal, not a format change — the file is JSON
+and any JSON tool will read it), hand-editable, survives any DB
+schema change. Pre-v0.1.0 sidecars used the `.meta.json` suffix
+and are migrated in-place on startup by `migrate_library_sidecars`.
 """
 
 import json
@@ -26,7 +29,10 @@ def _tmp_suffix():
     return ".{}.{}.tmp".format(host, os.getpid())
 
 SCHEMA_VERSION = 1
-SIDECAR_SUFFIX = ".meta.json"
+SIDECAR_SUFFIX = ".alexandria"
+# Historical suffix; only used by the one-shot migration walker
+# (migrate_library_sidecars) on startup. New writes never use this.
+LEGACY_SIDECAR_SUFFIX = ".meta.json"
 
 # Ghost (PDF-less) entries imported from BibTeX live in this hidden
 # subdirectory of LIBRARY_ROOT. Their `pdf_path` in the index is
@@ -132,3 +138,46 @@ def write(path, record):
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+
+
+def migrate_library_sidecars(library_root):
+    """One-shot rename of every legacy ``*.meta.json`` sidecar to
+    ``*.alexandria``. Idempotent: a second invocation is a no-op
+    because the suffix is no longer found.
+
+    Walks the library root recursively so the ``.alexandria-bibtex``
+    ghost subdirectory is covered without a special case. Skips any
+    legacy file whose target name already exists (extremely
+    unlikely, but safer than silently clobbering hand-edited
+    content).
+
+    Renames sidecars only — the SQLite cache's stale
+    ``sidecar_path`` columns get refreshed on the next watcher
+    event / startup walk. Logged to stderr so a user who runs
+    Alexandria from a terminal sees the migration trail.
+
+    Returns the number of files renamed."""
+    if not library_root or not os.path.isdir(library_root):
+        return 0
+    renamed = 0
+    for dirpath, _dirs, files in os.walk(library_root):
+        for name in files:
+            if not name.endswith(LEGACY_SIDECAR_SUFFIX):
+                continue
+            src = os.path.join(dirpath, name)
+            dst = src[:-len(LEGACY_SIDECAR_SUFFIX)] + SIDECAR_SUFFIX
+            if os.path.exists(dst):
+                continue
+            try:
+                os.replace(src, dst)
+                renamed += 1
+            except OSError as e:
+                import sys
+                print("sidecar migration: {} → {} failed: {}".format(
+                    src, dst, e), file=sys.stderr)
+    if renamed:
+        import sys
+        print("sidecar migration: renamed {} legacy *{} → *{}"
+              .format(renamed, LEGACY_SIDECAR_SUFFIX, SIDECAR_SUFFIX),
+              file=sys.stderr)
+    return renamed

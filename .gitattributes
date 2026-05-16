@@ -1,0 +1,9 @@
+# Paths excluded from `git archive` output (and therefore also from
+# GitHub's auto-generated source tarballs for tagged releases).
+#
+# `export-ignore` only affects archive generation — the files are
+# still tracked by git for collaborators with repo access.
+
+docs/plans/   export-ignore
+notes/        export-ignore
+chat-stuff/   export-ignore

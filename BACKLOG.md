@@ -773,6 +773,76 @@ ourselves via `mailto:` in `User-Agent` is in place via
   item parallel to BibTeX/RIS. Useful for Zotero import (which
   reads CSL JSON natively).
 
+## Static HTML index (Drive-syncable companion view)
+
+- **Goal: armchair reading on a tablet, via Google Drive sync of
+  the library folder.** The user already has Google Drive (or
+  Dropbox / iCloud / rclone) syncing `~/Documents/Alexandria/`;
+  if Alexandria periodically writes an `index.html` into that
+  folder, any tablet with a browser becomes a read-only library
+  browser. No Kotlin / Android codebase to build and maintain.
+  Decided after a competitor analysis pass where a Gemini review
+  suggested building a Kotlin companion app — see
+  `chat-stuff/competitors.md` (or the conversation log) for why
+  a 1–2-month-minimum Android product was rejected in favour of
+  this half-day static-HTML path.
+
+- **File layout.** Single `index.html` at the library root
+  (`~/Documents/Alexandria/index.html`). All assets inlined
+  (CSS + tiny client-side JS for search/filter) so the file is
+  one upload from Drive's perspective. PDF links are *relative*
+  basenames — they resolve correctly inside any Drive-synced
+  folder regardless of mount point. Aligns with the existing
+  property that sidecars reference PDFs by basename only.
+
+- **Contents.** One card per paper, mirroring the desktop
+  browser's card layout in a mobile-friendly form: title (linked
+  to the PDF), authors, year, journal, citation-count chip,
+  mark dot if set, tags. Client-side search box (full-text over
+  title + authors + journal + tags) and a filter chip strip
+  (mark colour, tag). No abstract by default to keep the page
+  light; expand-on-tap for the abstract. Viewport meta + touch
+  hit-targets for tablet ergonomics.
+
+- **Source of data.** Walk the library's `*.alexandria`
+  sidecars, build a JSON blob, embed it inside a `<script
+  type="application/json" id="papers-data">` tag, render the
+  page via the embedded JS on load. Reuses the existing sidecar
+  format as the single source of truth — no new export schema.
+
+- **Regeneration trigger ladder.**
+    - **v1**: a "Generate Drive index" menu entry in the
+      hamburger menu. Manual, predictable, zero new background
+      work. Good enough for the first useful version.
+    - **v1.1**: debounced auto-regen — when a sidecar write
+      lands, schedule a regen 30 s later (resetting the timer on
+      each new write so a 50-PDF import collapses into one
+      regen). Coalesces noise, keeps the file fresh without
+      thrashing Drive sync.
+    - **NOT v1**: regen on every sidecar write (would thrash
+      Drive sync and burn battery), or a separate daemon (too
+      heavy for the value).
+
+- **What's explicitly NOT in scope.**
+    - Cloud sync built into Alexandria. The user's Drive
+      desktop client / rclone / Dropbox client handles file
+      transport. We just write the HTML.
+    - Bidirectional sync (tablet edits flowing back). Read-only
+      by design; sidesteps conflict resolution entirely.
+    - Per-paper PDF streaming. The Drive client already lazy-
+      downloads PDFs on tap on most platforms.
+    - Auth / accounts. The user opens `index.html` from their
+      Drive folder; the existing OS-level Drive auth covers
+      file access.
+
+- **Why this beats a Kotlin app.** Build time ½ day vs 1–2
+  months. Maintenance cost ~zero (HTML + small JS) vs ongoing
+  Android API churn. Reach: anything with a browser, not
+  Android-only. Trade-off: no offline mode unless the Drive
+  client makes the HTML and the PDFs available offline (which
+  modern Drive clients do via "make available offline" per
+  folder).
+
 ## Watcher
 - Recursive subdir watching (currently flat on `LIBRARY_ROOT`)
 - **Clean process shutdown on window close.** Largely done; one

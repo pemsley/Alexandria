@@ -505,6 +505,86 @@ Pending features, roughly grouped. Newest at the top of each section.
   themselves once they open the works window — but a quiet hint
   before they get there is friendlier.
 
+## Sharing
+
+The on-disk format renamed sidecars to `*.pdf.alexandria` in
+v0.1.0 with this whole feature in mind: a recipient who gets a
+`.alexandria` file via email / Slack should be able to open it
+into their own library with zero friction. Three follow-ups
+deferred from the design discussion (v0.1.0 ships with the
+filename change but none of the integration yet):
+
+- **Drag-and-drop sidecar (or sidecar + PDF) out of the main
+  interface.** Each card currently has Open / View / Edit /
+  Rename / Delete actions. Add a draggable source for the
+  sidecar — drag the card itself (or a small "share" handle)
+  and the drag payload is the `*.pdf.alexandria` file. If the
+  user grabs the PDF thumbnail/icon area, the drag payload is
+  the PDF instead. Existing GTK4 `Gtk.DragSource` machinery;
+  payload mime types `application/vnd.alexandria-share+json`
+  for the sidecar, `application/pdf` for the PDF.
+
+  **Why both as separate handles, not a single "share"
+  action:** the on-disk convention is that PDFs are referenced
+  by *basename* from inside the sidecar (`pdf_filename` is a
+  relative name), and the read path assumes PDF + sidecar live
+  in the same directory. So a recipient who drops *both* files
+  into their library directory gets a working pair with no
+  path rewriting. Honour that property in the export path: do
+  NOT rewrite `pdf_filename` to an absolute path on drag.
+
+  **For the v1 sender-side strip:** before handing the
+  `.alexandria` payload to the drag source, strip any
+  sender-absolute paths from the sidecar copy (`pdf_path`,
+  `sidecar_path`, `thumb_path`) and add a provenance
+  breadcrumb (`shared_from: {sender, exported_at}`). The
+  on-disk file in the library is unchanged; the dragged copy
+  is the cleaned export.
+
+- **MIME registration so `.alexandria` opens Alexandria.** Two
+  small additions:
+    - `MimeType=application/vnd.alexandria-share+json;` in the
+      existing `data/io.github.pemsley.Alexandria.desktop`.
+    - A new `data/io.github.pemsley.Alexandria.mime.xml`
+      declaring the type and binding `*.alexandria` to it,
+      with `<sub-class-of type="application/json"/>` so
+      JSON-aware tools still recognise the format. Install in
+      the Flatpak manifest under
+      `/app/share/mime/packages/`.
+
+  After this, double-clicking a `.alexandria` file in Files /
+  Nautilus opens Alexandria with an import preview dialog
+  (see next item). On macOS the equivalent is `Info.plist`
+  `CFBundleDocumentTypes` + `UTExportedTypeDeclarations` —
+  needs an `.app` bundle (Platypus would do the wrapping; see
+  the memory entry). Not relevant for the Flathub ship.
+
+- **Import preview dialog.** When a `.alexandria` (or
+  `.alexandria.zip` bundle) is dragged onto the browser window
+  or opened via MIME handler, surface a dialog instead of
+  silently importing:
+    - Title / authors / abstract preview, sender name from
+      the `shared_from` provenance.
+    - Checkboxes for what to merge: `[✓ metadata] [✓ tags]
+      [✓ notes] [☐ highlights] [☐ comments]` with sane
+      defaults (metadata + tags + notes by default; sender
+      annotations off — too easy to assume they're yours).
+    - Collision UX: if the recipient already has the paper
+      (DOI / sha256 match), show a "Merge into existing row"
+      panel with conflict markers in the comments rather than
+      silently overwriting.
+    - Auto-fetch when sidecar-only: if the bundle is metadata-
+      only and the recipient doesn't have the PDF, offer to
+      try Unpaywall / OA path. Re-resolve through *our*
+      Unpaywall call — never trust the sender's `oa_url`
+      verbatim (security: don't follow a sender-controlled
+      URL).
+    - Hash verify when bundle includes the PDF: if the
+      bundle's sha256 doesn't match the sidecar's, refuse and
+      explain. Catches "wrong file attached" mistakes
+      honestly.
+    - Buttons: `[Add to library] / [Cancel]`.
+
 ## Editor
 
 The sidecars contain many more fields than are editable.

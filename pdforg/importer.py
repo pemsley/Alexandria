@@ -235,7 +235,8 @@ def refresh_pdf(conn, pdf_path):
     sidecar.write(sc_path, fresh)
     th_path = sidecar.thumb_path_for(pdf_path)
     if not os.path.isfile(th_path):
-        thumbnail.make_thumbnail(pdf_path, th_path)
+        thumbnail.make_thumbnail(pdf_path, th_path,
+                                 title=fresh.get("title"))
     mtime = os.path.getmtime(sc_path)
     index.upsert(conn, pdf_path, sc_path,
                  th_path if os.path.isfile(th_path) else None,
@@ -278,7 +279,8 @@ def import_pdf(conn, pdf_path):
         if not rec.get("sha256"):
             rec["sha256"] = _sha256(pdf_path)
             sidecar.write(sc_path, rec)
-        thumbnail.make_thumbnail(pdf_path, th_path)
+        thumbnail.make_thumbnail(pdf_path, th_path,
+                                 title=rec.get("title"))
         mtime = os.path.getmtime(sc_path)
         index.upsert(conn, pdf_path, sc_path,
                      th_path if os.path.isfile(th_path) else None,
@@ -363,7 +365,7 @@ def import_pdf(conn, pdf_path):
             rec["published_version"] = pv
 
     sidecar.write(sc_path, rec)
-    thumbnail.make_thumbnail(pdf_path, th_path)
+    thumbnail.make_thumbnail(pdf_path, th_path, title=rec.get("title"))
     mtime = os.path.getmtime(sc_path)
     index.upsert(conn, pdf_path, sc_path,
                  th_path if os.path.isfile(th_path) else None,
@@ -413,9 +415,11 @@ def _adopt_renamed(conn, new_path, old_row, sha):
         try:
             os.rename(old_th, new_th)
         except OSError:
-            thumbnail.make_thumbnail(new_path, new_th)
+            thumbnail.make_thumbnail(new_path, new_th,
+                                     title=rec.get("title"))
     elif not os.path.isfile(new_th):
-        thumbnail.make_thumbnail(new_path, new_th)
+        thumbnail.make_thumbnail(new_path, new_th,
+                                 title=rec.get("title"))
 
     mtime = os.path.getmtime(new_sc)
     index.upsert(conn, new_path, new_sc,

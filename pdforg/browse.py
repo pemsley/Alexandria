@@ -2591,6 +2591,20 @@ class BrowserWindow(Adw.ApplicationWindow):
 
     # --- File-system watcher callbacks --------------------------------
 
+    def notify_sidecar_changed(self, status="annotation saved"):
+        """Public hook for child windows (the PDF viewer) to request a
+        library refresh after they have written a sidecar themselves.
+
+        The library watcher deliberately suppresses our own sidecar
+        writes (to avoid a write→event→reload feedback loop), so a
+        highlight/comment saved in the viewer would otherwise not
+        update the card's comment-count chip until an unrelated
+        reload. The viewer calls this on save; it rides the same
+        300 ms debounce as watcher changes, so rapid successive
+        saves collapse into one redraw. The chip is recomputed from
+        the on-disk sidecar in make_card, so no DB write is needed."""
+        self._on_watcher_change(status)
+
     def _on_watcher_change(self, status):
         """Called on the GLib main thread after the watcher has applied
         a change to the index (import / delete / rename / reconcile /

@@ -1,12 +1,17 @@
-# Alexandria — install / uninstall targets for desktop integration.
+# Alexandria — install / uninstall / release targets.
 #
 #   make install     — pip install --user, plus .desktop and icon
 #   make uninstall   — reverse the above
+#   make tar         — source tarball for the current commit
 #
 # Override PREFIX for system-wide install (needs root):
 #   sudo make install PREFIX=/usr/local
+#
+# Override VERSION when tagging a release:
+#   make tar VERSION=0.2.0
 
-PREFIX ?= $(HOME)/.local
+PREFIX  ?= $(HOME)/.local
+VERSION ?= 0.1.0
 
 DESKTOP_DIR := $(PREFIX)/share/applications
 ICON_BASE   := $(PREFIX)/share/icons/hicolor
@@ -18,7 +23,7 @@ ICON      := $(APP_ID).svg
 
 PYTHON ?= python3
 
-.PHONY: install install-data uninstall uninstall-data clean dev
+.PHONY: install install-data uninstall uninstall-data clean dev tar
 
 install: install-data
 	$(PYTHON) -m pip install --user .
@@ -44,6 +49,19 @@ uninstall-data:
 dev:
 	$(PYTHON) -m pip install --user -e .
 
+# Source tarball for releases. `git archive` only includes tracked
+# files and honours `.gitattributes export-ignore`, so the tarball
+# stays clean automatically — no need to maintain a hand-rolled
+# file list here. Default is HEAD; pass REF=<tag/branch/sha> to
+# package a specific commit (e.g. `make tar REF=v0.1.0`).
+REF ?= HEAD
+
+tar:
+	git archive --format=tar.gz \
+	    --prefix=alexandria-$(VERSION)/ \
+	    -o alexandria-$(VERSION).tar.gz \
+	    $(REF)
+
 clean:
-	rm -rf build dist *.egg-info
+	rm -rf build dist *.egg-info alexandria*.tar.gz
 	find . -name __pycache__ -prune -exec rm -rf {} +

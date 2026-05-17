@@ -23,6 +23,21 @@ Pending features, roughly grouped. Newest at the top of each section.
   the property holds globally rather than per-spot-check.
 
 ## Import / ingestion
+- **Use Crossref authorships when OpenAlex has no record.** For
+  freshly-published DOIs OpenAlex 404s for days/weeks, so
+  `fetch_metrics` falls back to `_crossref_count` and returns only
+  the citation count — `authorships=[]` (`metrics.py:241`). Meanwhile
+  `extract._crossref_lookup` already fetches the full Crossref author
+  list (given/family names; Crossref also carries ORCID and
+  affiliation strings we currently drop) to populate the flat
+  `authors` list. So we make two Crossref round-trips and discard the
+  richer one. Wire the Crossref fallback in `fetch_metrics` to build
+  an `authorships` array (name + ORCID + affiliation, position by
+  array order) so rich author data is present before OpenAlex indexes
+  the work; let a later OpenAlex `refresh_pdf` upgrade it (openalex_id,
+  institution IDs). Surfaced while debugging science.adv3301 (28
+  authors, byline non-extractable graphics, DOI recovered by page
+  scan, OpenAlex 404).
 - **Drag-and-drop / CLI imports from outside the library tree
   (Flatpak).** Menu-driven Import Files / Import Folder now go
   through `importer.stage_into_library`, which copies the picked PDF

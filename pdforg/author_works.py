@@ -993,6 +993,19 @@ class AuthorWorksWindow(Gtk.Window):
                 "rather than a research article.")
             title_row.append(pl)
 
+        # Preprint badge — OpenAlex work type, or a DOI on a known
+        # preprint server (bioRxiv / arXiv / chemRxiv / …). Same
+        # "PRE" styling as the library card's preprint chip.
+        if (w.get("type") == "preprint"
+                or metrics.is_preprint_doi(w.get("doi"))):
+            pre = Gtk.Label()
+            pre.set_markup(
+                "<span size='small' foreground='#cc6600'>"
+                "<b>PRE</b></span>")
+            pre.set_valign(Gtk.Align.START)
+            pre.set_tooltip_text("Preprint")
+            title_row.append(pre)
+
         # Venue chip (Zenodo / JoVE / bioRxiv / arXiv / ...). One
         # at most. Sits between the title and the in-library
         # badge, right-aligned visually because the title's

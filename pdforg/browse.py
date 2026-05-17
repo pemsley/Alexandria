@@ -76,6 +76,35 @@ def is_preprint(row):
     return any(needle in journal for needle in _PREPRINT_JOURNAL_NEEDLES)
 
 
+def _is_dark_theme(ref_widget):
+    """Whether the UI is *actually being rendered* dark.
+
+    Adw.StyleManager.get_dark() alone can't be trusted: it reflects
+    the requested libadwaita colour-scheme (portal preference / app
+    setting) and is blind to a GTK_THEME=Adwaita:light env override
+    (which forces the GTK theme but not the style manager — the
+    observed `get_dark()==True` while rendering light). The reliable
+    signal is the resolved foreground colour of a realized, styled
+    widget: dark theme ⇒ light text (high luminance). `ref_widget`
+    must be in the window so its colour is theme-resolved."""
+    try:
+        c = ref_widget.get_color()   # Gdk.RGBA, GTK >= 4.10
+        lum = 0.2126 * c.red + 0.7152 * c.green + 0.0722 * c.blue
+        return lum > 0.5             # light text ⇒ dark background
+    except Exception:
+        try:
+            return Adw.StyleManager.get_default().get_dark()
+        except Exception:
+            return False
+
+
+def _title_color(ref_widget):
+    """Card-title colour, tinted blue-green and theme-aware. Light
+    enough on a dark background, dark enough on a light one, tinted
+    so the title is visibly not plain black/white."""
+    return "#c6e8ef" if _is_dark_theme(ref_widget) else "#2c4750"
+
+
 def make_keyword_chip(text):
     """A small auto-keyword (OpenAlex concept) shown beneath a card.
     Plain label with theme-aware dim styling — `alpha` follows the
@@ -682,7 +711,8 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     if cm_chip is not None:
         title_row.append(cm_chip)
     title = Gtk.Label()
-    title.set_markup("<b>{}</b>".format(
+    title.set_markup("<span foreground='{}'><b>{}</b></span>".format(
+        _title_color(parent_window),
         safe_pango_markup(row["title"] or "(untitled)")))
     title.set_halign(Gtk.Align.START)
     title.set_wrap(True)

@@ -51,6 +51,27 @@ def test_extract_empty_inputs():
     assert pdb_mentions.extract_pdb_ids_from_text("4hhb", set()) == set()
 
 
+def test_parse_europepmc_pdb_only():
+    payload = [{
+        "extId": "30425980",
+        "annotations": [
+            {"exact": "4HHB", "type": "Accession Numbers", "section": "Methods",
+             "tags": [{"name": "pdb", "uri": "x"}]},
+            {"exact": "P69905", "type": "Accession Numbers", "section": "Methods",
+             "tags": [{"name": "uniprot", "uri": "x"}]},
+            {"exact": "1A3N", "type": "Accession Numbers", "section": "Results",
+             "tags": [{"name": "PDB", "uri": "y"}]},
+        ],
+    }]
+    got = pdb_mentions.parse_europepmc_annotations(payload)
+    assert sorted(got) == [("30425980", "1a3n", "results"),
+                           ("30425980", "4hhb", "methods")]
+
+def test_parse_europepmc_empty():
+    assert pdb_mentions.parse_europepmc_annotations([]) == []
+    assert pdb_mentions.parse_europepmc_annotations(None) == []
+
+
 # ---- Self-test runner ---------------------------------------------
 
 def _run_all():

@@ -19,6 +19,31 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def parse_europepmc_annotations(payload):
+    """Flatten an annotationsByArticleIds response to a list of
+    (pmid, pdb_id_lower, section_lower_or_None) tuples, keeping only
+    annotations whose source database tag is 'pdb' (case-insensitive)
+    and whose accession matches the PDB id shape."""
+    out = []
+    for article in (payload or []):
+        pmid = str(article.get("extId") or "").strip()
+        if not pmid:
+            continue
+        for ann in (article.get("annotations") or []):
+            is_pdb = any(
+                (t.get("name") or "").strip().lower() == "pdb"
+                for t in (ann.get("tags") or []))
+            if not is_pdb:
+                continue
+            exact = (ann.get("exact") or "").strip()
+            if not _PDB_RE.fullmatch(exact):
+                continue
+            section = ann.get("section")
+            section = section.strip().lower() if section else None
+            out.append((pmid, exact.lower(), section))
+    return out
+
+
 def extract_pdb_ids_from_text(text, valid_pdb_ids):
     """Return the set of lowercased PDB ids mentioned in `text` and
     present in `valid_pdb_ids` (a set of lowercased ids). Rejects

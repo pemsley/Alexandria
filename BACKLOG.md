@@ -444,6 +444,44 @@ Pending features, roughly grouped. Newest at the top of each section.
   data we already pay for; surprisingly informative as a "who is
   this person" cue when disambiguating.
 
+- **PI funding profile in the author dialog (multi-source).**
+  Aggregate an author's grants across their works and enrich them
+  from public funder databases so the dialog shows the
+  funding↔paper relationship — a likely "selling feature" for the
+  author view. Today OpenAlex `grants` (`funder` + `award_id`) are
+  already surfaced *per work* as a Funded-by chip
+  (`author_works.py:1067`); this item is the *aggregated, per-PI*
+  view plus external enrichment.
+    - **Sources, roughly best-first by API quality:**
+      - OpenAlex `grants` — already in hand; aggregate across works.
+      - UKRI Gateway to Research (GtR) — clean REST API, explicit
+        PI/CoI roles, project value + dates. Best first external
+        target.
+      - NIH RePORTER (v2 JSON API) — PI names, project numbers,
+        funding amounts, linked publications.
+      - NSF Award Search (api.nsf.gov) — award abstracts, PI, amounts.
+      - Federal RePORTER / OSTI.GOV — broader US federal coverage;
+        lower priority, more heterogeneous.
+    - **Hard part is entity resolution, not fetching.** These gov
+      funders mostly key on **grant number + PI name + institution**,
+      not ORCID, and ORCID coverage is patchy. Design the
+      PI-matching layer first (ORCID where present; name +
+      institution + funder-grant cross-checks otherwise) and treat
+      each funder as a pluggable adapter behind a common interface,
+      shipping one source at a time starting with GtR.
+    - **Caching: do NOT widen `author_works_cache` /
+      `author_scores`.** Those are clean single-purpose, openalex_id-
+      keyed caches. Add a separate source-tagged cache, e.g.
+      `author_funding_cache(author_key, source, payload_json,
+      fetched_at)` with per-source TTLs, so each provider fetches,
+      expires, and *fails* independently (gov endpoints are flaky;
+      independent degradation matters). Store a thin normalised grant
+      model `{funder, award_id, title, pi, amount, currency, start,
+      end, source, source_url}` for display, alongside the raw
+      payload for re-derivation.
+    - Worth a full brainstorm → spec before implementation; this
+      spans several subsystems (matching, adapters, cache, UI).
+
 - **"This author cites" / "Cited by" author lists in the author
   dialog.** Extend the existing coauthors section in
   `author_works.py` with two more compact lists:
@@ -653,13 +691,15 @@ exported to bibtex.
     Find references in body text, but cannot extract the reference.
 
 ## CrossRef integration
-We currently use CrossRef for two thin things — `_crossref_count`
-and `_crossref_lookup` for title/authors/year fallback during
-extraction. CrossRef returns a lot more on `/works/{doi}` that
-we're throwing away. Items below ranked impact ÷ effort. None
-need anything beyond the polite pool we already use; identifying
-ourselves via `mailto:` in `User-Agent` is in place via
-`extract.CROSSREF_USER_AGENT`.
+We currently use CrossRef for: `_crossref_lookup` (title/authors/year
+fallback during extraction), the citation count + authorships fallback
+in `fetch_metrics` (`_crossref_authorships`, used when OpenAlex has no
+record for a fresh DOI), and `_fetch_crossref_work_message` /
+`fetch_crossref_extras` (license, crossmark). CrossRef returns more on
+`/works/{doi}` that we're still throwing away. Items below ranked
+impact ÷ effort. None need anything beyond the polite pool we already
+use; identifying ourselves via `mailto:` in `User-Agent` is in place
+via `extract.CROSSREF_USER_AGENT`.
 
 - **Crossmark / `update-to` chip.** `GET /works/{doi}/update`
   returns updates pointing to this paper. Render a chip on the
@@ -669,9 +709,14 @@ ourselves via `mailto:` in `User-Agent` is in place via
   paper, runs during the existing citation-refresh pass. ~50 LOC
   + chip rendering.
 
-- **Funder chip.** `funder: [{ name, award: [...] }]` on
-  `/works/{doi}`. Card chip "Funded by NIH R01-…". Quick win for
-  biomedical users. ~10 LOC + chip rendering.
+- **Funder chip.** *(Shipped, from OpenAlex.)* A per-work
+  "Funded by NIH R01-…" chip already renders in the author dialog
+  from OpenAlex `grants` (`author_works.py:1067`). Still open: pull
+  funder/award from CrossRef's `funder: [{ name, award: [...] }]` on
+  `/works/{doi}` as a fallback for works where OpenAlex lacks grant
+  data, and surface the chip on the main paper cards (not just the
+  author dialog). See also the aggregated PI funding profile item
+  under Discovery.
 
 - **Honour `X-Rate-Limit-Limit` / `X-Rate-Limit-Interval`
   headers.** CrossRef returns these on every response and asks

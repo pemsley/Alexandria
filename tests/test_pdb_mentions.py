@@ -14,6 +14,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from pdforg import index
+from pdforg import pdb_mentions
 
 
 def _mem_db():
@@ -30,6 +31,24 @@ def test_pdb_tables_exist():
     names = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"pdb_mentions", "doi_pmid_cache", "pdb_id_cache"} <= names
+
+
+def test_extract_pdb_ids_basic():
+    valid = {"4hhb", "1a3n", "2hhb"}
+    text = "We used 4HHB and 1a3n; see also 2HHB. Year 2023 and word ABCD."
+    assert pdb_mentions.extract_pdb_ids_from_text(text, valid) == {
+        "4hhb", "1a3n", "2hhb"}
+
+def test_extract_rejects_all_digits_and_non_alpha():
+    valid = {"1234"}
+    assert pdb_mentions.extract_pdb_ids_from_text("1234 5678", valid) == set()
+
+def test_extract_requires_validation():
+    assert pdb_mentions.extract_pdb_ids_from_text("9zzz", {"4hhb"}) == set()
+
+def test_extract_empty_inputs():
+    assert pdb_mentions.extract_pdb_ids_from_text("", {"4hhb"}) == set()
+    assert pdb_mentions.extract_pdb_ids_from_text("4hhb", set()) == set()
 
 
 # ---- Self-test runner ---------------------------------------------

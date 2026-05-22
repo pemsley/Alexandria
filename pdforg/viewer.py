@@ -1354,7 +1354,7 @@ class PdfViewerWindow(Gtk.Window):
             return
         br = _build_br(entry, resolved)
 
-        def _on_done(success, message):
+        def _on_done(success, message, label=None):
             try:
                 popover.popdown()
             except Exception:

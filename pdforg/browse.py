@@ -42,11 +42,6 @@ _AUTHOR_SCORE_CREDIT_BUFFER = 1500
 display_auto_keywords = False
 
 
-def open_pdf(path):
-    if not opener.open_external(path):
-        print("open failed:", path)
-
-
 from .markup import safe_pango_markup  # noqa: E402,F401  (re-export)
 
 
@@ -2367,6 +2362,22 @@ class BrowserWindow(Adw.ApplicationWindow):
         self._reload(None)
         self.present()
 
+    def _open_uri_external(self, uri):
+        """Open a URL (e.g. a DOI link) in the user's browser. Uses
+        Gtk.UriLauncher so it routes through the desktop portal — this
+        works inside Flatpak and in plain desktop sessions, unlike
+        webbrowser.open(), which can report success without launching
+        anything in sandboxed/portal contexts. Falls back to the
+        cross-platform opener if UriLauncher is unavailable."""
+        try:
+            Gtk.UriLauncher.new(uri).launch(self, None, None)
+            return
+        except (AttributeError, TypeError, GLib.Error):
+            pass
+        if not opener.open_external(uri):
+            self._toast("Couldn't open {}".format(uri))
+            print("open failed:", uri)
+
     def add_reference_from_viewer(self, br, also_get_pdf, on_done):
         """Public entry point used by `viewer.py` when the user clicks
         the "Add to library" button on a citation popover. Wraps the
@@ -2376,8 +2387,12 @@ class BrowserWindow(Adw.ApplicationWindow):
         `br` is a BibTeX-shaped dict (title/authors/year/journal/doi
         plus a synthesised `bibtex_key`). `also_get_pdf=True` chases
         the OA download via the existing `_on_get_pdf` flow once the
-        ghost is in. `on_done(success: bool, message: str)` is
-        invoked on the GTK thread when the import settles."""
+        ghost is in. `on_done(success, message, label=None)` is invoked
+        on the GTK thread as the import progresses; `label` is an
+        optional explicit button caption (e.g. "Fetching PDF…", "Added
+        (ghost, no PDF)") for callers that surface one — when the PDF
+        fetch is involved it may be called more than once (interim
+        "Fetching PDF…" then a terminal state)."""
         try:
             rec, status = bibtex_import.import_record(
                 self.conn, br, LIBRARY_ROOT)
@@ -2401,15 +2416,30 @@ class BrowserWindow(Adw.ApplicationWindow):
             row = index.find_duplicate(self.conn, doi=rec["doi"],
                                        exclude_path="")
             if row:
-                self._on_get_pdf(row)
-                GLib.idle_add(on_done, True,
-                              "Added; trying to fetch PDF…")
+                # Immediate feedback while the async fetch runs, then
+                # resolve to the real outcome: a PDF that lands upgrades
+                # the ghost ("Added"); a blocked download leaves the
+                # metadata ghost in place ("Added (ghost, no PDF)").
+                GLib.idle_add(on_done, True, "Added; fetching PDF…",
+                              "Fetching PDF…")
+
+                def _settled(pdf_ok, settle_msg):
+                    if pdf_ok:
+                        GLib.idle_add(on_done, True, "Added with PDF.",
+                                      "Added")
+                    else:
+                        GLib.idle_add(
+                            on_done, True,
+                            "Added as ghost; PDF not fetched ({})".format(
+                                settle_msg),
+                            "Added (ghost, no PDF)")
+                self._on_get_pdf(row, on_pdf_settled=_settled)
                 return
         GLib.idle_add(on_done, True,
                       "Added as ghost." if status == "ghost"
                       else "Added.")
 
-    def _on_get_pdf(self, row):
+    def _on_get_pdf(self, row, on_pdf_settled=None):
         """Ghost-card "Get PDF": ask OpenAlex for OA pdf URLs for the
         entry's DOI, try them in order via our existing downloader, and
         on success route through the ghost-merge flow so the BibTeX
@@ -2421,14 +2451,16 @@ class BrowserWindow(Adw.ApplicationWindow):
         if not doi:
             self.status.set_text(
                 "No DOI on this entry — edit metadata to add one")
+            if on_pdf_settled:
+                on_pdf_settled(False, "no DOI on this entry")
             return
         self.status.set_text("Looking for an open-access PDF…")
         threading.Thread(
             target=self._do_get_pdf,
-            args=(dict(row), doi),
+            args=(dict(row), doi, on_pdf_settled),
             daemon=True).start()
 
-    def _do_get_pdf(self, row, doi):
+    def _do_get_pdf(self, row, doi, on_pdf_settled=None):
         import tempfile
         import urllib.parse as _up
         from . import author_works as _aw
@@ -2467,7 +2499,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             reason = ("no OA PDF URL known to OpenAlex or Unpaywall"
                       if data else "OpenAlex lookup failed and no "
                       "Unpaywall PDF available")
-            GLib.idle_add(self._get_pdf_fallback, doi, reason)
+            GLib.idle_add(self._get_pdf_fallback, doi, reason, on_pdf_settled)
             return
 
         # Download into a tmp file. Magic-byte check + Cloudflare
@@ -2485,7 +2517,8 @@ class BrowserWindow(Adw.ApplicationWindow):
                 os.remove(tmp_path)
             except OSError:
                 pass
-            GLib.idle_add(self._get_pdf_fallback, doi, last_msg)
+            GLib.idle_add(self._get_pdf_fallback, doi, last_msg,
+                          on_pdf_settled)
             return
 
         # Attach to the ghost: copy into LIBRARY_ROOT (named for the
@@ -2500,21 +2533,25 @@ class BrowserWindow(Adw.ApplicationWindow):
             os.remove(tmp_path)
         except OSError:
             pass
-        GLib.idle_add(self._get_pdf_done, status, msg)
+        GLib.idle_add(self._get_pdf_done, status, msg, on_pdf_settled)
 
-    def _get_pdf_fallback(self, doi, error_msg):
+    def _get_pdf_fallback(self, doi, error_msg, on_pdf_settled=None):
         """No OA copy is downloadable; open DOI in browser and let the
         user save+drag the PDF in."""
-        open_pdf("https://doi.org/" + doi)
+        self._open_uri_external("https://doi.org/" + doi)
         self._toast(
             "Direct download failed ({}) — opened DOI in browser; "
             "save and drag the PDF onto the card".format(error_msg),
             timeout=8)
+        if on_pdf_settled:
+            on_pdf_settled(False, error_msg)
         return False
 
-    def _get_pdf_done(self, status, msg):
+    def _get_pdf_done(self, status, msg, on_pdf_settled=None):
         self._toast(msg or status, timeout=5)
         self._reload(self.search.get_text() or None)
+        if on_pdf_settled:
+            on_pdf_settled(status == "merged", msg)
         return False
 
     def _navigate_to_doi(self, doi):
@@ -3094,7 +3131,8 @@ class BrowserWindow(Adw.ApplicationWindow):
             doi_btn.set_tooltip_text("https://doi.org/" + doi)
             doi_btn.connect(
                 "clicked",
-                lambda _b, d=doi: open_pdf("https://doi.org/" + d))
+                lambda _b, d=doi: self._open_uri_external(
+                    "https://doi.org/" + d))
             right.append(doi_btn)
         box.append(right)
 
@@ -3350,7 +3388,9 @@ class BrowserWindow(Adw.ApplicationWindow):
         title_lbl.set_wrap(True)
         title_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
         title_lbl.set_max_width_chars(70)
-        title_lbl.set_markup("<b>{}</b>".format(
+        # Match the main-window card title styling (theme-aware tint).
+        title_lbl.set_markup("<span foreground='{}'><b>{}</b></span>".format(
+            _title_color(self),
             safe_pango_markup(r.get("title") or "(untitled)")))
         info.append(title_lbl)
 
@@ -3420,7 +3460,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             doi_btn.connect(
                 "clicked",
                 lambda _b, d=r["doi"]:
-                    open_pdf("https://doi.org/" + d))
+                    self._open_uri_external("https://doi.org/" + d))
             right.append(doi_btn)
         box.append(right)
 

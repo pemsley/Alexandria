@@ -544,9 +544,13 @@ class DiscoverWindow(Adw.Window):
         btn.set_sensitive(False)
         btn.set_label("Adding…")
 
-        def on_done(success, message):
-            btn.set_sensitive(True)
-            btn.set_label("Added" if success else "Failed")
+        def on_done(success, message, label=None):
+            # Keep the button disabled while the PDF fetch is still in
+            # flight ("Fetching PDF…"); re-enabling only on a terminal
+            # state avoids a double-add.
+            terminal = label != "Fetching PDF…"
+            btn.set_sensitive(terminal)
+            btn.set_label(label or ("Added" if success else "Failed"))
             self._t_status.set_text(message)
         self.parent_window.add_reference_from_viewer(
             br, also_get_pdf, on_done)

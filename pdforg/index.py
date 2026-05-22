@@ -662,6 +662,36 @@ CREATE INDEX IF NOT EXISTS idx_discovered_doi
 """
 
 
+CREATE_PDB_TABLES = """
+CREATE TABLE IF NOT EXISTS pdb_mentions (
+    paper_id  INTEGER NOT NULL,
+    pdb_id    TEXT    NOT NULL,
+    section   TEXT,
+    source    TEXT    NOT NULL,
+    fetched   TEXT    NOT NULL,
+    PRIMARY KEY (paper_id, pdb_id, source),
+    FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_pdb_mentions_pdb   ON pdb_mentions(pdb_id);
+CREATE INDEX IF NOT EXISTS idx_pdb_mentions_paper ON pdb_mentions(paper_id);
+
+CREATE TABLE IF NOT EXISTS doi_pmid_cache (
+    doi      TEXT PRIMARY KEY,
+    pmid     TEXT,
+    fetched  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pdb_id_cache (
+    pdb_id   TEXT PRIMARY KEY,
+    fetched  TEXT NOT NULL
+);
+"""
+
+
+def create_pdb_tables(conn):
+    conn.executescript(CREATE_PDB_TABLES)
+
+
 # Default cadence for the feed refresher when a subscription has
 # no per-row override. 6 h matches Wispar's default and keeps us
 # well inside CrossRef/OpenAlex polite-pool budgets even with many
@@ -695,6 +725,7 @@ def open_db(path=DEFAULT_DB_PATH):
     conn.executescript(CREATE_AUTHOR_SCORES)
     conn.executescript(CREATE_AUTHOR_WORKS_CACHE)
     conn.executescript(CREATE_SUBSCRIPTIONS)
+    create_pdb_tables(conn)
     _migrate_discovered(conn)
     _ensure_fts(conn)
     return conn

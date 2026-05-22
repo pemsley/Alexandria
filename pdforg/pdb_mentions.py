@@ -73,6 +73,33 @@ def _cache_pmid(conn, doi, pmid):
     conn.commit()
 
 
+def store_mentions(conn, paper_id, mentions, source):
+    """mentions: iterable of (pdb_id_lower, section_or_None). Upserts
+    (paper_id, pdb_id, source) rows; idempotent via the primary key."""
+    now = _now_iso()
+    for pdb_id, section in mentions:
+        conn.execute(
+            "INSERT OR REPLACE INTO pdb_mentions "
+            "(paper_id, pdb_id, section, source, fetched) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (paper_id, pdb_id.lower(), section, source, now))
+    conn.commit()
+
+
+def get_pdb_mentions(conn, paper_id):
+    rows = conn.execute(
+        "SELECT pdb_id, section, source, fetched FROM pdb_mentions "
+        "WHERE paper_id = ? ORDER BY pdb_id", (paper_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_papers_for_pdb_id(conn, pdb_id):
+    rows = conn.execute(
+        "SELECT DISTINCT paper_id FROM pdb_mentions WHERE pdb_id = ? "
+        "ORDER BY paper_id", (pdb_id.lower(),)).fetchall()
+    return [r["paper_id"] for r in rows]
+
+
 def extract_pdb_ids_from_text(text, valid_pdb_ids):
     """Return the set of lowercased PDB ids mentioned in `text` and
     present in `valid_pdb_ids` (a set of lowercased ids). Rejects

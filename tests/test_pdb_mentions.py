@@ -98,6 +98,39 @@ def test_pmid_cache_negative():
     assert pdb_mentions._get_cached_pmid(conn, "10.1/none") == (True, None)
 
 
+def _seed_paper(conn, pdf_path="/x/a.pdf"):
+    cur = conn.execute(
+        "INSERT INTO papers (pdf_path, sidecar_path, added_date) "
+        "VALUES (?, ?, ?)",
+        (pdf_path, pdf_path + ".alexandria", "2026-01-01"))
+    conn.commit()
+    return cur.lastrowid
+
+def test_store_and_get_mentions():
+    conn = _mem_db()
+    pid = _seed_paper(conn)
+    pdb_mentions.store_mentions(
+        conn, pid, [("4hhb", "methods"), ("1a3n", None)], source="europepmc")
+    got = pdb_mentions.get_pdb_mentions(conn, pid)
+    ids = sorted(m["pdb_id"] for m in got)
+    assert ids == ["1a3n", "4hhb"]
+    assert all(m["source"] == "europepmc" for m in got)
+
+def test_get_papers_for_pdb_id_case_insensitive():
+    conn = _mem_db()
+    pid = _seed_paper(conn)
+    pdb_mentions.store_mentions(conn, pid, [("4hhb", None)], source="europepmc")
+    assert pdb_mentions.get_papers_for_pdb_id(conn, "4HHB") == [pid]
+    assert pdb_mentions.get_papers_for_pdb_id(conn, "9zzz") == []
+
+def test_store_mentions_idempotent():
+    conn = _mem_db()
+    pid = _seed_paper(conn)
+    pdb_mentions.store_mentions(conn, pid, [("4hhb", "methods")], "europepmc")
+    pdb_mentions.store_mentions(conn, pid, [("4hhb", "methods")], "europepmc")
+    assert len(pdb_mentions.get_pdb_mentions(conn, pid)) == 1
+
+
 # ---- Self-test runner ---------------------------------------------
 
 def _run_all():

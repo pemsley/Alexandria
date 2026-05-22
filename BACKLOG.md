@@ -701,13 +701,32 @@ impact ÷ effort. None need anything beyond the polite pool we already
 use; identifying ourselves via `mailto:` in `User-Agent` is in place
 via `extract.CROSSREF_USER_AGENT`.
 
-- **Crossmark / `update-to` chip.** `GET /works/{doi}/update`
-  returns updates pointing to this paper. Render a chip on the
-  card: "⚠ Correction issued (2023)", "⚠ Retracted",
-  "Updated by [link]". Genuinely unique among competitors —
-  Zotero, Mendeley, Wispar all skip this. One extra call per
-  paper, runs during the existing citation-refresh pass. ~50 LOC
-  + chip rendering.
+- **Crossmark / `update-to` chip (incl. Retraction Watch).** The
+  `update-to` array on `/works/{doi}` lists updates pointing to this
+  paper. Render a chip on the card: "⚠ Correction issued (2023)",
+  "⚠ Retracted", "Updated by [link]". Genuinely unique among
+  competitors — Zotero, Mendeley, Wispar all skip this. No extra
+  endpoint: it rides the `/works/{doi}` message we already fetch via
+  `_fetch_crossref_work_message`, during the existing citation-refresh
+  pass. ~50 LOC + chip rendering.
+    - **Data sources, one field.** Each `update-to` entry carries a
+      `source` of `publisher` (Crossmark notices) or
+      `retraction-watch`. Crossref acquired the Retraction Watch
+      Database (Sept 2023) and folded it into the REST API, so a
+      single call covers both publisher updates *and* Retraction
+      Watch — no separate integration, same polite pool + `mailto`
+      we already send. Honour the requested citation to Retraction
+      Watch if we ever surface the data in an export.
+    - Each entry has `{type, label, DOI, updated (date), source}`;
+      `type` includes `retraction`, `correction`, `addendum`,
+      `expression_of_concern`, etc. Map `retraction` → red chip,
+      everything else → amber, and link the chip to the update DOI.
+    - **Bulk option (later).** For whole-library or offline scans,
+      the full Retraction Watch dataset is a daily-updated CSV at
+      `https://api.labs.crossref.org/data/retractionwatch` — mirror
+      locally and join by DOI instead of per-paper calls. Per-DOI
+      via `update-to` is the right first cut; bulk only if we want
+      to flag retractions without touching the network.
 
 - **Funder chip.** *(Shipped, from OpenAlex.)* A per-work
   "Funded by NIH R01-…" chip already renders in the author dialog
@@ -828,11 +847,6 @@ via `extract.CROSSREF_USER_AGENT`.
   `pdforg/styles/`. Add a Preferences entry that lets users drop
   additional `.csl` files into `~/.config/Alexandria/styles/` and
   have them picked up by `csl_format.list_styles()`.
-- **CSL JSON file export.** `csl.sidecar_to_csl_array(rec)` already
-  produces the right shape; just needs an "Export CSL JSON…" menu
-  item parallel to BibTeX/RIS. Useful for Zotero import (which
-  reads CSL JSON natively).
-
 ## Static HTML index (Drive-syncable companion view)
 
 - **Goal: armchair reading on a tablet, via Google Drive sync of

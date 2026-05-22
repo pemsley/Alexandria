@@ -131,6 +131,19 @@ def test_store_mentions_idempotent():
     assert len(pdb_mentions.get_pdb_mentions(conn, pid)) == 1
 
 
+def test_valid_id_cache_set_get():
+    conn = _mem_db()
+    assert pdb_mentions.get_valid_pdb_ids(conn) == set()
+    pdb_mentions._store_valid_pdb_ids(conn, ["4HHB", "1a3n"])
+    assert pdb_mentions.get_valid_pdb_ids(conn) == {"4hhb", "1a3n"}
+
+def test_valid_id_cache_age():
+    conn = _mem_db()
+    assert pdb_mentions._valid_cache_is_stale(conn, max_age_days=7) is True
+    pdb_mentions._store_valid_pdb_ids(conn, ["4HHB"])
+    assert pdb_mentions._valid_cache_is_stale(conn, max_age_days=7) is False
+
+
 # ---- Self-test runner ---------------------------------------------
 
 def _run_all():

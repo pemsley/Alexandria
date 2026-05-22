@@ -100,6 +100,32 @@ def get_papers_for_pdb_id(conn, pdb_id):
     return [r["paper_id"] for r in rows]
 
 
+def get_valid_pdb_ids(conn):
+    return {r["pdb_id"] for r in
+            conn.execute("SELECT pdb_id FROM pdb_id_cache")}
+
+
+def _store_valid_pdb_ids(conn, ids):
+    now = _now_iso()
+    conn.executemany(
+        "INSERT OR REPLACE INTO pdb_id_cache (pdb_id, fetched) VALUES (?, ?)",
+        [(i.lower(), now) for i in ids if i])
+    conn.commit()
+
+
+def _valid_cache_is_stale(conn, max_age_days=7):
+    row = conn.execute(
+        "SELECT MAX(fetched) AS f FROM pdb_id_cache").fetchone()
+    if not row or not row["f"]:
+        return True
+    try:
+        last = datetime.fromisoformat(row["f"])
+    except ValueError:
+        return True
+    age = datetime.now(timezone.utc) - last
+    return age.days >= max_age_days
+
+
 def extract_pdb_ids_from_text(text, valid_pdb_ids):
     """Return the set of lowercased PDB ids mentioned in `text` and
     present in `valid_pdb_ids` (a set of lowercased ids). Rejects

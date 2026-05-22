@@ -52,9 +52,18 @@ class DiscoverWindow(Adw.Window):
         self.stack.set_vexpand(True)
         self.stack.set_hexpand(True)
 
-        self.stack.add_titled(self._build_author_page(), "author", "By author")
-        self.stack.add_titled(self._build_topic_page(),  "topic",  "By topic")
-        self.stack.add_titled(self._build_title_page(),  "title",  "By title")
+        # add_titled_with_icon: Adw.ViewSwitcher always renders a
+        # per-page icon, so without one each tab shows the broken-image
+        # placeholder. Icons are standard Adwaita symbolics.
+        self.stack.add_titled_with_icon(
+            self._build_author_page(), "author", "By author",
+            "avatar-default-symbolic")
+        self.stack.add_titled_with_icon(
+            self._build_topic_page(), "topic", "By topic",
+            "system-search-symbolic")
+        self.stack.add_titled_with_icon(
+            self._build_title_page(), "title", "By title",
+            "text-x-generic-symbolic")
 
         switcher = Adw.ViewSwitcher()
         switcher.set_stack(self.stack)

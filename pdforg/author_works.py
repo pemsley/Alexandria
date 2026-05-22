@@ -480,6 +480,13 @@ class AuthorWorksWindow(Gtk.Window):
 
         self._sub_inst_lbl = Gtk.Label(xalign=0.0)
         self._sub_inst_lbl.set_visible(False)
+        # Long affiliations (especially CrossRef's full department +
+        # school + university + city strings) would otherwise force the
+        # whole window wide. Wrap on word/comma boundaries and cap the
+        # requested width so the line flows to multiple rows instead.
+        self._sub_inst_lbl.set_wrap(True)
+        self._sub_inst_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self._sub_inst_lbl.set_max_width_chars(60)
         if self.authorship.get("institution"):
             self._sub_inst_lbl.set_markup(
                 "<span size='small' alpha='75%'>·  {}</span>".format(

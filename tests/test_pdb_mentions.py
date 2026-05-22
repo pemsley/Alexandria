@@ -144,6 +144,34 @@ def test_valid_id_cache_age():
     assert pdb_mentions._valid_cache_is_stale(conn, max_age_days=7) is False
 
 
+def test_index_uses_europepmc_then_skips_regex():
+    conn = _mem_db()
+    pid = _seed_paper(conn, "/x/withdoi.pdf")
+    conn.execute("UPDATE papers SET doi=? WHERE id=?", ("10.1/x", pid))
+    conn.commit()
+    saved_pmid = pdb_mentions.fetch_pmid_for_doi
+    saved_ann = pdb_mentions.fetch_europepmc_annotations
+    pdb_mentions.fetch_pmid_for_doi = lambda doi, timeout=15: "999"
+    pdb_mentions.fetch_europepmc_annotations = (
+        lambda pmids, timeout=30: [("999", "4hhb", "methods")])
+    try:
+        n = pdb_mentions.index_pdb_mentions_for_paper(conn, pid)
+    finally:
+        pdb_mentions.fetch_pmid_for_doi = saved_pmid
+        pdb_mentions.fetch_europepmc_annotations = saved_ann
+    assert n == 1
+    got = pdb_mentions.get_pdb_mentions(conn, pid)
+    assert got[0]["pdb_id"] == "4hhb"
+    assert got[0]["source"] == "europepmc"
+
+def test_index_no_doi_no_text_is_noop():
+    conn = _mem_db()
+    pid = _seed_paper(conn, "/x/nodoi.pdf")
+    n = pdb_mentions.index_pdb_mentions_for_paper(conn, pid)
+    assert n == 0
+    assert pdb_mentions.get_pdb_mentions(conn, pid) == []
+
+
 # ---- Self-test runner ---------------------------------------------
 
 def _run_all():

@@ -203,3 +203,56 @@ def extract_pdb_ids_from_text(text, valid_pdb_ids):
         if low in valid_pdb_ids:
             out.add(low)
     return out
+
+
+def _pdf_fulltext(pdf_path):
+    """All-pages plain text via pdftotext, or '' on any failure."""
+    if not pdf_path or not shutil.which("pdftotext"):
+        return ""
+    try:
+        proc = subprocess.run(
+            ["pdftotext", pdf_path, "-"],
+            capture_output=True, text=True, timeout=60)
+        return proc.stdout or ""
+    except Exception:
+        return ""
+
+
+def index_pdb_mentions_for_paper(conn, paper_id, pdf_path=None, doi=None):
+    """Populate pdb_mentions for one paper. EuropePMC first; on no hits
+    and available PDF text, validated local-regex fallback. Returns the
+    number of mentions stored. Never raises on network failure."""
+    row = conn.execute(
+        "SELECT pdf_path, doi FROM papers WHERE id = ?", (paper_id,)
+    ).fetchone()
+    if row is None:
+        return 0
+    pdf_path = pdf_path or row["pdf_path"]
+    doi = doi or row["doi"]
+
+    pmid = None
+    if doi:
+        cached, val = _get_cached_pmid(conn, doi)
+        if cached:
+            pmid = val
+        else:
+            pmid = fetch_pmid_for_doi(doi)
+            _cache_pmid(conn, doi, pmid)
+    if pmid:
+        hits = fetch_europepmc_annotations([pmid])
+        mentions = [(pdb, sect) for (_pm, pdb, sect) in hits]
+        if mentions:
+            store_mentions(conn, paper_id, mentions, source="europepmc")
+            return len(set(m[0] for m in mentions))
+
+    text = _pdf_fulltext(pdf_path)
+    if not text:
+        return 0
+    refresh_valid_pdb_id_cache(conn)
+    valid = get_valid_pdb_ids(conn)
+    ids = extract_pdb_ids_from_text(text, valid)
+    if not ids:
+        return 0
+    store_mentions(conn, paper_id, [(i, None) for i in ids],
+                   source="local_regex")
+    return len(ids)

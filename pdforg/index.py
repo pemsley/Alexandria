@@ -1286,3 +1286,9 @@ def all_pdf_paths(conn):
 def remove(conn, pdf_path):
     conn.execute("DELETE FROM papers WHERE pdf_path=?", (pdf_path,))
     conn.commit()
+
+
+def id_for_pdf_path(conn, pdf_path):
+    row = conn.execute(
+        "SELECT id FROM papers WHERE pdf_path = ?", (pdf_path,)).fetchone()
+    return row["id"] if row else None

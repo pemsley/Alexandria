@@ -23,6 +23,9 @@ OPENALEX_UA = os.environ.get(
 CROSSREF_UA = os.environ.get(
     "PDFORG_CROSSREF_UA",
     "pdforg/0.1 (mailto:{})".format(OPENALEX_MAILTO))
+EUROPEPMC_UA = os.environ.get(
+    "PDFORG_EUROPEPMC_UA",
+    "pdforg/0.1 (mailto:{})".format(OPENALEX_MAILTO))
 
 
 def today_iso():

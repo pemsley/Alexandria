@@ -86,6 +86,18 @@ def test_parse_pmid_result_without_pmid():
     assert pdb_mentions.parse_pmid_from_search(data) is None
 
 
+def test_pmid_cache_roundtrip():
+    conn = _mem_db()
+    assert pdb_mentions._get_cached_pmid(conn, "10.1/x") == (False, None)
+    pdb_mentions._cache_pmid(conn, "10.1/x", "12345")
+    assert pdb_mentions._get_cached_pmid(conn, "10.1/x") == (True, "12345")
+
+def test_pmid_cache_negative():
+    conn = _mem_db()
+    pdb_mentions._cache_pmid(conn, "10.1/none", None)
+    assert pdb_mentions._get_cached_pmid(conn, "10.1/none") == (True, None)
+
+
 # ---- Self-test runner ---------------------------------------------
 
 def _run_all():

@@ -44,10 +44,12 @@ class LibraryWatcher:
     in sync. on_change(status_str) is called on the GLib main thread
     after each successful change."""
 
-    def __init__(self, conn, library_root, on_change_cb=None):
+    def __init__(self, conn, library_root, on_change_cb=None,
+                 on_import_start_cb=None):
         self.conn = conn
         self.root = library_root
         self.on_change = on_change_cb
+        self.on_import_start = on_import_start_cb
         self.monitor = None
         self._reconcile_thread = None
         # abspath -> expiry timestamp. Events on suppressed paths are
@@ -180,6 +182,8 @@ class LibraryWatcher:
 
     def _do_import(self, path):
         print("[watcher] import start: {}".format(path))
+        if self.on_import_start:
+            GLib.idle_add(self.on_import_start, os.path.basename(path))
         try:
             rec, status = importer.import_pdf(self.conn, path)
         except Exception as e:

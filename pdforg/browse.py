@@ -24,7 +24,7 @@ from . import (index, edit_dialog, importer, metrics, sidecar, extract,
                viewer, marks_config, prefs, watcher as watcher_mod,
                author_works, bibtex_import, bibtex_export, ris_export,
                csl_export, opener, references_pdf, discover, csl_format,
-               feed, feed_window)
+               feed, feed_window, import_toast)
 
 LIBRARY_ROOT = prefs.get_library_root()
 
@@ -1149,9 +1149,16 @@ class BrowserWindow(Adw.ApplicationWindow):
         # plus sidecar rewrites from `pdforg-import --refresh`).
         self._reload_timer_id = None
         self._pending_reload_status = ""
+        # Import-start toast coalescing (see import_toast.py). Basenames
+        # seen in the current rolling window, the window-expiry timer,
+        # and the retained count toast when collapsed (3+).
+        self._import_window_names = []
+        self._import_window_timer_id = None
+        self._import_count_toast = None
         self.library_watcher = watcher_mod.LibraryWatcher(
             self.conn, LIBRARY_ROOT,
-            on_change_cb=self._on_watcher_change)
+            on_change_cb=self._on_watcher_change,
+            on_import_start_cb=self._on_import_start)
         self.library_watcher.start()
         self.library_watcher.reconcile_startup()
         self.connect("close-request", self._on_close_request)
@@ -2657,6 +2664,47 @@ class BrowserWindow(Adw.ApplicationWindow):
             getattr(self, "_pending_reload_status", "")))
         return False  # don't repeat
 
+    # --- Import-start toasts -----------------------------------------
+
+    # Quiet gap (ms) after which the current import-start window closes.
+    # Bursts of idle_add callbacks from a multi-file drop all land in
+    # one window before this fires.
+    _IMPORT_WINDOW_MS = 300
+
+    def _on_import_start(self, basename):
+        """Called on the GLib main thread when the watcher begins
+        importing a PDF. Coalesces near-simultaneous starts: name each
+        for 1-2 files, collapse to one 'Importing N PDFs…' toast at 3+.
+        See import_toast.toast_action for the decision logic."""
+        self._import_window_names.append(basename)
+        kind, payload = import_toast.toast_action(self._import_window_names)
+        if kind == "name":
+            self._toast("Importing {}…".format(payload))
+        elif kind == "count":
+            msg = "Importing {} PDFs…".format(payload)
+            if self._import_count_toast is None:
+                t = Adw.Toast.new(msg)
+                t.set_timeout(5)
+                self._import_count_toast = t
+                self.toast_overlay.add_toast(t)
+            else:
+                self._import_count_toast.set_title(msg)
+        # (Re)arm the window-close timer.
+        if self._import_window_timer_id:
+            try:
+                GLib.source_remove(self._import_window_timer_id)
+            except Exception:
+                pass
+        self._import_window_timer_id = GLib.timeout_add(
+            self._IMPORT_WINDOW_MS, self._close_import_window)
+        return False
+
+    def _close_import_window(self):
+        self._import_window_timer_id = None
+        self._import_window_names = []
+        self._import_count_toast = None
+        return False  # don't repeat
+
     def _on_close_request(self, _win):
         # Stop the daemon-friendly bits cleanly so they don't keep
         # writing to the SQLite handle as the window tears down.
@@ -3686,7 +3734,8 @@ class BrowserWindow(Adw.ApplicationWindow):
                 pass
             self.library_watcher = watcher_mod.LibraryWatcher(
                 self.conn, LIBRARY_ROOT,
-                on_change_cb=self._on_watcher_change)
+                on_change_cb=self._on_watcher_change,
+                on_import_start_cb=self._on_import_start)
             self.library_watcher.start()
             self._reload(self.search.get_text() or None)
 

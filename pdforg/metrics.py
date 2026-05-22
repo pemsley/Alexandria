@@ -7,6 +7,7 @@ on any failure so the caller can decide whether to retry later.
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -96,6 +97,91 @@ def _trip_openalex_breaker(seconds):
     _openalex_paused_until = time.monotonic() + seconds
 
 
+# --- CrossRef proactive rate-limit throttle -----------------------
+# CrossRef returns X-Rate-Limit-Limit / X-Rate-Limit-Interval and asks
+# callers to self-pace. We track the most-recent observed limit and a
+# sliding window of request timestamps, sleeping before we'd exceed
+# the budget. Guarded by a lock because the window is read-modify-write
+# across the background daemon threads.
+_CROSSREF_DEFAULT_LIMIT = 50
+_CROSSREF_DEFAULT_INTERVAL = 1.0   # seconds
+
+_crossref_limit = _CROSSREF_DEFAULT_LIMIT        # int
+_crossref_interval = _CROSSREF_DEFAULT_INTERVAL  # float seconds
+_crossref_request_times = []   # monotonic timestamps, oldest first
+_crossref_lock = threading.Lock()
+
+_INTERVAL_UNIT_SECONDS = {"s": 1.0, "m": 60.0, "h": 3600.0}
+
+
+def _parse_crossref_interval(raw):
+    """Parse an X-Rate-Limit-Interval value ("1s", "10s", "1m", or a
+    bare number) to seconds. Falls back to the default on missing /
+    unparseable / non-positive input."""
+    if not raw:
+        return _CROSSREF_DEFAULT_INTERVAL
+    s = str(raw).strip().lower()
+    unit = 1.0
+    if s and s[-1] in _INTERVAL_UNIT_SECONDS:
+        unit = _INTERVAL_UNIT_SECONDS[s[-1]]
+        s = s[:-1]
+    try:
+        val = float(s) * unit
+    except (TypeError, ValueError):
+        return _CROSSREF_DEFAULT_INTERVAL
+    return val if val > 0 else _CROSSREF_DEFAULT_INTERVAL
+
+
+def _note_crossref_rate(headers):
+    """Update the observed CrossRef rate limit / interval from a
+    response's headers. No-op for whichever field is absent or
+    unparseable, so a missing header never clobbers a good value."""
+    if not headers:
+        return
+    global _crossref_limit, _crossref_interval
+    with _crossref_lock:
+        raw_limit = headers.get("X-Rate-Limit-Limit")
+        if raw_limit is not None:
+            try:
+                n = int(raw_limit)
+                if n > 0:
+                    _crossref_limit = n
+            except (TypeError, ValueError):
+                pass
+        raw_interval = headers.get("X-Rate-Limit-Interval")
+        if raw_interval is not None:
+            _crossref_interval = _parse_crossref_interval(raw_interval)
+
+
+def _crossref_wait_seconds(request_times, now, limit, interval):
+    """Pure decision core: given recent request timestamps, how long
+    (seconds) must we wait before issuing another request to stay under
+    `limit` per `interval`? Returns 0.0 when under budget. Timestamps
+    older than the live window are ignored."""
+    kept = [t for t in request_times if t > now - interval]
+    if len(kept) < limit:
+        return 0.0
+    return max(0.0, kept[0] + interval - now)
+
+
+def _crossref_throttle():
+    """Block (sleep) just long enough to keep CrossRef requests under
+    the observed rate. Token-reservation: record our slot under the
+    lock, then sleep outside it so threads don't serialise."""
+    now = time.monotonic()
+    with _crossref_lock:
+        global _crossref_request_times
+        _crossref_request_times = [
+            t for t in _crossref_request_times if t > now - _crossref_interval]
+        wait = _crossref_wait_seconds(
+            _crossref_request_times, now, _crossref_limit, _crossref_interval)
+        # Reserve our slot at the time we'll actually fire so concurrent
+        # threads compute their wait against it.
+        _crossref_request_times.append(now + wait)
+    if wait > 0:
+        time.sleep(wait)
+
+
 def _note_openalex_credits(headers):
     """Stash `X-RateLimit-Remaining` from an OpenAlex response.
     No-op if the header is missing or unparseable."""
@@ -115,6 +201,10 @@ def _note_openalex_credits(headers):
 
 def _is_openalex_url(url):
     return "openalex.org" in (url or "")
+
+
+def _is_crossref_url(url):
+    return "api.crossref.org" in (url or "")
 
 
 class OpenAlexQuotaExhausted(Exception):
@@ -150,7 +240,13 @@ def _http_get_json(url, headers, timeout, raise_on_quota=False):
         return None
     attempt = 0
     is_oa_url = _is_openalex_url(url)
+    is_cr_url = _is_crossref_url(url)
     while True:
+        # Proactively pace CrossRef so we stay under its advertised
+        # rate rather than waiting for a 429. Inside the retry loop so
+        # a retried call is paced too.
+        if is_cr_url:
+            _crossref_throttle()
         try:
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -159,10 +255,14 @@ def _http_get_json(url, headers, timeout, raise_on_quota=False):
                 # body read could in principle fail.
                 if is_oa_url:
                     _note_openalex_credits(resp.headers)
+                if is_cr_url:
+                    _note_crossref_rate(resp.headers)
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             if is_oa_url and e.headers is not None:
                 _note_openalex_credits(e.headers)
+            if is_cr_url and e.headers is not None:
+                _note_crossref_rate(e.headers)
             retry_ok = e.code == 429 or 500 <= e.code < 600
             if not retry_ok or attempt >= _HTTP_MAX_RETRIES:
                 if e.code == 429 and raise_on_quota:

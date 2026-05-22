@@ -6,9 +6,25 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 
 from . import sidecar, thumbnail, extract, index, metrics
+
+
+def _schedule_pdb_indexing(conn, pdf_path):
+    """Background, best-effort PDB-mention indexing. Failures are
+    swallowed — must never block or break import."""
+    def _run():
+        try:
+            from . import pdb_mentions
+            pid = index.id_for_pdf_path(conn, pdf_path)
+            if pid is not None:
+                pdb_mentions.index_pdb_mentions_for_paper(conn, pid)
+        except Exception as e:
+            print("[importer] pdb indexing failed for {}: {}".format(
+                pdf_path, e))
+    threading.Thread(target=_run, daemon=True).start()
 
 # When a PDF is dropped into the library, our drop-handler runs
 # import_pdf and writes the sidecar + thumbnail. The GFileMonitor
@@ -241,6 +257,7 @@ def refresh_pdf(conn, pdf_path):
     index.upsert(conn, pdf_path, sc_path,
                  th_path if os.path.isfile(th_path) else None,
                  fresh, mtime)
+    _schedule_pdb_indexing(conn, pdf_path)
     return fresh, "refreshed"
 
 
@@ -370,6 +387,7 @@ def import_pdf(conn, pdf_path):
     index.upsert(conn, pdf_path, sc_path,
                  th_path if os.path.isfile(th_path) else None,
                  rec, mtime)
+    _schedule_pdb_indexing(conn, pdf_path)
     return rec, "new"
 
 

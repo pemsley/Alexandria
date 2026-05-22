@@ -55,6 +55,24 @@ def parse_pmid_from_search(data):
     return pmid or None
 
 
+def _get_cached_pmid(conn, doi):
+    """Return (cached: bool, pmid: str|None). cached=False means we've
+    never looked this DOI up; cached=True with pmid=None means we
+    looked and there is no PMID."""
+    row = conn.execute(
+        "SELECT pmid FROM doi_pmid_cache WHERE doi = ?", (doi,)).fetchone()
+    if row is None:
+        return (False, None)
+    return (True, row["pmid"])
+
+
+def _cache_pmid(conn, doi, pmid):
+    conn.execute(
+        "INSERT OR REPLACE INTO doi_pmid_cache (doi, pmid, fetched) "
+        "VALUES (?, ?, ?)", (doi, pmid, _now_iso()))
+    conn.commit()
+
+
 def extract_pdb_ids_from_text(text, valid_pdb_ids):
     """Return the set of lowercased PDB ids mentioned in `text` and
     present in `valid_pdb_ids` (a set of lowercased ids). Rejects

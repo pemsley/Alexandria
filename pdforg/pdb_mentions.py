@@ -7,6 +7,10 @@ best-effort and never fatal. See PDB_MENTIONS_BRIEF.md.
 """
 
 import re
+import shutil
+import subprocess
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 
 from . import index, metrics
@@ -124,6 +128,62 @@ def _valid_cache_is_stale(conn, max_age_days=7):
         return True
     age = datetime.now(timezone.utc) - last
     return age.days >= max_age_days
+
+
+_EPMC = "https://www.ebi.ac.uk/europepmc/webservices/rest"
+
+
+def fetch_pmid_for_doi(doi, timeout=15):
+    """Resolve DOI->PMID via EuropePMC search; None if no PMID."""
+    if not doi:
+        return None
+    url = (_EPMC + "/search?query=DOI:" + urllib.parse.quote(doi, safe="")
+           + "&format=JSON&resultType=lite")
+    data = metrics._http_get_json(
+        url, headers={"User-Agent": metrics.EUROPEPMC_UA,
+                      "Accept": "application/json"}, timeout=timeout)
+    return parse_pmid_from_search(data)
+
+
+def fetch_europepmc_annotations(pmids, timeout=30):
+    """Batched annotationsByArticleIds (<=8 ids/call). Returns
+    [(pmid, pdb_id, section)]."""
+    out = []
+    pmids = [p for p in pmids if p]
+    for i in range(0, len(pmids), 8):
+        batch = pmids[i:i + 8]
+        ids = ",".join("MED:" + p for p in batch)
+        url = (_EPMC + "/annotations_api/annotationsByArticleIds?articleIds="
+               + urllib.parse.quote(ids, safe=":,")
+               + "&type=Accession%20Numbers&format=JSON")
+        data = metrics._http_get_json(
+            url, headers={"User-Agent": metrics.EUROPEPMC_UA,
+                          "Accept": "application/json"}, timeout=timeout)
+        out.extend(parse_europepmc_annotations(data))
+    return out
+
+
+def refresh_valid_pdb_id_cache(conn, max_age_days=7, timeout=60):
+    """Refresh the local set of valid PDB ids from wwPDB's entries.idx
+    when stale. Best-effort: leaves the cache untouched on failure."""
+    if not _valid_cache_is_stale(conn, max_age_days):
+        return
+    url = "https://files.wwpdb.org/pub/pdb/derived_data/index/entries.idx"
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": metrics.EUROPEPMC_UA})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            text = resp.read().decode("utf-8", "replace")
+    except Exception as e:
+        print("[pdb_mentions] valid-id refresh failed:", e)
+        return
+    ids = []
+    for line in text.splitlines()[2:]:   # skip 2 header lines
+        tok = line.split("\t", 1)[0].strip()
+        if len(tok) == 4:
+            ids.append(tok)
+    if ids:
+        _store_valid_pdb_ids(conn, ids)
 
 
 def extract_pdb_ids_from_text(text, valid_pdb_ids):

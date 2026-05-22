@@ -72,6 +72,20 @@ def test_parse_europepmc_empty():
     assert pdb_mentions.parse_europepmc_annotations(None) == []
 
 
+def test_parse_pmid_hit():
+    data = {"resultList": {"result": [{"pmid": "30425980", "title": "x"}]}}
+    assert pdb_mentions.parse_pmid_from_search(data) == "30425980"
+
+def test_parse_pmid_no_result():
+    assert pdb_mentions.parse_pmid_from_search({"resultList": {"result": []}}) is None
+    assert pdb_mentions.parse_pmid_from_search({}) is None
+    assert pdb_mentions.parse_pmid_from_search(None) is None
+
+def test_parse_pmid_result_without_pmid():
+    data = {"resultList": {"result": [{"id": "PPR123", "source": "PPR"}]}}
+    assert pdb_mentions.parse_pmid_from_search(data) is None
+
+
 # ---- Self-test runner ---------------------------------------------
 
 def _run_all():

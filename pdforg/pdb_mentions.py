@@ -44,6 +44,17 @@ def parse_europepmc_annotations(payload):
     return out
 
 
+def parse_pmid_from_search(data):
+    """Pull the first result's pmid from a EuropePMC search response,
+    or None."""
+    results = (((data or {}).get("resultList") or {}).get("result") or [])
+    if not results:
+        return None
+    pmid = (results[0] or {}).get("pmid")
+    pmid = str(pmid).strip() if pmid else ""
+    return pmid or None
+
+
 def extract_pdb_ids_from_text(text, valid_pdb_ids):
     """Return the set of lowercased PDB ids mentioned in `text` and
     present in `valid_pdb_ids` (a set of lowercased ids). Rejects

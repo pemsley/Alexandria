@@ -236,9 +236,31 @@ def fetch_metrics(doi):
     if n is not None:
         return (n, "openalex", kw, abstract, authorships, cby,
                 oa_title, oa_year, is_oa, oa_status)
-    n = _crossref_count(doi)
-    if n is not None:
-        return n, "crossref", [], None, [], [], None, None, None, None
+    # OpenAlex has no record (common for freshly-published DOIs). Fall
+    # back to CrossRef — one HTTP call yields both the citation count
+    # and enough to build an authorships list (name + ORCID +
+    # affiliation). A later refresh, once OpenAlex indexes the work,
+    # upgrades these to the richer OpenAlex version (openalex_id,
+    # structured institutions). oa_title/oa_year carry the CrossRef
+    # title/year so the importer's cross-contamination guard has
+    # something to compare against.
+    msg = _fetch_crossref_work_message(doi)
+    if msg:
+        cnt = msg.get("is-referenced-by-count")
+        n = int(cnt) if isinstance(cnt, int) else None
+        authorships = _crossref_authorships(msg)
+        if n is not None or authorships:
+            titles = msg.get("title") or []
+            cr_title = (str(titles[0]).strip() or None) if titles else None
+            cr_year = None
+            issued = (msg.get("issued") or {}).get("date-parts") or []
+            if issued and issued[0]:
+                try:
+                    cr_year = int(issued[0][0])
+                except (ValueError, TypeError, IndexError):
+                    cr_year = None
+            return (n, "crossref", [], None, authorships, [],
+                    cr_title, cr_year, None, None)
     return None, None, [], None, [], [], None, None, None, None
 
 
@@ -1274,6 +1296,42 @@ def _fetch_crossref_work_message(doi):
     return data.get("message") or {}
 
 
+def _crossref_authorships(msg):
+    """Build an authorships list (OpenAlex shape) from a CrossRef
+    /works message. Used as a fallback when OpenAlex has no record for
+    a freshly-published DOI. Each entry is
+    {name, position, orcid, openalex_id, institution}; `openalex_id` is
+    always None (CrossRef has no OpenAlex ID) and `institution` is the
+    first non-empty affiliation string, if any. Position tags mirror
+    OpenAlex's first/middle/last so position-aware consumers
+    (`_author_first_last`) keep working."""
+    authors = (msg or {}).get("author") or []
+    out = []
+    for a in authors:
+        given = (a.get("given") or "").strip()
+        family = (a.get("family") or "").strip()
+        name = (given + " " + family).strip()
+        if not name:
+            continue
+        institution = None
+        for af in (a.get("affiliation") or []):
+            nm = (af.get("name") or "").strip()
+            if nm:
+                institution = nm
+                break
+        out.append({
+            "name": name,
+            "position": "middle",
+            "orcid": _strip_orcid(a.get("ORCID")),
+            "openalex_id": None,
+            "institution": institution,
+        })
+    if out:
+        out[-1]["position"] = "last"
+        out[0]["position"] = "first"   # wins for a single-author paper
+    return out
+
+
 def _license_from_message(msg):
     """Extract a `{url, label, content_version}` license dict from a
     CrossRef /works/{doi} message, or None. Pulled out of
@@ -1392,20 +1450,6 @@ def fetch_crossref_extras(doi):
         "license":   _license_from_message(msg),
         "crossmark": _crossmark_from_message(msg),
     }
-
-
-def _crossref_count(doi):
-    qdoi = urllib.parse.quote(doi, safe="")
-    url = "https://api.crossref.org/works/" + qdoi
-    data = _http_get_json(
-        url,
-        headers={"User-Agent": CROSSREF_UA, "Accept": "application/json"},
-        timeout=15)
-    if data is None:
-        return None
-    msg = data.get("message", {}) or {}
-    n = msg.get("is-referenced-by-count")
-    return int(n) if isinstance(n, int) else None
 
 
 # DOI prefixes used by preprint servers. Used to decide whether to

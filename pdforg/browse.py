@@ -24,7 +24,7 @@ from . import (index, edit_dialog, importer, metrics, sidecar, extract,
                viewer, marks_config, prefs, watcher as watcher_mod,
                author_works, bibtex_import, bibtex_export, ris_export,
                csl_export, opener, references_pdf, discover, csl_format,
-               feed, feed_window, import_toast)
+               feed, feed_window, import_toast, pdb_mentions)
 
 LIBRARY_ROOT = prefs.get_library_root()
 
@@ -832,6 +832,27 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
             for kw in auto_kw[:5]:
                 kw_row.append(make_keyword_chip(kw))
             text.append(kw_row)
+
+    try:
+        pdb_ids = sorted({m["pdb_id"].upper()
+                          for m in pdb_mentions.get_pdb_mentions(
+                              conn, row["id"])})
+    except Exception:
+        pdb_ids = []
+    if pdb_ids:
+        pdb_lbl = Gtk.Label(xalign=0.0)
+        pdb_lbl.set_use_markup(True)
+        pdb_lbl.set_wrap(True)
+        pdb_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        links = " ".join(
+            "<a href='https://www.ebi.ac.uk/pdbe/entry/pdb/{0}'>{1}</a>".format(
+                pid.lower(), pid) for pid in pdb_ids)
+        pdb_lbl.set_markup(
+            "<span size='small' alpha='75%'>PDB: </span>" + links)
+        pdb_lbl.connect(
+            "activate-link",
+            lambda _l, uri: (parent_window._open_uri_external(uri), True)[1])
+        text.append(pdb_lbl)
 
     box.append(text)
     box.pdforg_pdf_path = row["pdf_path"]

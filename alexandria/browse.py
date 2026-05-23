@@ -629,6 +629,16 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
         rename_btn.connect("clicked",
                            lambda _b: parent_window._open_rename_dialog(row))
         btn_row.append(rename_btn)
+
+        regen_btn = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+        regen_btn.set_tooltip_text(
+            "Regenerate entry — re-extract from the PDF and re-fetch "
+            "metadata (CrossRef / OpenAlex / PDB mentions). Tags, "
+            "notes and citation count are preserved.")
+        regen_btn.connect(
+            "clicked",
+            lambda _b, r=row, b=None: parent_window._on_regen_entry(r, _b))
+        btn_row.append(regen_btn)
     if row["doi"]:
         related_btn = Gtk.Button.new_from_icon_name("view-more-symbolic")
         related_btn.set_tooltip_text(
@@ -1301,6 +1311,14 @@ class BrowserWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._crossref_extras_backfill,
                          daemon=True).start()
 
+        # One-shot PDB-mention backfill. Walks every non-ghost paper
+        # imported before PDB indexing was wired into the importer
+        # (i.e. pdb_indexed_at IS NULL). One EuropePMC call per row,
+        # plus a local-regex fallback over the PDF full text.
+        self._pdb_stop = threading.Event()
+        threading.Thread(target=self._pdb_mentions_backfill,
+                         daemon=True).start()
+
         # GFileMonitor-based library watcher: react to external file
         # changes in LIBRARY_ROOT (drops via Files / cp / sync tools,
         # plus sidecar rewrites from `alexandria-import --refresh`).
@@ -1784,6 +1802,39 @@ class BrowserWindow(Adw.ApplicationWindow):
         self._toast("Deleted: " + os.path.basename(row["pdf_path"]))
         self._reload(self.search.get_text() or None)
 
+    def _on_regen_entry(self, row, btn):
+        """Re-run importer.refresh_pdf on this paper: re-extract from
+        the PDF, re-fetch CrossRef + OpenAlex, and re-run PDB-mention
+        indexing (via the existing wiring in refresh_pdf). Tags,
+        notes, citations and other curated fields are preserved by
+        refresh_pdf's merge."""
+        pdf_path = row["pdf_path"]
+        if sidecar.is_ghost_path(pdf_path):
+            return
+        btn.set_sensitive(False)
+        self.status.set_text("Regenerating {}…".format(
+            os.path.basename(pdf_path)))
+        threading.Thread(target=self._do_regen_entry,
+                         args=(pdf_path, btn),
+                         daemon=True).start()
+
+    def _do_regen_entry(self, pdf_path, btn):
+        try:
+            _rec, status = importer.refresh_pdf(self.conn, pdf_path)
+            err = None
+        except Exception as e:
+            status, err = "error", str(e)
+
+        def _done():
+            btn.set_sensitive(True)
+            if err:
+                self._toast("Regenerate failed: {}".format(err))
+            else:
+                self._toast("Regenerated ({})".format(status))
+                self._reload(self.search.get_text() or None)
+            return False
+        GLib.idle_add(_done)
+
     def _open_rename_dialog(self, row):
         old_path = row["pdf_path"]
         win = Gtk.Window(transient_for=self, modal=True)
@@ -2007,6 +2058,42 @@ class BrowserWindow(Adw.ApplicationWindow):
             print("[crossref] backfilled {} row(s)".format(filled))
             # Repaint cards so newly-filled chips appear without
             # the user having to scroll or reload.
+            GLib.idle_add(lambda: (self._reload(self.search.get_text() or None),
+                                    False)[1])
+
+    def _pdb_mentions_backfill(self, initial_delay_seconds=15.0,
+                                pause_seconds=2.0):
+        """One-shot pass that runs PDB-mention indexing on every
+        non-ghost paper whose `pdb_indexed_at` stamp is NULL — i.e.
+        every paper imported before that wiring landed in the
+        importer. The indexer stamps the column on every exit path
+        (hits, no hits, no text), so a paper is touched at most once
+        per library."""
+        if self._pdb_stop.wait(initial_delay_seconds):
+            return
+        try:
+            rows = index.rows_missing_pdb_indexing(self.conn)
+        except Exception as e:
+            print("[pdb] index lookup failed:", e)
+            return
+        if not rows:
+            return
+        filled = 0
+        for row in rows:
+            if self._pdb_stop.is_set():
+                return
+            try:
+                n = pdb_mentions.index_pdb_mentions_for_paper(
+                    self.conn, row["id"])
+                if n:
+                    filled += 1
+            except Exception as e:
+                print("[pdb] indexing failed for {}: {}".format(
+                    row.get("pdf_path"), e))
+            if self._pdb_stop.wait(pause_seconds):
+                return
+        if filled:
+            print("[pdb] backfilled mentions for {} row(s)".format(filled))
             GLib.idle_add(lambda: (self._reload(self.search.get_text() or None),
                                     False)[1])
 

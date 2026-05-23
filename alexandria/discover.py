@@ -216,8 +216,10 @@ class DiscoverWindow(Adw.Window):
 
         # Name (bold) + ORCID chip.
         name_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        from .browse import _title_color
         nm = Gtk.Label(xalign=0.0)
-        nm.set_markup("<b>{}</b>".format(
+        nm.set_markup("<span foreground='{}'><b>{}</b></span>".format(
+            _title_color(self),
             GLib.markup_escape_text(r.get("display_name") or "(unnamed)")))
         name_row.append(nm)
         if r.get("orcid"):

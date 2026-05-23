@@ -898,15 +898,49 @@ def _make_pdb_chip(pdb_id, parent_window):
 
     Left-click follows the link to PDBe (handled by the standard
     activate-link path). Right-click pops a menu offering 'Open in
-    Coot' for this specific code."""
+    Coot' for this specific code. The chip is also a drag source —
+    dragging it onto Coot (or another URL-aware target) hands over
+    the RCSB download URL for the entry."""
     code = pdb_id.upper()
     url = "https://www.ebi.ac.uk/pdbe/entry/pdb/" + code.lower()
+    rcsb_url = "https://files.rcsb.org/download/" + code.lower() + ".pdb"
     lbl = Gtk.Label()
     lbl.set_use_markup(True)
-    lbl.set_markup("<a href='{0}'>{1}</a>".format(url, code))
-    lbl.connect(
-        "activate-link",
-        lambda _l, uri: (parent_window._open_uri_external(uri), True)[1])
+    # Styled as a link but *not* an <a href> — Gtk.Label's built-in
+    # link gesture eats the press sequence and would prevent any
+    # DragSource on the same widget from ever starting a drag.
+    # Manual click handling instead.
+    lbl.set_markup(
+        "<span foreground='#3584e4' underline='single'>{}</span>".format(code))
+    lbl.set_cursor_from_name("pointer")
+    lbl.set_tooltip_text(
+        "Open {} on PDBe\n(drag onto Coot to load the structure)".format(code))
+    lc = Gtk.GestureClick.new()
+    lc.set_button(1)
+    lc.connect(
+        "released",
+        lambda *_: parent_window._open_uri_external(url))
+    lbl.add_controller(lc)
+
+    # Drag source: hand over the RCSB .pdb download URL. Build two
+    # content providers and union them so the drop target can pick
+    # whichever MIME it prefers:
+    #   * text/uri-list — the canonical "this is a URL" MIME that
+    #     file managers, browsers and Coot recognise.
+    #   * text/plain — fallback for editors / terminals that only
+    #     accept plain text drops.
+    def _prepare(_s, _x, _y, u=rcsb_url):
+        uri_bytes = GLib.Bytes.new((u + "\r\n").encode("utf-8"))
+        txt_bytes = GLib.Bytes.new(u.encode("utf-8"))
+        return Gdk.ContentProvider.new_union([
+            Gdk.ContentProvider.new_for_bytes("text/uri-list", uri_bytes),
+            Gdk.ContentProvider.new_for_bytes(
+                "text/plain;charset=utf-8", txt_bytes),
+        ])
+    drag = Gtk.DragSource.new()
+    drag.set_actions(Gdk.DragAction.COPY)
+    drag.connect("prepare", _prepare)
+    lbl.add_controller(drag)
     rc = Gtk.GestureClick.new()
     rc.set_button(3)  # secondary mouse / two-finger trackpad
     # CAPTURE phase: intercept the right-click before Gtk.Label's

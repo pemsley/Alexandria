@@ -1,4 +1,4 @@
-"""Tests for pdforg.import_toast coalescing logic.
+"""Tests for alexandria.import_toast coalescing logic.
 
 Runnable as `python3 -m tests.test_import_toast` (no pytest required) or
 collectable by pytest. Each test is a top-level `test_*` function.
@@ -12,7 +12,7 @@ ROOT = os.path.dirname(HERE)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from pdforg import import_toast
+from alexandria import import_toast
 
 
 def test_single_start_shows_named_toast():

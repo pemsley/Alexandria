@@ -747,7 +747,7 @@ def _enrich(result, pdf_path):
         if not result.get("doi"):
             doi = _parent_doi_from_si_filename(pdf_path)
             if not doi and si_title:
-                # Lazy import: pdforg.metrics pulls in the OpenAlex /
+                # Lazy import: alexandria.metrics pulls in the OpenAlex /
                 # CrossRef HTTP machinery that pure-PDF callers don't
                 # need.
                 from . import metrics as _metrics

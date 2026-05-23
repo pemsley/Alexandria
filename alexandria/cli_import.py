@@ -2,7 +2,7 @@
 """Scan a directory tree of PDFs (or a single PDF); create sidecars +
 thumbnails; populate the local SQLite index.
 
-Usage:  pdforg-import.py [--refresh] <directory-or-pdf>
+Usage:  alexandria-import.py [--refresh] <directory-or-pdf>
 
   --refresh   Re-extract metadata into existing sidecars (skipping ones
               flagged hand_edited=true). Preserves tags, notes, mark,

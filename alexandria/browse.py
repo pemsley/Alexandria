@@ -766,7 +766,7 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
         suffix = "  ({} authors)  ▾".format(n_authors)
     auth_btn = Gtk.Button()
     auth_btn.add_css_class("flat")
-    auth_btn.add_css_class("pdforg-author-link")
+    auth_btn.add_css_class("alexandria-author-link")
     auth_btn.set_halign(Gtk.Align.START)
     auth_btn.set_has_frame(False)
     auth_btn.set_tooltip_text("Click for full author list and actions")
@@ -861,7 +861,7 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
         text.append(pdb_row)
 
     box.append(text)
-    box.pdforg_pdf_path = row["pdf_path"]
+    box.alexandria_pdf_path = row["pdf_path"]
 
     focus_click = Gtk.GestureClick.new()
     focus_click.set_button(0)
@@ -1303,7 +1303,7 @@ class BrowserWindow(Adw.ApplicationWindow):
 
         # GFileMonitor-based library watcher: react to external file
         # changes in LIBRARY_ROOT (drops via Files / cp / sync tools,
-        # plus sidecar rewrites from `pdforg-import --refresh`).
+        # plus sidecar rewrites from `alexandria-import --refresh`).
         self._reload_timer_id = None
         self._pending_reload_status = ""
         # Import-start toast coalescing (see import_toast.py). Basenames
@@ -2420,7 +2420,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             return False
         child = self.results.get_first_child()
         while child:
-            if getattr(child, "pdforg_pdf_path", None) == target:
+            if getattr(child, "alexandria_pdf_path", None) == target:
                 a = child.get_allocation()
                 adj = self.results_scrolled.get_vadjustment()
                 page = adj.get_page_size()
@@ -4036,7 +4036,7 @@ def _show_db_error_and_quit(app, err):
         "and is still holding the database lock.\n\n"
         "Try closing other Alexandria windows. If that doesn't help, "
         "run this in a terminal and try again:\n"
-        "    pkill -f pdforg-browse\n\n"
+        "    pkill -f alexandria-browse\n\n"
         "(SQLite said: {})"
     ).format(index.DEFAULT_DB_PATH, err)
     # Mirror to stderr too — terminal users see it without waiting

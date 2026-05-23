@@ -9,7 +9,7 @@ of events:
 
 * Sidecar files (`*.alexandria`): CHANGED / CHANGES_DONE_HINT /
   CREATED → re-read the sidecar and refresh the index row. This is
-  what makes `pdforg-import --refresh` invisibly update the running
+  what makes `alexandria-import --refresh` invisibly update the running
   browser — the CLI rewrites the JSON, the watcher sees it, the row
   is upserted, the GUI redraws.
 """
@@ -156,7 +156,7 @@ class LibraryWatcher:
 
         elif et == Gio.FileMonitorEvent.CHANGED:
             # PDFs aren't usually edited in place; sidecars are
-            # (e.g. by `pdforg-import --refresh` or hand-edits).
+            # (e.g. by `alexandria-import --refresh` or hand-edits).
             if _is_sidecar(path):
                 self._spawn(self._do_resync_sidecar, path)
 

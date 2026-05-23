@@ -1,5 +1,5 @@
 """Tests for the proactive CrossRef rate-limit throttle in
-pdforg.metrics.
+alexandria.metrics.
 
 Runnable as `python3 -m tests.test_crossref_throttle` (no pytest
 required) or collectable by pytest.
@@ -13,7 +13,7 @@ ROOT = os.path.dirname(HERE)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from pdforg import metrics
+from alexandria import metrics
 
 
 # ---- _parse_crossref_interval -------------------------------------

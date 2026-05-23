@@ -3,7 +3,7 @@
 or UNCERTAIN. No sidecars are written. Progress goes to stderr; the
 final summary to stdout, so you can redirect it to a file.
 
-Usage:  pdforg-classify.py <directory>  [> report.txt]
+Usage:  alexandria-classify.py <directory>  [> report.txt]
 """
 
 import os

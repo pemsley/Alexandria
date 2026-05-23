@@ -1,4 +1,4 @@
-"""Tests for PDB-mention index tables in pdforg.index.
+"""Tests for PDB-mention index tables in alexandria.index.
 
 Runnable as `python3 -m tests.test_pdb_mentions` (no pytest
 required) or collectable by pytest.
@@ -13,8 +13,8 @@ ROOT = os.path.dirname(HERE)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from pdforg import index
-from pdforg import pdb_mentions
+from alexandria import index
+from alexandria import pdb_mentions
 
 
 def _mem_db():

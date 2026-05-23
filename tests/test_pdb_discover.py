@@ -13,7 +13,7 @@ ROOT = os.path.dirname(HERE)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from pdforg import metrics
+from alexandria import metrics
 
 
 # A trimmed PDBe publications response for 4HHB, with one synthetic

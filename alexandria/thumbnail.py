@@ -116,7 +116,7 @@ def make_thumbnail(pdf_path, out_path, width=240, title=None):
     if os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
         return True
 
-    tmpdir = tempfile.mkdtemp(prefix="pdforg-thumb-")
+    tmpdir = tempfile.mkdtemp(prefix="alexandria-thumb-")
     try:
         p1 = _render_page(pdf_path, 1, os.path.join(tmpdir, "p1"), width)
         if p1 is None:

@@ -1,4 +1,4 @@
-"""Tests for pdforg.bibtex parse/write.
+"""Tests for alexandria.bibtex parse/write.
 
 Runnable as `python3 -m tests.test_bibtex` (no pytest required) or
 collectable by pytest. Each test is a top-level `test_*` function.
@@ -14,7 +14,7 @@ ROOT = os.path.dirname(HERE)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from pdforg import bibtex, bibtex_export
+from alexandria import bibtex, bibtex_export
 
 
 # ---- Fixtures ------------------------------------------------------

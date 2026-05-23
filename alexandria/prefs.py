@@ -1,6 +1,6 @@
 """Application-level preferences.
 
-Stored in $XDG_CONFIG_HOME/pdforg/config.json.
+Stored in $XDG_CONFIG_HOME/Alexandria/config.json.
 The library root can always be overridden by the ALEXANDRIA_LIBRARY env var."""
 
 import json

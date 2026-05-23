@@ -1,4 +1,4 @@
-"""Tests for the Crossref-authorships fallback in pdforg.metrics.
+"""Tests for the Crossref-authorships fallback in alexandria.metrics.
 
 Runnable as `python3 -m tests.test_metrics_crossref` (no pytest
 required) or collectable by pytest.
@@ -12,7 +12,7 @@ ROOT = os.path.dirname(HERE)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from pdforg import metrics
+from alexandria import metrics
 
 
 # A trimmed Crossref /works message: three authors, mixed ORCID

@@ -161,7 +161,7 @@ When host A writes a sidecar, the local-host expectation is:
 2. The watcher re-reads the sidecar and upserts the local DB row.
 3. The GUI redraws.
 
-The same mechanism is what makes `pdforg-import --refresh`
+The same mechanism is what makes `alexandria-import --refresh`
 invisibly update a running browser: the CLI rewrites the JSON, the
 watcher sees it, the row is upserted, the GUI redraws.
 

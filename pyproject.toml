@@ -43,16 +43,16 @@ Repository  = "https://github.com/pemsley/Alexandria"
 Issues      = "https://github.com/pemsley/Alexandria/issues"
 
 [project.scripts]
-alexandria-browse   = "pdforg.browse:main"
-alexandria-import   = "pdforg.cli_import:main"
-alexandria-classify = "pdforg.classify:main"
+alexandria-browse   = "alexandria.browse:main"
+alexandria-import   = "alexandria.cli_import:main"
+alexandria-classify = "alexandria.classify:main"
 
 [tool.setuptools.packages.find]
-include = ["pdforg*"]
+include = ["alexandria*"]
 exclude = ["tests*"]
 
 # Bundle the vendored CSL style files (CC-BY-SA 3.0, from
 # github.com/citation-style-language/styles) so they're available
 # from `pip install .` and from the Flatpak build.
 [tool.setuptools.package-data]
-pdforg = ["styles/*.csl"]
+alexandria = ["styles/*.csl"]

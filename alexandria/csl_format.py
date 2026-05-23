@@ -12,7 +12,7 @@ Public surface:
   * "citation" — the short in-text marker (`(Smith & Doe, 2024)`,
     `[1]`, etc., depending on the style)
 
-The vendored `.csl` files live in `pdforg/styles/` (CC-BY-SA 3.0,
+The vendored `.csl` files live in `alexandria/styles/` (CC-BY-SA 3.0,
 from github.com/citation-style-language/styles). Users will be
 able to drop additional `.csl` files into `~/.config/Alexandria/
 styles/` later (not yet implemented)."""
@@ -27,7 +27,7 @@ from . import csl
 
 
 # What the menu shows for each vendored style. Key matches the file
-# stem in pdforg/styles/<key>.csl. Order is intentional (most-asked
+# stem in alexandria/styles/<key>.csl. Order is intentional (most-asked
 # first).
 _STYLES = [
     {"key": "apa",                 "label": "APA"},

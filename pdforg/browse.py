@@ -840,19 +840,25 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     except Exception:
         pdb_ids = []
     if pdb_ids:
-        pdb_lbl = Gtk.Label(xalign=0.0)
-        pdb_lbl.set_use_markup(True)
-        pdb_lbl.set_wrap(True)
-        pdb_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
-        links = " ".join(
-            "<a href='https://www.ebi.ac.uk/pdbe/entry/pdb/{0}'>{1}</a>".format(
-                pid.lower(), pid) for pid in pdb_ids)
-        pdb_lbl.set_markup(
-            "<span size='small' alpha='75%'>PDB: </span>" + links)
-        pdb_lbl.connect(
-            "activate-link",
-            lambda _l, uri: (parent_window._open_uri_external(uri), True)[1])
-        text.append(pdb_lbl)
+        # One Gtk.Label per PDB id (rather than a single label with all
+        # links inline) so right-click can target a specific accession
+        # code — the popover offers "Open in Coot" for that code.
+        # FlowBox wraps the chips onto multiple rows when the card is
+        # narrower than the full set; a plain HORIZONTAL Box would run
+        # them off the edge of the window for papers with many PDB ids.
+        pdb_row = Gtk.FlowBox()
+        pdb_row.set_selection_mode(Gtk.SelectionMode.NONE)
+        pdb_row.set_homogeneous(False)
+        pdb_row.set_max_children_per_line(64)
+        pdb_row.set_column_spacing(6)
+        pdb_row.set_row_spacing(2)
+        prefix = Gtk.Label()
+        prefix.set_use_markup(True)
+        prefix.set_markup("<span size='small' alpha='75%'>PDB:</span>")
+        pdb_row.append(prefix)
+        for pid in pdb_ids:
+            pdb_row.append(_make_pdb_chip(pid, parent_window))
+        text.append(pdb_row)
 
     box.append(text)
     box.pdforg_pdf_path = row["pdf_path"]
@@ -875,6 +881,141 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     box.add_controller(cite_click)
 
     return box
+
+
+def _make_pdb_chip(pdb_id, parent_window):
+    """One small clickable PDB accession label.
+
+    Left-click follows the link to PDBe (handled by the standard
+    activate-link path). Right-click pops a menu offering 'Open in
+    Coot' for this specific code."""
+    code = pdb_id.upper()
+    url = "https://www.ebi.ac.uk/pdbe/entry/pdb/" + code.lower()
+    lbl = Gtk.Label()
+    lbl.set_use_markup(True)
+    lbl.set_markup("<a href='{0}'>{1}</a>".format(url, code))
+    lbl.connect(
+        "activate-link",
+        lambda _l, uri: (parent_window._open_uri_external(uri), True)[1])
+    rc = Gtk.GestureClick.new()
+    rc.set_button(3)  # secondary mouse / two-finger trackpad
+    # CAPTURE phase: intercept the right-click before Gtk.Label's
+    # own link-context-menu handler (the "Copy Link Address / Open
+    # Link" popup) runs on the bubble phase.
+    rc.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+
+    def _on_rc_pressed(g, n, x, y):
+        # Claim the sequence so GTK stops further propagation, both
+        # to release the gesture's implicit grab (otherwise the
+        # popover popup() races the grab and produces "Tried to map
+        # a grabbing popup with a non-top most parent") and to
+        # prevent the label's default link menu from also firing.
+        try:
+            g.set_state(Gtk.EventSequenceState.CLAIMED)
+        except Exception:
+            pass
+        _show_pdb_menu(g, x, y, code, parent_window)
+
+    rc.connect("pressed", _on_rc_pressed)
+    lbl.add_controller(rc)
+    return lbl
+
+
+def _show_pdb_menu(gesture, x, y, code, parent_window):
+    """Right-click menu on a PDB chip — offers 'Open in Coot'.
+
+    The popover is parented to the chip's FlowBox ancestor (a proper
+    container) rather than the chip Gtk.Label itself: parenting on a
+    Label deadlocked the main loop on the first menu click."""
+    chip = gesture.get_widget()
+    anchor = chip.get_ancestor(Gtk.FlowBox) or chip
+    pop = Gtk.Popover()
+    pop.set_parent(anchor)
+    pop.set_has_arrow(True)
+    pop.set_autohide(True)
+
+    # Point at the chip's allocation inside the anchor; raw click
+    # coords are in chip-local space and meaningless to a popover
+    # parented elsewhere.
+    ok, bounds = chip.compute_bounds(anchor)
+    rect = Gdk.Rectangle()
+    if ok:
+        rect.x = int(bounds.origin.x)
+        rect.y = int(bounds.origin.y)
+        rect.width = int(bounds.size.width)
+        rect.height = int(bounds.size.height)
+    else:
+        rect.x = rect.y = 0
+        rect.width = rect.height = 1
+    pop.set_pointing_to(rect)
+
+    outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+    outer.set_margin_start(8)
+    outer.set_margin_end(8)
+    outer.set_margin_top(6)
+    outer.set_margin_bottom(6)
+
+    btn = Gtk.Button(label="Open {} in Coot".format(code))
+    btn.add_css_class("flat")
+    btn.set_halign(Gtk.Align.START)
+
+    btn.connect(
+        "clicked",
+        lambda _b: _open_pdb_in_coot(code, parent_window, pop))
+    outer.append(btn)
+
+    pop.set_child(outer)
+    # Defer popup() to the next main-loop iteration so the gesture's
+    # grab on the right-click press is fully released first. Showing
+    # the autohide popover during the still-active grab triggers
+    # "Tried to map a grabbing popup with a non-top most parent" and
+    # leaves the popover in a half-mapped state.
+    GLib.idle_add(lambda: (pop.popup(), False)[1])
+
+
+def _open_pdb_in_coot(code, parent_window, pop):
+    """Launch `coot --no-state-script --code <code>` fully detached.
+
+    Resolution order for the coot executable:
+      1. `coot_path` key in ~/.config/Alexandria/config.json
+      2. $COOT env var
+      3. plain `coot` on the inherited PATH
+
+    stdin/stdout/stderr → /dev/null and start_new_session=True so
+    coot survives Alexandria's exit and never blocks on a pipe
+    buffer.
+    """
+    pop.popdown()
+    coot_exe = prefs.get_coot_path() or shutil.which("coot") or "coot"
+    cmd = [coot_exe, "--no-state-script", "--code", code]
+    devnull_r = devnull_w = None
+    try:
+        devnull_r = open(os.devnull, "rb")
+        devnull_w = open(os.devnull, "wb")
+        subprocess.Popen(
+            cmd,
+            stdin=devnull_r,
+            stdout=devnull_w,
+            stderr=devnull_w,
+            close_fds=True,
+            start_new_session=True)
+    except FileNotFoundError:
+        parent_window._toast(
+            "coot not found — set \"coot_path\" in "
+            "~/.config/Alexandria/config.json",
+            timeout=8)
+        return
+    except Exception as e:
+        parent_window._toast(
+            "Couldn't launch coot: {}".format(e), timeout=6)
+        print("coot launch failed:", e)
+        return
+    finally:
+        if devnull_r is not None:
+            devnull_r.close()
+        if devnull_w is not None:
+            devnull_w.close()
+    parent_window._toast("Opening {} in Coot…".format(code))
 
 
 def _show_cite_menu(gesture, x, y, row, parent_window):

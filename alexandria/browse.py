@@ -3817,6 +3817,9 @@ class BrowserWindow(Adw.ApplicationWindow):
                 tip += "\nORCID: " + orcid
             more_btn.set_tooltip_text(tip)
             more_btn.add_css_class("flat")
+            # Keep the icon clear of the popover's scrollbar — without
+            # this it overlaps and the click target shrinks.
+            more_btn.set_margin_end(10)
             more_btn.connect(
                 "clicked",
                 lambda _b, a=authorship: self._find_more_by_author(a, popover))

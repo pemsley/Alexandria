@@ -316,7 +316,8 @@ KEYWORD_LIMIT = 8
 
 def fetch_metrics(doi):
     """Return (count, source, keywords, abstract, authorships,
-    citations_by_year, oa_title, oa_year, is_oa, oa_status).
+    citations_by_year, oa_title, oa_year, is_oa, oa_status,
+    funders, grants).
 
     `oa_title` and `oa_year` are the OpenAlex Work's title and
     publication_year — the caller can cross-check these against
@@ -330,15 +331,19 @@ def fetch_metrics(doi):
     `diamond`, `closed`}. None when CrossRef-only or no data.
 
     `citations_by_year` is a list of {year, count} dicts,
-    oldest-first (capped by OpenAlex at ~10 years). Any field may
-    be None / [] depending on what OpenAlex / CrossRef returned."""
+    oldest-first (capped by OpenAlex at ~10 years). `funders` is a
+    deduped display-name list; `grants` is the per-award detail it
+    derives from. Both empty when OpenAlex returned no grants block
+    or the source is CrossRef. Any field may be None / [] depending
+    on what OpenAlex / CrossRef returned."""
     if not doi:
-        return None, None, [], None, [], [], None, None, None, None
+        return None, None, [], None, [], [], None, None, None, None, [], []
     (n, kw, abstract, authorships, cby,
-     oa_title, oa_year, is_oa, oa_status) = _openalex_metrics(doi)
+     oa_title, oa_year, is_oa, oa_status,
+     funders, grants) = _openalex_metrics(doi)
     if n is not None:
         return (n, "openalex", kw, abstract, authorships, cby,
-                oa_title, oa_year, is_oa, oa_status)
+                oa_title, oa_year, is_oa, oa_status, funders, grants)
     # OpenAlex has no record (common for freshly-published DOIs). Fall
     # back to CrossRef — one HTTP call yields both the citation count
     # and enough to build an authorships list (name + ORCID +
@@ -363,13 +368,13 @@ def fetch_metrics(doi):
                 except (ValueError, TypeError, IndexError):
                     cr_year = None
             return (n, "crossref", [], None, authorships, [],
-                    cr_title, cr_year, None, None)
-    return None, None, [], None, [], [], None, None, None, None
+                    cr_title, cr_year, None, None, [], [])
+    return None, None, [], None, [], [], None, None, None, None, [], []
 
 
 def fetch_citation_count(doi):
     """Backward-compatible wrapper returning just (count, source)."""
-    n, src, _, _, _, _, _, _, _, _ = fetch_metrics(doi)
+    n, src, *_ = fetch_metrics(doi)
     return n, src
 
 
@@ -396,13 +401,18 @@ def _strip_openalex_id(url):
 
 def _openalex_metrics(doi):
     """Return (cited_by_count, keywords, abstract, authorships,
-    citations_by_year, title, year) or (None, [], None, [], [],
-    None, None). Title and year let the caller cross-check that
-    the OpenAlex Work for `doi` is actually about the same paper —
-    OpenAlex occasionally cross-contaminates records (one paper's
-    title/authors/year merged with another paper's
-    DOI/abstract/source), and a mismatch is the signal to fall
-    back to the PDF-extracted metadata."""
+    citations_by_year, title, year, is_oa, oa_status, funders,
+    grants) or the all-empty equivalent. Title and year let the
+    caller cross-check that the OpenAlex Work for `doi` is actually
+    about the same paper — OpenAlex occasionally cross-contaminates
+    records (one paper's title/authors/year merged with another
+    paper's DOI/abstract/source), and a mismatch is the signal to
+    fall back to the PDF-extracted metadata.
+
+    `funders` is a deduped display-name list (order-preserving).
+    `grants` is `[{funder, award_id}, ...]` — the per-award detail
+    that `funders` is derived from. Both empty when OpenAlex
+    returned no `grants` block."""
     qdoi = urllib.parse.quote(doi, safe="")
     url = "https://api.openalex.org/works/doi:" + qdoi
     if OPENALEX_MAILTO:
@@ -412,7 +422,7 @@ def _openalex_metrics(doi):
         headers={"User-Agent": OPENALEX_UA, "Accept": "application/json"},
         timeout=15)
     if data is None:
-        return None, [], None, [], [], None, None, None, None
+        return None, [], None, [], [], None, None, None, None, [], []
     n = data.get("cited_by_count")
     if not isinstance(n, int):
         n = None
@@ -455,8 +465,26 @@ def _openalex_metrics(doi):
     else:
         is_oa = bool(open_access.get("is_oa"))
         oa_status = open_access.get("oa_status") or None
+    # Funders + grants. Same per-grant shape as `search_works`
+    # (`funder` display-name + `award_id`); funder IDs / RORs are
+    # dropped — `funders_json` is a deduped name list driven off the
+    # same iteration so the two columns stay consistent.
+    grants = []
+    funders = []
+    seen_funders = set()
+    for g in (data.get("grants") or []):
+        name = (g.get("funder_display_name") or "").strip()
+        if not name:
+            continue
+        grants.append({
+            "funder": name,
+            "award_id": (g.get("award_id") or "").strip() or None,
+        })
+        if name not in seen_funders:
+            seen_funders.add(name)
+            funders.append(name)
     return (n, kw, abstract, authorships, cby,
-            oa_title, oa_year, is_oa, oa_status)
+            oa_title, oa_year, is_oa, oa_status, funders, grants)
 
 
 def _normalize_doi(doi):

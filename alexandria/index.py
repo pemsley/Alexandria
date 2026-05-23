@@ -314,6 +314,10 @@ def _migrate(conn):
         conn.execute("ALTER TABLE papers ADD COLUMN oa_status TEXT")
     if "pdb_indexed_at" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN pdb_indexed_at TEXT")
+    if "funders_json" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN funders_json TEXT")
+    if "grants_json" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN grants_json TEXT")
     conn.commit()
     _reencode_unicode_columns(conn)
     _backfill_highlight_text(conn)
@@ -972,6 +976,10 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
         record.get("authorships") or [], ensure_ascii=False)
     cby_json = json.dumps(
         record.get("citations_by_year") or [], ensure_ascii=False)
+    grants_json = json.dumps(
+        record.get("grants") or [], ensure_ascii=False)
+    funders_json = json.dumps(
+        record.get("funders") or [], ensure_ascii=False)
     pv = record.get("published_version")
     pv_json = json.dumps(pv, ensure_ascii=False) if pv else None
     first_author, last_author = _derive_first_last_author(record)
@@ -1013,8 +1021,9 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
              license_label, license_url,
              crossmark_label, crossmark_type, crossmark_severity,
              crossmark_doi, crossmark_year,
-             is_oa, oa_status)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             is_oa, oa_status,
+             funders_json, grants_json)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(pdf_path) DO UPDATE SET
             sidecar_path=excluded.sidecar_path,
             thumb_path=excluded.thumb_path,
@@ -1049,7 +1058,9 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
             crossmark_doi=excluded.crossmark_doi,
             crossmark_year=excluded.crossmark_year,
             is_oa=excluded.is_oa,
-            oa_status=excluded.oa_status
+            oa_status=excluded.oa_status,
+            funders_json=excluded.funders_json,
+            grants_json=excluded.grants_json
     """, (pdf_path, sidecar_path, thumb_path,
           record.get("title"), authors_json,
           record.get("year"), record.get("doi"), record.get("journal"),
@@ -1068,7 +1079,8 @@ def upsert(conn, pdf_path, sidecar_path, thumb_path, record, sidecar_mtime):
           license_label, license_url,
           crossmark_label, crossmark_type, crossmark_severity,
           crossmark_doi, crossmark_year,
-          is_oa_int, oa_status_v))
+          is_oa_int, oa_status_v,
+          funders_json, grants_json))
     conn.commit()
 
 

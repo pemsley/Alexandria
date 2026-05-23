@@ -211,8 +211,8 @@ def refresh_pdf(conn, pdf_path):
     # abstract / keywords) actually populate during --refresh.
     if fresh.get("doi"):
         (n, src, kw, abstract, authorships, cby,
-         oa_title, oa_year, is_oa, oa_status) = metrics.fetch_metrics(
-             fresh["doi"])
+         oa_title, oa_year, is_oa, oa_status,
+         funders, grants) = metrics.fetch_metrics(fresh["doi"])
         if _openalex_record_matches(
                 fresh.get("title"), fresh.get("year"),
                 oa_title, oa_year):
@@ -235,6 +235,10 @@ def refresh_pdf(conn, pdf_path):
                 fresh["is_oa"] = is_oa
             if oa_status:
                 fresh["oa_status"] = oa_status
+            if funders:
+                fresh["funders"] = funders
+            if grants:
+                fresh["grants"] = grants
         elif oa_title or oa_year:
             print("[importer] OpenAlex record for {} looks corrupted "
                   "(refresh) — keeping existing metadata".format(
@@ -330,8 +334,8 @@ def import_pdf(conn, pdf_path):
     # failures leave fields untouched.
     if rec.get("doi"):
         (n, src, kw, abstract, authorships, cby,
-         oa_title, oa_year, is_oa, oa_status) = metrics.fetch_metrics(
-             rec["doi"])
+         oa_title, oa_year, is_oa, oa_status,
+         funders, grants) = metrics.fetch_metrics(rec["doi"])
         # OpenAlex sanity-check: rare but real, an OpenAlex Work
         # record cross-contaminates two papers — the DOI is right
         # but the title/authors/year come from a different paper.
@@ -365,6 +369,10 @@ def import_pdf(conn, pdf_path):
                 rec["is_oa"] = is_oa
             if oa_status:
                 rec["oa_status"] = oa_status
+            if funders:
+                rec["funders"] = funders
+            if grants:
+                rec["grants"] = grants
         elif oa_title or oa_year:
             print("[importer] OpenAlex record for {} looks corrupted "
                   "(PDF: {!r}/{} vs OpenAlex: {!r}/{}) — keeping "

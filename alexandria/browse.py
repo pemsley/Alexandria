@@ -1929,7 +1929,8 @@ class BrowserWindow(Adw.ApplicationWindow):
             if not doi:
                 continue
             (n, src, kw, abstract, authorships, cby,
-             oa_title, oa_year, is_oa, oa_status) = metrics.fetch_metrics(doi)
+             oa_title, oa_year, is_oa, oa_status,
+             funders, grants) = metrics.fetch_metrics(doi)
             if n is None:
                 self._cit_failed_session.add(row["pdf_path"])
             else:
@@ -1963,6 +1964,10 @@ class BrowserWindow(Adw.ApplicationWindow):
                         rec["is_oa"] = is_oa
                     if oa_status:
                         rec["oa_status"] = oa_status
+                    if funders:
+                        rec["funders"] = funders
+                    if grants:
+                        rec["grants"] = grants
                     # One-shot CrossRef-extras fetch (license +
                     # crossmark). Cheap — one polite-pool call —
                     # and piggybacks on the citation-refresh visit

@@ -18,14 +18,14 @@ from .identity import maintainer_email
 
 OPENALEX_MAILTO = maintainer_email()
 OPENALEX_UA = os.environ.get(
-    "PDFORG_OPENALEX_UA",
-    "pdforg/0.1 (mailto:{})".format(OPENALEX_MAILTO))
+    "ALEXANDRIA_OPENALEX_UA",
+    "alexandria/0.1 (mailto:{})".format(OPENALEX_MAILTO))
 CROSSREF_UA = os.environ.get(
-    "PDFORG_CROSSREF_UA",
-    "pdforg/0.1 (mailto:{})".format(OPENALEX_MAILTO))
+    "ALEXANDRIA_CROSSREF_UA",
+    "alexandria/0.1 (mailto:{})".format(OPENALEX_MAILTO))
 EUROPEPMC_UA = os.environ.get(
-    "PDFORG_EUROPEPMC_UA",
-    "pdforg/0.1 (mailto:{})".format(OPENALEX_MAILTO))
+    "ALEXANDRIA_EUROPEPMC_UA",
+    "alexandria/0.1 (mailto:{})".format(OPENALEX_MAILTO))
 
 
 def today_iso():

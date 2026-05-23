@@ -1,7 +1,7 @@
 """Application-level preferences.
 
 Stored in $XDG_CONFIG_HOME/pdforg/config.json.
-The library root can always be overridden by the PDFORG_LIBRARY env var."""
+The library root can always be overridden by the ALEXANDRIA_LIBRARY env var."""
 
 import json
 import os
@@ -53,7 +53,7 @@ def save(data, path=DEFAULT_PATH):
 
 def get_library_root():
     """Env var > stored config > XDG-Documents/Alexandria."""
-    env = os.environ.get("PDFORG_LIBRARY")
+    env = os.environ.get("ALEXANDRIA_LIBRARY")
     if env:
         return env
     stored = load().get("library_root")

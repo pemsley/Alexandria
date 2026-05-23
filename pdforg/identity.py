@@ -11,9 +11,9 @@ _DEFAULT_B64 = b"YWxleGFuZHJpYUBleGFtcGxlLm9yZw=="
 
 
 def maintainer_email():
-    """Return the contact email. Override via $PDFORG_MAILTO so other
+    """Return the contact email. Override via $ALEXANDRIA_MAILTO so other
     users / forks don't accidentally identify as me to the polite pool."""
-    override = os.environ.get("PDFORG_MAILTO")
+    override = os.environ.get("ALEXANDRIA_MAILTO")
     if override:
         return override
     return base64.b64decode(_DEFAULT_B64).decode("ascii")
@@ -22,7 +22,7 @@ def maintainer_email():
 def comment_author():
     """Display name stamped on highlights / comments.
 
-    Precedence: $PDFORG_AUTHOR env var > stored Preferences value
+    Precedence: $ALEXANDRIA_AUTHOR env var > stored Preferences value
     (`comment_author` key in config.json) > OS username >
     'anonymous'. Same env-var-first convention as
     `prefs.get_library_root`.
@@ -30,7 +30,7 @@ def comment_author():
     Existing comments are not retroactively rewritten when this
     setting changes — only newly-created and newly-edited comments
     use the new value."""
-    override = os.environ.get("PDFORG_AUTHOR")
+    override = os.environ.get("ALEXANDRIA_AUTHOR")
     if override:
         return override
     try:

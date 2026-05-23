@@ -15,8 +15,8 @@ import urllib.request
 from .identity import maintainer_email
 
 CROSSREF_USER_AGENT = os.environ.get(
-    "PDFORG_CROSSREF_UA",
-    "pdforg/0.1 (mailto:{})".format(maintainer_email()))
+    "ALEXANDRIA_CROSSREF_UA",
+    "alexandria/0.1 (mailto:{})".format(maintainer_email()))
 
 try:
     from pypdf import PdfReader

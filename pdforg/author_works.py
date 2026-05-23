@@ -18,6 +18,7 @@ from gi.repository import Gtk, GLib, Gdk, Gio, Pango
 import datetime
 
 from . import metrics, index, importer, opener
+from .identity import maintainer_email
 from .markup import safe_pango_markup
 
 
@@ -64,10 +65,9 @@ def _attach_copy_link_menu(button, url):
 from . import prefs as _prefs
 
 # Read on import — same shape as `browse.LIBRARY_ROOT`. Previously
-# this module had its own `os.environ.get("PDFORG_LIBRARY", "~/pdfs")`
-# fallback, which ignored the Preferences-set root entirely and
-# dropped "Add to Archive" downloads into `~/pdfs` instead of the
-# real library directory.
+# this module read the env var directly with a `~/pdfs` default, which
+# ignored the Preferences-set root and dropped "Add to Archive"
+# downloads into `~/pdfs` instead of the real library directory.
 LIBRARY_ROOT = _prefs.get_library_root()
 
 
@@ -212,7 +212,7 @@ def _curl_download(url, tmp_path, timeout):
         proc = subprocess.run(
             ["curl", "-sS", "-L",
              "--max-time", str(int(timeout)),
-             "-A", "pdforg/0.1 (mailto:alexandria@example.org)",
+             "-A", "alexandria/0.1 (mailto:{})".format(maintainer_email()),
              "-o", tmp_path,
              url],
             capture_output=True, timeout=timeout + 5)

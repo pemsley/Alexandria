@@ -243,16 +243,20 @@ def index_pdb_mentions_for_paper(conn, paper_id, pdf_path=None, doi=None):
         mentions = [(pdb, sect) for (_pm, pdb, sect) in hits]
         if mentions:
             store_mentions(conn, paper_id, mentions, source="europepmc")
+            index.mark_pdb_indexed(conn, paper_id)
             return len(set(m[0] for m in mentions))
 
     text = _pdf_fulltext(pdf_path)
     if not text:
+        index.mark_pdb_indexed(conn, paper_id)
         return 0
     refresh_valid_pdb_id_cache(conn)
     valid = get_valid_pdb_ids(conn)
     ids = extract_pdb_ids_from_text(text, valid)
     if not ids:
+        index.mark_pdb_indexed(conn, paper_id)
         return 0
     store_mentions(conn, paper_id, [(i, None) for i in ids],
                    source="local_regex")
+    index.mark_pdb_indexed(conn, paper_id)
     return len(ids)

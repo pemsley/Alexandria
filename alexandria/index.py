@@ -312,6 +312,8 @@ def _migrate(conn):
         conn.execute("ALTER TABLE papers ADD COLUMN is_oa INTEGER")
     if "oa_status" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN oa_status TEXT")
+    if "pdb_indexed_at" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN pdb_indexed_at TEXT")
     conn.commit()
     _reencode_unicode_columns(conn)
     _backfill_highlight_text(conn)
@@ -1105,6 +1107,37 @@ def rows_missing_crossref_extras(conn, limit=None):
     if limit:
         sql += " LIMIT {}".format(int(limit))
     return [dict(r) for r in conn.execute(sql).fetchall()]
+
+
+def rows_missing_pdb_indexing(conn, limit=None):
+    """Rows that haven't been through PDB-mention indexing yet (the
+    `pdb_indexed_at` stamp is NULL). Drives a one-shot backfill pass
+    over papers imported before PDB indexing was wired into the
+    importer. Ghost (bibtex-only) entries are excluded — without a
+    PDF there is no full-text fallback, and EuropePMC lookups are
+    handled by their own paths."""
+    sql = """
+        SELECT * FROM papers
+        WHERE pdb_indexed_at IS NULL
+          AND pdf_path NOT LIKE 'bibtex:%'
+        ORDER BY added_date ASC
+    """
+    if limit:
+        sql += " LIMIT {}".format(int(limit))
+    return [dict(r) for r in conn.execute(sql).fetchall()]
+
+
+def mark_pdb_indexed(conn, paper_id, when_iso=None):
+    """Stamp `pdb_indexed_at` so the backfill pass knows this paper
+    has been tried. Called by `pdb_mentions.index_pdb_mentions_for_paper`
+    on both the hit and no-hit paths."""
+    if when_iso is None:
+        when_iso = datetime.datetime.now(
+            datetime.timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        "UPDATE papers SET pdb_indexed_at = ? WHERE id = ?",
+        (when_iso, paper_id))
+    conn.commit()
 
 
 def update_citations(conn, pdf_path, count, source, fetched_iso):

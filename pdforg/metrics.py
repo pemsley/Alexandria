@@ -1703,6 +1703,69 @@ def fetch_oa_locations(doi):
     }
 
 
+# --- PDBe: paper(s) associated with a PDB accession code -----------
+
+_PDB_CODE_RE = re.compile(r"[0-9][a-z0-9]{3}")
+
+
+def _parse_pdb_publications(data, code):
+    """Pure parser: take PDBe's publications JSON for `code` and return
+    a list of {doi, title, journal, year, authors, first_author,
+    last_author, pubmed_id} dicts, primary citation first. Entries
+    lacking a DOI are kept (the caller decides what to do)."""
+    if not data or not code:
+        return []
+    pubs = data.get(code) or []
+    out = []
+    for p in pubs:
+        title = (p.get("title") or "").strip() or None
+        doi = (p.get("doi") or "").strip() or None
+        pubmed_id = (p.get("pubmed_id") or "").strip() or None
+        jinfo = p.get("journal_info") or {}
+        journal = (jinfo.get("ISO_abbreviation")
+                   or jinfo.get("pdb_abbreviation") or "").strip() or None
+        year = jinfo.get("year")
+        if not isinstance(year, int):
+            try:
+                year = int(year) if year else None
+            except (TypeError, ValueError):
+                year = None
+        authors = [
+            (a.get("full_name") or "").strip()
+            for a in (p.get("author_list") or [])
+            if (a.get("full_name") or "").strip()
+        ]
+        first_author = authors[0] if authors else None
+        last_author = authors[-1] if len(authors) > 1 else None
+        out.append({
+            "doi": doi,
+            "title": title,
+            "journal": journal,
+            "year": year,
+            "authors": authors,
+            "first_author": first_author,
+            "last_author": last_author,
+            "pubmed_id": pubmed_id,
+        })
+    return out
+
+
+def fetch_pdb_publications(pdb_code):
+    """Return PDBe's associated publications for a PDB accession code
+    as a list (primary citation first), or [] on failure / unknown
+    code. Validates the code shape before hitting the network."""
+    code = (pdb_code or "").strip().lower()
+    if not _PDB_CODE_RE.fullmatch(code):
+        return []
+    url = ("https://www.ebi.ac.uk/pdbe/api/pdb/entry/publications/" + code)
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": OPENALEX_UA,
+                 "Accept": "application/json"},
+        timeout=15)
+    return _parse_pdb_publications(data, code)
+
+
 def fetch_work_by_doi(doi):
     """Return one OpenAlex Work resolved by DOI as a normalised dict,
     or None on failure / unknown DOI.

@@ -969,8 +969,10 @@ class AuthorWorksWindow(Gtk.Window):
         title_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
         title_lbl.set_selectable(True)
         title_lbl.set_hexpand(True)
+        from .browse import _title_color
         title_lbl.set_markup(
-            "<b>{}</b>".format(safe_pango_markup(title)))
+            "<span foreground='{}'><b>{}</b></span>".format(
+                _title_color(self), safe_pango_markup(title)))
         title_row.append(title_lbl)
 
         # Retracted chip — highest-priority warning, drawn first

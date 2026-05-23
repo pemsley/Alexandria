@@ -15,6 +15,7 @@ This is the v0 entry point for an empty library — the user can find
 something to import without first having any papers in the index.
 """
 
+import re
 import threading
 
 import gi
@@ -64,6 +65,9 @@ class DiscoverWindow(Adw.Window):
         self.stack.add_titled_with_icon(
             self._build_title_page(), "title", "By title",
             "text-x-generic-symbolic")
+        self.stack.add_titled_with_icon(
+            self._build_pdb_page(), "pdb", "By PDB",
+            "applications-science-symbolic")
 
         switcher = Adw.ViewSwitcher()
         switcher.set_stack(self.stack)
@@ -499,6 +503,110 @@ class DiscoverWindow(Adw.Window):
         existing = self.parent_window._existing_dois_set()
         for r in rows:
             self._ti_results_box.append(self._build_work_row(r, existing))
+        return False
+
+    # =========================================================
+    # By PDB accession code
+    # =========================================================
+
+    def _build_pdb_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.set_margin_top(10)
+        box.set_margin_bottom(10)
+
+        controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._pdb_query = Gtk.Entry()
+        self._pdb_query.set_placeholder_text("e.g. 4hhb")
+        self._pdb_query.set_max_length(4)
+        self._pdb_query.set_width_chars(6)
+        controls.append(_form_row("PDB code", self._pdb_query))
+
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._pdb_search_btn = Gtk.Button(label="Search PDBe")
+        self._pdb_search_btn.add_css_class("suggested-action")
+        self._pdb_search_btn.connect("clicked", self._on_pdb_search)
+        btn_row.append(self._pdb_search_btn)
+        controls.append(btn_row)
+
+        self._pdb_query.connect("activate", self._on_pdb_search)
+
+        box.append(controls)
+
+        self._pdb_status = Gtk.Label(xalign=0.0)
+        box.append(self._pdb_status)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_vexpand(True)
+        scrolled.set_hexpand(True)
+        self._pdb_results_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        scrolled.set_child(self._pdb_results_box)
+        box.append(scrolled)
+        return box
+
+    def _on_pdb_search(self, _btn):
+        code = (self._pdb_query.get_text() or "").strip().lower()
+        if not re.fullmatch(r"[0-9][a-z0-9]{3}", code):
+            self._pdb_status.set_text(
+                "Enter a 4-character PDB code (e.g. 4hhb).")
+            return
+
+        self._pdb_status.set_text("Looking up PDBe…")
+        self._pdb_search_btn.set_sensitive(False)
+        self._clear_box(self._pdb_results_box)
+
+        def _do():
+            err = None
+            rows = []
+            n_skipped = 0
+            try:
+                pubs = metrics.fetch_pdb_publications(code)
+                for p in pubs:
+                    if not p.get("doi"):
+                        # Add path keys on DOI; show in the skip count.
+                        n_skipped += 1
+                        continue
+                    # OpenAlex lookup gives citations/OA badge/auto-PDF
+                    # on Add; fall back to the PDBe row if OpenAlex
+                    # doesn't have this DOI.
+                    oa = metrics.fetch_work_by_doi(p["doi"])
+                    rows.append(oa or {
+                        "doi": p["doi"],
+                        "title": p["title"],
+                        "year": p["year"],
+                        "journal": p["journal"],
+                        "first_author": p["first_author"],
+                        "last_author": p["last_author"],
+                        "authors": p["authors"],
+                        "citations": 0,
+                        "is_oa": False,
+                        "oa_url": None,
+                    })
+            except Exception as e:
+                err = str(e)
+            GLib.idle_add(self._after_pdb_search, rows, n_skipped, err)
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _after_pdb_search(self, rows, n_skipped, err):
+        self._pdb_search_btn.set_sensitive(True)
+        if err:
+            self._pdb_status.set_markup(
+                "<span foreground='#cc3333'>Lookup failed: {}</span>".format(
+                    GLib.markup_escape_text(err)))
+            return False
+        if not rows and not n_skipped:
+            self._pdb_status.set_text("No publications found for that code.")
+            return False
+        msg = "{} result{}".format(len(rows), "" if len(rows) == 1 else "s")
+        if n_skipped:
+            msg += " ({} skipped: no DOI)".format(n_skipped)
+        self._pdb_status.set_markup("<small>{}</small>".format(msg))
+        existing = self.parent_window._existing_dois_set()
+        for r in rows:
+            self._pdb_results_box.append(self._build_work_row(r, existing))
         return False
 
     # =========================================================

@@ -60,3 +60,20 @@ def get_library_root():
     if stored and isinstance(stored, str):
         return stored
     return _default_library()
+
+
+def get_coot_path():
+    """Path to the `coot` executable for the right-click 'Open in
+    Coot' action on PDB chips. Stored config > $COOT env var > None
+    (caller falls back to plain 'coot' on PATH).
+
+    Set in ~/.config/Alexandria/config.json as e.g.
+        "coot_path": "/home/paule/precious/.../bin/coot"
+    """
+    stored = load().get("coot_path")
+    if stored and isinstance(stored, str):
+        return stored
+    env = os.environ.get("COOT")
+    if env:
+        return env
+    return None

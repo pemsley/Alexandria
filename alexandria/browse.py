@@ -20,6 +20,26 @@ gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gdk, GLib, Gio, GObject, Pango, Adw
 
+# VTE is loaded lazily because it's only needed when the user toggles
+# the terminal panel — keep startup paths import-free for environments
+# where vte-2.91-gtk4 isn't installed.
+_VTE_AVAILABLE = None  # tri-state: None=unchecked, True/False=cached
+
+
+def _try_load_vte():
+    """Return the Vte module if available, else None. Cached."""
+    global _VTE_AVAILABLE
+    if _VTE_AVAILABLE is False:
+        return None
+    try:
+        gi.require_version("Vte", "3.91")
+        from gi.repository import Vte
+        _VTE_AVAILABLE = True
+        return Vte
+    except (ValueError, ImportError):
+        _VTE_AVAILABLE = False
+        return None
+
 from . import (index, edit_dialog, importer, metrics, sidecar, extract,
                viewer, marks_config, prefs, watcher as watcher_mod,
                author_works, bibtex_import, bibtex_export, ris_export,
@@ -1242,6 +1262,9 @@ class BrowserWindow(Adw.ApplicationWindow):
         discover_section.append("Discover (OpenAlex)…", "win.discover")
         discover_section.append("Subscriptions…", "win.subscriptions")
         hamburger_menu.append_section(None, discover_section)
+        tools_section = Gio.Menu()
+        tools_section.append("Toggle terminal", "win.toggle-terminal")
+        hamburger_menu.append_section(None, tools_section)
         hamburger_menu.append("Preferences…", "win.preferences")
         hamburger_btn = Gtk.MenuButton()
         hamburger_btn.set_icon_name("open-menu-symbolic")
@@ -1307,13 +1330,31 @@ class BrowserWindow(Adw.ApplicationWindow):
         self.toast_overlay = Adw.ToastOverlay()
         self.toast_overlay.set_child(self.results_scrolled)
 
+        # ---- Bottom terminal pane (lazily populated) --------------
+        # A vertical Gtk.Paned with the cards on top and a hidden
+        # wrapper for the VTE on the bottom. Hidden by default;
+        # toggled via the "Toggle terminal" hamburger entry. The
+        # VTE itself is built on first toggle so headless / no-Vte
+        # environments pay zero cost.
+        self._terminal_wrapper = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL)
+        self._terminal_wrapper.set_visible(False)
+        self._terminal = None
+        self._terminal_paned = Gtk.Paned.new(Gtk.Orientation.VERTICAL)
+        self._terminal_paned.set_start_child(self.toast_overlay)
+        self._terminal_paned.set_end_child(self._terminal_wrapper)
+        self._terminal_paned.set_resize_start_child(True)
+        self._terminal_paned.set_resize_end_child(True)
+        self._terminal_paned.set_shrink_start_child(False)
+        self._terminal_paned.set_shrink_end_child(False)
+
         # ---- Compose with Adw.ToolbarView -------------------------
         toolbar_view = Adw.ToolbarView()
         toolbar_view.add_top_bar(header)
         toolbar_view.add_top_bar(self.search_bar)
         toolbar_view.add_top_bar(self.progress_box)
         toolbar_view.add_bottom_bar(status_bar)
-        toolbar_view.set_content(self.toast_overlay)
+        toolbar_view.set_content(self._terminal_paned)
 
         self.set_content(toolbar_view)
 
@@ -1438,6 +1479,73 @@ class BrowserWindow(Adw.ApplicationWindow):
         self.search.select_region(0, -1)
         return True
 
+    def _on_toggle_terminal(self, _btn):
+        """Hamburger 'Toggle terminal' entry. Lazily spawns a $SHELL
+        in a Vte.Terminal at the bottom of the window on first call;
+        subsequent calls just hide/show the panel. The shell process
+        survives the hide so terminal state (history, cwd, any
+        running `claude` session) is preserved across toggles."""
+        Vte = _try_load_vte()
+        if Vte is None:
+            self._toast(
+                "Terminal unavailable: vte-2.91-gtk4 not installed",
+                timeout=4)
+            return
+        if self._terminal is None:
+            self._build_terminal(Vte)
+            # First-time positioning: ~60% cards / ~40% terminal.
+            try:
+                h = self.get_height() or 800
+            except Exception:
+                h = 800
+            self._terminal_paned.set_position(int(h * 0.6))
+        visible = not self._terminal_wrapper.get_visible()
+        self._terminal_wrapper.set_visible(visible)
+        if visible and self._terminal is not None:
+            self._terminal.grab_focus()
+
+    def _build_terminal(self, Vte):
+        """Construct the Vte.Terminal and spawn the user's shell with
+        ALEXANDRIA_* env vars set so a `claude` invocation from the
+        prompt picks up library config automatically."""
+        self._terminal = Vte.Terminal()
+        self._terminal.set_vexpand(True)
+        self._terminal.set_hexpand(True)
+        # Make the terminal a usable size: ~80 cols, ~12 rows. The
+        # Paned position governs actual rendered size; this is just
+        # the minimum / fallback.
+        self._terminal.set_size(80, 12)
+        self._terminal_wrapper.append(self._terminal)
+
+        shell = os.environ.get("SHELL") or "/bin/sh"
+        env = os.environ.copy()
+        env["ALEXANDRIA_LIBRARY_ROOT"] = LIBRARY_ROOT
+        env["ALEXANDRIA_DB"] = index.DEFAULT_DB_PATH
+        env_list = ["{}={}".format(k, v) for k, v in env.items()]
+
+        # PyGObject's VTE binding for spawn_async expects 10 args:
+        # pty_flags, cwd, argv, envv, spawn_flags, child_setup,
+        # child_setup_data, timeout, cancellable, callback. The
+        # `child_setup_data_destroy` and `user_data` slots from the
+        # C signature are absorbed by the binding (not exposed in
+        # Python). Empirically verified — the introspection stub
+        # and the lazka docs both mis-report this signature.
+        def _on_spawned(_term, _pid, err):
+            if err is not None:
+                print("[terminal] spawn failed:", err.message)
+        self._terminal.spawn_async(
+            Vte.PtyFlags.DEFAULT,
+            LIBRARY_ROOT,        # working directory
+            [shell],             # argv
+            env_list,            # envv
+            GLib.SpawnFlags.DEFAULT,
+            None,                # child_setup
+            None,                # child_setup_data
+            -1,                  # timeout
+            None,                # cancellable
+            _on_spawned,         # callback
+        )
+
     def _on_search(self, entry):
         self._reload(entry.get_text() or None)
 
@@ -1455,6 +1563,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             ("discover",      self._open_discover),
             ("subscriptions", self._open_subscriptions),
             ("preferences",   self._open_preferences),
+            ("toggle-terminal", self._on_toggle_terminal),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect(

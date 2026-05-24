@@ -919,8 +919,6 @@ via `extract.CROSSREF_USER_AGENT`.
 
 ## UI
 
-How about Ctrl-F key binding to Open search bar?
-
 - **Click-through on award IDs in the card "Funded by" line.** The
   award_id is shown today only in the tooltip; it would be far
   more useful if clicking it opened (somehow) the funded

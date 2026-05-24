@@ -917,6 +917,22 @@ via `extract.CROSSREF_USER_AGENT`.
   modern Drive clients do via "make available offline" per
   folder).
 
+## UI
+
+How about Ctrl-F key binding to Open search bar?
+
+- **Click-through on award IDs in the card "Funded by" line.** The
+  award_id is shown today only in the tooltip; it would be far
+  more useful if clicking it opened (somehow) the funded
+  application's abstract or summary. Gateway to Research
+  (`gtr.ukri.org` — the UKRI public-facing grant database) is the
+  most likely source for UK funders (UKRI/EPSRC/BBSRC/MRC etc.):
+  it exposes a REST API that takes a grant reference and returns
+  the project record. NIH RePORTER is the obvious analogue for US
+  funders. Per-funder routing: dispatch on the `funder` name to
+  pick the right registry; fall through to a Google search for
+  the bare award_id when none matches.
+
 ## Watcher
 - Recursive subdir watching (currently flat on `LIBRARY_ROOT`)
 - **Clean process shutdown on window close.** Largely done; one

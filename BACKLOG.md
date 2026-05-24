@@ -23,21 +23,6 @@ Pending features, roughly grouped. Newest at the top of each section.
   the property holds globally rather than per-spot-check.
 
 ## Import / ingestion
-- **Use Crossref authorships when OpenAlex has no record.** For
-  freshly-published DOIs OpenAlex 404s for days/weeks, so
-  `fetch_metrics` falls back to `_crossref_count` and returns only
-  the citation count — `authorships=[]` (`metrics.py:241`). Meanwhile
-  `extract._crossref_lookup` already fetches the full Crossref author
-  list (given/family names; Crossref also carries ORCID and
-  affiliation strings we currently drop) to populate the flat
-  `authors` list. So we make two Crossref round-trips and discard the
-  richer one. Wire the Crossref fallback in `fetch_metrics` to build
-  an `authorships` array (name + ORCID + affiliation, position by
-  array order) so rich author data is present before OpenAlex indexes
-  the work; let a later OpenAlex `refresh_pdf` upgrade it (openalex_id,
-  institution IDs). Surfaced while debugging science.adv3301 (28
-  authors, byline non-extractable graphics, DOI recovered by page
-  scan, OpenAlex 404).
 - **Drag-and-drop / CLI imports from outside the library tree
   (Flatpak).** Menu-driven Import Files / Import Folder now go
   through `importer.stage_into_library`, which copies the picked PDF
@@ -701,52 +686,25 @@ impact ÷ effort. None need anything beyond the polite pool we already
 use; identifying ourselves via `mailto:` in `User-Agent` is in place
 via `extract.CROSSREF_USER_AGENT`.
 
-- **Crossmark / `update-to` chip (incl. Retraction Watch).** The
-  `update-to` array on `/works/{doi}` lists updates pointing to this
-  paper. Render a chip on the card: "⚠ Correction issued (2023)",
-  "⚠ Retracted", "Updated by [link]". Genuinely unique among
-  competitors — Zotero, Mendeley, Wispar all skip this. No extra
-  endpoint: it rides the `/works/{doi}` message we already fetch via
-  `_fetch_crossref_work_message`, during the existing citation-refresh
-  pass. ~50 LOC + chip rendering.
-    - **Data sources, one field.** Each `update-to` entry carries a
-      `source` of `publisher` (Crossmark notices) or
-      `retraction-watch`. Crossref acquired the Retraction Watch
-      Database (Sept 2023) and folded it into the REST API, so a
-      single call covers both publisher updates *and* Retraction
-      Watch — no separate integration, same polite pool + `mailto`
-      we already send. Honour the requested citation to Retraction
-      Watch if we ever surface the data in an export.
-    - Each entry has `{type, label, DOI, updated (date), source}`;
-      `type` includes `retraction`, `correction`, `addendum`,
-      `expression_of_concern`, etc. Map `retraction` → red chip,
-      everything else → amber, and link the chip to the update DOI.
-    - **Bulk option (later).** For whole-library or offline scans,
-      the full Retraction Watch dataset is a daily-updated CSV at
-      `https://api.labs.crossref.org/data/retractionwatch` — mirror
-      locally and join by DOI instead of per-paper calls. Per-DOI
-      via `update-to` is the right first cut; bulk only if we want
-      to flag retractions without touching the network.
+- **Crossmark / Retraction Watch — bulk-CSV option.** The
+  per-DOI `updated-by` path is shipped (`_crossmark_from_message`
+  in `metrics.py`, severity-ranked, rendered by
+  `make_crossmark_chip` on the card). Still open: for whole-
+  library or offline scans, mirror the full Retraction Watch
+  daily-updated CSV at
+  `https://api.labs.crossref.org/data/retractionwatch` and join
+  by DOI instead of per-paper calls. Only worth doing if we ever
+  need to flag retractions without touching the network.
 
-- **Funder chip.** *(Shipped, from OpenAlex.)* A per-work
-  "Funded by NIH R01-…" chip already renders in the author dialog
-  from OpenAlex `grants` (`author_works.py:1067`). Still open: pull
-  funder/award from CrossRef's `funder: [{ name, award: [...] }]` on
-  `/works/{doi}` as a fallback for works where OpenAlex lacks grant
-  data, and surface the chip on the main paper cards (not just the
-  author dialog). See also the aggregated PI funding profile item
-  under Discovery.
-
-- **Honour `X-Rate-Limit-Limit` / `X-Rate-Limit-Interval`
-  headers.** CrossRef returns these on every response and asks
-  callers to adapt dynamically rather than hard-coding a rate.
-  Today our HTTP helper ignores them. Polish item: read the
-  headers, track allowed-requests-per-window per-thread, sleep
-  briefly when we'd exceed it. Also wire exponential backoff on
-  5xx (currently `return None` on any error, which works but is
-  pessimistic). Same handler can be reused for OpenAlex which
-  emits similar headers. ~40 LOC in a new `_polite_get_json`
-  wrapper around `_http_get_json`.
+- **CrossRef funder fallback.** OpenAlex `awards`/`funders` is
+  the primary source for the card "Funded by" line and the
+  author-dialog row, but coverage is patchy — many works have
+  zero entries. CrossRef's `/works/{doi}` carries a
+  `funder: [{ name, DOI, award: [...] }]` block we currently
+  drop. Pull it in `_fetch_crossref_work_message` as a fallback
+  when the OpenAlex grants list is empty; map into the same
+  `[{funder, award_id}]` shape we already persist. Composes with
+  the aggregated PI funding profile item under Discovery.
 
 ## OpenAlex client
 

@@ -1,0 +1,22 @@
+#!/bin/sh
+# Launch the Alexandria MCP server.
+#
+# Uses the FastMCP-capable Python from the Coot MCP venv; points
+# PYTHONPATH at this repo's source so the server can import
+# alexandria.sidecar / alexandria.index (and, after v0, the rest of
+# the read primitives) without needing alexandria itself installed
+# into the venv.
+#
+# Register with Claude CLI:
+#
+#   claude mcp add alexandria /home/paule/Projects/alexandria/alexandria/bin/alexandria-mcp
+#
+# Override the library / DB by exporting ALEXANDRIA_LIBRARY_ROOT or
+# ALEXANDRIA_DB before launching; Alexandria's own embedded VTE
+# already sets both.
+
+REPO="/home/paule/Projects/alexandria/alexandria"
+VENV_PY="/home/paule/Projects/mcp/coot-mcp-venv/bin/python"
+
+PYTHONPATH="${REPO}${PYTHONPATH:+:${PYTHONPATH}}" \
+  exec "${VENV_PY}" -m alexandria_mcp

@@ -827,6 +827,43 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
         star_lbl.set_halign(Gtk.Align.START)
         text.append(star_lbl)
 
+    # Funders. Up to two displayed inline ("Funded by NIH, Wellcome");
+    # the rest collapse to "+N more" so a heavily-funded consortium
+    # paper doesn't blow the card height up. Award IDs go into the
+    # tooltip. Same shape and styling as the author-works rows.
+    grants_json = (row["grants_json"]
+                   if "grants_json" in row.keys() else None)
+    try:
+        grants = json.loads(grants_json or "[]")
+    except (TypeError, ValueError):
+        grants = []
+    if grants:
+        visible = grants[:2]
+        extra = len(grants) - len(visible)
+        funder_bits = [g["funder"] for g in visible if g.get("funder")]
+        if funder_bits:
+            txt = "Funded by " + ", ".join(funder_bits)
+            if extra > 0:
+                txt += " · +{} more".format(extra)
+            tip_parts = []
+            for g in grants:
+                fname = g.get("funder")
+                if not fname:
+                    continue
+                if g.get("award_id"):
+                    tip_parts.append("{} ({})".format(fname, g["award_id"]))
+                else:
+                    tip_parts.append(fname)
+            funder_lbl = Gtk.Label(xalign=0.0)
+            funder_lbl.set_wrap(True)
+            funder_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            funder_lbl.set_markup(
+                "<small><span alpha='75%'>{}</span></small>".format(
+                    GLib.markup_escape_text(txt)))
+            if tip_parts:
+                funder_lbl.set_tooltip_text("\n".join(tip_parts))
+            text.append(funder_lbl)
+
     # Auto-keywords (OpenAlex concepts). Hidden by default — they bulk
     # the card up without being especially actionable. Will be revealed
     # by a future "Display Options → Verbose" preset.

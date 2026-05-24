@@ -19,10 +19,15 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
-from alexandria import sidecar
+import re
+import tempfile
+import urllib.parse
+
+from alexandria import (bibtex_import, index, metrics, pdf_fetch,
+                        pdf_text, sidecar)
 
 from . import __version__, config, db
-from .models import PaperDetail, PaperSummary
+from .models import PaperDetail, PaperSummary, PdfText
 
 
 mcp = FastMCP("Alexandria")
@@ -252,6 +257,204 @@ def get_papers(paper_ids: list[int]) -> list[dict]:
     return [asdict(_row_to_detail(by_id[pid])) for pid in paper_ids]
 
 
+def _openalex_work(doi: str) -> Optional[dict]:
+    """Fetch the raw OpenAlex Work record for `doi`. Returns the
+    dict on success, None on 404 / network failure. The MCP write
+    tool needs more fields than `metrics.fetch_metrics` exposes
+    (journal, OA URL, authorships in OpenAlex shape), so it pulls
+    the record directly."""
+    qdoi = urllib.parse.quote(doi, safe="")
+    url = "https://api.openalex.org/works/doi:" + qdoi
+    if metrics.OPENALEX_MAILTO:
+        url += "?mailto=" + urllib.parse.quote(metrics.OPENALEX_MAILTO)
+    return metrics._http_get_json(
+        url,
+        headers={"User-Agent": metrics.OPENALEX_UA,
+                 "Accept": "application/json"},
+        timeout=15)
+
+
+_BIBTEX_KEY_STRIP = re.compile(r"[^A-Za-z0-9]")
+
+
+def _bibtex_key_from(first_author: str, year, title: str) -> str:
+    """surnameYEARfirstword — mirrors the heuristic in
+    `discover._on_add_work` so MCP-imported papers carry keys that
+    look like the GUI-imported ones."""
+    surname = ""
+    if first_author:
+        parts = first_author.split()
+        if parts:
+            surname = _BIBTEX_KEY_STRIP.sub("", parts[-1]).lower()
+    yr = str(year or "")
+    first_word = ""
+    if title:
+        toks = title.split()
+        if toks:
+            first_word = _BIBTEX_KEY_STRIP.sub("", toks[0]).lower()
+    return (surname + yr + first_word) or "openalex"
+
+
+@mcp.tool()
+def add_paper_by_doi(doi: str, fetch_pdf: bool = True) -> dict:
+    """Add a paper to the library by DOI.
+
+    Looks up the DOI on OpenAlex for metadata, creates a ghost
+    (BibTeX-only) entry first, then — when `fetch_pdf` is true —
+    tries to fetch an open-access PDF (OpenAlex → Unpaywall →
+    EuropePMC, in that order). EuropePMC is the load-bearing
+    fallback for Cloudflare-protected publishers (Nature, Cell,
+    Science): for NIH/UKRI-funded papers it serves the
+    PMC-deposited copy that publisher downloads won't.
+
+    On a successful PDF fetch the ghost is replaced by a normal
+    entry. On failure the ghost stays — the user can attempt
+    `Get PDF` later from the GUI or supply a PDF manually.
+
+    Refuses if the server is in read-only mode
+    (ALEXANDRIA_READONLY).
+
+    Returns:
+        doi, normalised_doi, status (one of: 'imported_with_pdf',
+        'ghost', 'already_in_library', 'no_openalex_record',
+        'error'), paper_id (when known), pdf_source (URL that
+        worked, when applicable), message (human-readable).
+    """
+    if config.readonly():
+        raise ValueError("server is in read-only mode")
+    if not doi or not doi.strip():
+        raise ValueError("doi must be a non-empty string")
+
+    norm = _normalize_doi(doi)
+    out: dict = {"doi": doi, "normalised_doi": norm}
+
+    # Already in the library? Cheap check before any network work.
+    conn = db.get_ro_connection()
+    row = conn.execute(
+        "SELECT id, pdf_path FROM papers WHERE lower(doi) = ? LIMIT 1",
+        (norm,),
+    ).fetchone()
+    if row:
+        out["status"] = "already_in_library"
+        out["paper_id"] = row["id"]
+        out["message"] = "DOI {} already imported as paper {}".format(
+            norm, row["id"])
+        return out
+
+    # Pull OpenAlex metadata for the BibTeX-shape dict.
+    data = _openalex_work(norm)
+    if not data:
+        out["status"] = "no_openalex_record"
+        out["message"] = ("OpenAlex has no record for this DOI "
+                          "(fresh DOI? typo?) — nothing imported")
+        return out
+    title = (data.get("title") or data.get("display_name") or "").strip()
+    year = data.get("publication_year")
+    primary = data.get("primary_location") or {}
+    source = primary.get("source") or {}
+    journal = (source.get("display_name") or "").strip() or None
+    authors = []
+    for a in (data.get("authorships") or []):
+        nm = ((a.get("author") or {}).get("display_name") or "").strip()
+        if nm:
+            authors.append(nm)
+    first_author = authors[0] if authors else ""
+    bibtex_key = _bibtex_key_from(first_author, year, title)
+
+    br = {
+        "title": title or None,
+        "authors": authors,
+        "year": year,
+        "journal": journal,
+        "doi": norm,
+        "bibtex_key": bibtex_key,
+        "bibtex_type": "article",
+        "bibtex_extra": {},
+        "file": None,
+    }
+
+    # Open a writable connection for the import (the read-only
+    # connection from db.py refuses inserts).
+    rw_conn = bibtex_import.index.open_db()
+    try:
+        rec, status = bibtex_import.import_record(
+            rw_conn, br, config.library_root())
+    except Exception as e:
+        out["status"] = "error"
+        out["message"] = "import_record failed: {}".format(e)
+        return out
+
+    if status == "duplicate":
+        # `import_record` saw it under a different DOI normalisation;
+        # surface as already_in_library.
+        out["status"] = "already_in_library"
+        dup = rw_conn.execute(
+            "SELECT id FROM papers WHERE lower(doi) = ? LIMIT 1",
+            (norm,)).fetchone()
+        if dup:
+            out["paper_id"] = dup["id"]
+        out["message"] = "already in library"
+        return out
+    if status == "error" or rec is None:
+        out["status"] = "error"
+        out["message"] = "could not import (status={})".format(status)
+        return out
+
+    ghost_row = rw_conn.execute(
+        "SELECT * FROM papers WHERE lower(doi) = ? LIMIT 1",
+        (norm,)).fetchone()
+    if ghost_row is None:
+        out["status"] = "error"
+        out["message"] = "ghost row not found after import"
+        return out
+    out["paper_id"] = ghost_row["id"]
+
+    if not fetch_pdf:
+        out["status"] = "ghost"
+        out["message"] = "imported as ghost (fetch_pdf=False)"
+        return out
+
+    # Try the OA download chain. tmp file → attach_pdf_to_ghost.
+    fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd)
+    try:
+        ok, url_used, dl_msg = pdf_fetch.fetch_oa_pdf(norm, tmp_path)
+        if not ok:
+            out["status"] = "ghost"
+            out["message"] = ("imported as ghost; PDF fetch failed "
+                              "({})".format(dl_msg))
+            return out
+        try:
+            _new_path, attach_status, attach_msg = (
+                bibtex_import.attach_pdf_to_ghost(
+                    rw_conn, dict(ghost_row), tmp_path,
+                    config.library_root()))
+        except Exception as e:
+            out["status"] = "ghost"
+            out["message"] = ("PDF downloaded but attach failed: "
+                              "{}".format(e))
+            return out
+        if attach_status == "merged":
+            merged = rw_conn.execute(
+                "SELECT id FROM papers WHERE lower(doi) = ? LIMIT 1",
+                (norm,)).fetchone()
+            if merged:
+                out["paper_id"] = merged["id"]
+            out["status"] = "imported_with_pdf"
+            out["pdf_source"] = url_used
+            out["message"] = "imported with PDF from {}".format(url_used)
+        else:
+            out["status"] = "ghost"
+            out["message"] = ("PDF downloaded but ghost merge "
+                              "rejected: {}".format(attach_msg))
+        return out
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
 @mcp.tool()
 def get_sidecars(paper_ids: list[int]) -> list[dict]:
     """Return the raw `.alexandria` sidecar JSON for each paper,
@@ -292,4 +495,87 @@ def get_sidecars(paper_ids: list[int]) -> list[dict]:
         except Exception as e:
             out.append({"_error": "sidecar read failed: {}".format(e),
                         "_sidecar_path": by_id[pid]})
+    return out
+
+
+@mcp.tool()
+def get_pdf_texts(
+    paper_ids: list[int],
+    page_from: int = 1,
+    page_to: Optional[int] = None,
+    max_chars: int = 50000,
+) -> list[dict]:
+    """Extract plain text from each paper's PDF, sliced to a page
+    range and truncated at `max_chars`. Returns one PdfText per
+    input ID in the same order.
+
+    The page bounds apply to *every* paper in the call — almost
+    always what you want (specific pages of one paper, or the
+    first pages of many). For per-paper page ranges, make
+    multiple calls.
+
+    Use this when paper-level metadata (title / abstract /
+    keywords from `get_papers`) isn't enough — when you need to
+    quote a specific result, compare methods across two papers,
+    or check what a paper *actually* says vs the abstract's
+    summary. Don't reach for it for every question: 50 KB of
+    text per paper times several papers fills the context fast.
+    Start with abstracts, drill into the PDFs only when needed.
+
+    Ghost (BibTeX-only) entries return `error="ghost entry — no
+    PDF available"`; missing files return `error="pdf not found"`.
+    Don't raise an MCP error for these — the caller gets a list
+    aligned with the input.
+
+    Capped at 20 IDs per call (each can return up to `max_chars`,
+    so a batch of 20 at the default 50 KB is already 1 MB).
+    """
+    if not paper_ids:
+        return []
+    if len(paper_ids) > 20:
+        raise ValueError(
+            "get_pdf_texts: at most 20 IDs per call ({} given)".format(
+                len(paper_ids)))
+    if page_from < 1:
+        page_from = 1
+    if page_to is not None and page_to < page_from:
+        raise ValueError(
+            "get_pdf_texts: page_to ({}) < page_from ({})".format(
+                page_to, page_from))
+    if max_chars < 100:
+        raise ValueError(
+            "get_pdf_texts: max_chars must be >= 100 ({} given)".format(
+                max_chars))
+
+    conn = db.get_ro_connection()
+    placeholders = ",".join("?" for _ in paper_ids)
+    rows = conn.execute(
+        "SELECT id, pdf_path FROM papers WHERE id IN ({})".format(
+            placeholders),
+        list(paper_ids),
+    ).fetchall()
+    by_id = {r["id"]: r["pdf_path"] for r in rows}
+    missing = [pid for pid in paper_ids if pid not in by_id]
+    if missing:
+        raise ValueError(
+            "get_pdf_texts: unknown ID(s) {}".format(missing))
+
+    out: list[dict] = []
+    for pid in paper_ids:
+        pdf_path = by_id[pid]
+        if sidecar.is_ghost_path(pdf_path):
+            out.append(asdict(PdfText(
+                paper_id=pid, page_count=None,
+                page_from=page_from, page_to=page_to,
+                text="", truncated=False,
+                error="ghost entry — no PDF available")))
+            continue
+        pc = pdf_text.page_count(pdf_path)
+        text, truncated, err = pdf_text.extract_pages(
+            pdf_path, page_from=page_from,
+            page_to=page_to, max_chars=max_chars)
+        out.append(asdict(PdfText(
+            paper_id=pid, page_count=pc,
+            page_from=page_from, page_to=page_to,
+            text=text, truncated=truncated, error=err)))
     return out

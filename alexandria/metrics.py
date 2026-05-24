@@ -465,22 +465,33 @@ def _openalex_metrics(doi):
     else:
         is_oa = bool(open_access.get("is_oa"))
         oa_status = open_access.get("oa_status") or None
-    # Funders + grants. Same per-grant shape as `search_works`
-    # (`funder` display-name + `award_id`); funder IDs / RORs are
-    # dropped — `funders_json` is a deduped name list driven off the
-    # same iteration so the two columns stay consistent.
+    # Funders + grants. OpenAlex retired the top-level `grants`
+    # field and replaced it with `funders` (top-level funder list)
+    # and `awards` (per-award detail). Persisted shape stays the
+    # same: `grants_json` is `[{funder, award_id}, ...]`,
+    # `funders_json` is a deduped order-preserving display-name
+    # list. Funder OpenAlex IDs / RORs are dropped — the renderer
+    # only uses display names.
     grants = []
     funders = []
     seen_funders = set()
-    for g in (data.get("grants") or []):
-        name = (g.get("funder_display_name") or "").strip()
+    for a in (data.get("awards") or []):
+        name = (a.get("funder_display_name") or "").strip()
         if not name:
             continue
         grants.append({
             "funder": name,
-            "award_id": (g.get("award_id") or "").strip() or None,
+            "award_id": (a.get("funder_award_id") or "").strip() or None,
         })
         if name not in seen_funders:
+            seen_funders.add(name)
+            funders.append(name)
+    # Backfill `funders` from the top-level `funders` block for any
+    # entries that don't appear in `awards` (a paper can list a
+    # funder without naming an award).
+    for f in (data.get("funders") or []):
+        name = (f.get("display_name") or "").strip()
+        if name and name not in seen_funders:
             seen_funders.add(name)
             funders.append(name)
     return (n, kw, abstract, authorships, cby,
@@ -589,16 +600,18 @@ def fetch_works_by_author(orcid=None, openalex_id=None, since=None,
         license_code = primary.get("license")
         license_label = _label_from_openalex_license(license_code)
         # Grants: keep only display name + award id; drop the
-        # OpenAlex funder ID URL noise. Most papers have 0-3
-        # grants; the row UI caps the displayed list anyway.
+        # OpenAlex funder ID URL noise. Most papers have 0-3 grants;
+        # the row UI caps the displayed list anyway. OpenAlex
+        # replaced the legacy top-level `grants` field with `awards`
+        # — same per-entry information under a different key.
         grants = []
-        for g in (w.get("grants") or []):
-            name = (g.get("funder_display_name") or "").strip()
+        for a in (w.get("awards") or []):
+            name = (a.get("funder_display_name") or "").strip()
             if not name:
                 continue
             grants.append({
                 "funder": name,
-                "award_id": (g.get("award_id") or "").strip() or None,
+                "award_id": (a.get("funder_award_id") or "").strip() or None,
             })
         # Topics: keep only the first (most-confident) topic's
         # display name. The full topic tree is interesting for

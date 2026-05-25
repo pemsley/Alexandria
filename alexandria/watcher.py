@@ -45,11 +45,15 @@ class LibraryWatcher:
     after each successful change."""
 
     def __init__(self, conn, library_root, on_change_cb=None,
-                 on_import_start_cb=None):
+                 on_import_start_cb=None, skip_roots=None):
         self.conn = conn
         self.root = library_root
         self.on_change = on_change_cb
         self.on_import_start = on_import_start_cb
+        # Other catalogue roots — passed through to import_tree so
+        # the cold reconcile doesn't slurp PDFs that live inside a
+        # nested sibling catalogue's folder.
+        self.skip_roots = list(skip_roots or [])
         self.monitor = None
         self._reconcile_thread = None
         # abspath -> expiry timestamp. Events on suppressed paths are
@@ -126,7 +130,8 @@ class LibraryWatcher:
 
     def _do_reconcile(self):
         try:
-            importer.import_tree(self.conn, self.root)
+            importer.import_tree(
+                self.conn, self.root, skip_roots=self.skip_roots)
         except Exception as e:
             print("LibraryWatcher: reconcile failed:", e)
             return

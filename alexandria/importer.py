@@ -44,8 +44,46 @@ def _sha256(path, chunk=1 << 20):
     return h.hexdigest()
 
 
-def find_pdfs(root):
-    for dirpath, _dirs, files in os.walk(root):
+def find_pdfs(root, skip_roots=None):
+    """Yield absolute PDF paths under `root`. When `skip_roots` is
+    provided, any subdirectory whose real path is at-or-below an
+    entry in `skip_roots` is pruned from the walk — used by the
+    multi-catalogue browser to keep one catalogue's recursive
+    reconcile from slurping PDFs that live inside a nested
+    sibling catalogue's folder."""
+    skip = []
+    for s in (skip_roots or []):
+        try:
+            skip.append(os.path.realpath(s))
+        except OSError:
+            continue
+    root_real = os.path.realpath(root)
+    for dirpath, dirs, files in os.walk(root):
+        # Modify `dirs` in place so os.walk doesn't descend into
+        # pruned subdirectories.
+        if skip:
+            keep = []
+            for d in dirs:
+                child_real = os.path.realpath(
+                    os.path.join(dirpath, d))
+                # Prune when this child is itself a skip-root OR
+                # one of the skip-roots is inside it. The latter
+                # case (skip-root is a deeper descendant) is rare
+                # but possible if the user nested catalogues two
+                # levels deep.
+                if child_real == root_real:
+                    continue
+                pruned = False
+                for s in skip:
+                    if child_real == s:
+                        pruned = True
+                        break
+                    if s.startswith(child_real + os.sep):
+                        pruned = True
+                        break
+                if not pruned:
+                    keep.append(d)
+            dirs[:] = keep
         for name in files:
             if name.lower().endswith(".pdf"):
                 yield os.path.join(dirpath, name)
@@ -532,11 +570,14 @@ def rename_pdf(conn, old_path, new_path):
     index.remove(conn, old_path)
 
 
-def import_tree(conn, root, on_progress=None, refresh=False):
+def import_tree(conn, root, on_progress=None, refresh=False,
+                skip_roots=None):
     """Import every PDF under root. With refresh=True, sidecars without
     hand_edited=True are re-extracted (preserving tags / notes / citations).
-    on_progress(i, n, path, rec, status) optional callback."""
-    pdfs = list(find_pdfs(root))
+    on_progress(i, n, path, rec, status) optional callback.
+    `skip_roots` prunes subdirectories that belong to other
+    catalogues — see find_pdfs."""
+    pdfs = list(find_pdfs(root, skip_roots=skip_roots))
     n = len(pdfs)
     for i, p in enumerate(pdfs):
         rec, status = None, "error"

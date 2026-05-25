@@ -94,6 +94,17 @@ _HOST_DB_NAME = "library." + _host_hash() + ".db"
 _LEGACY_DB_NAME = "library.db"
 DEFAULT_DB_PATH = os.path.join(XDG_STATE, "Alexandria", _HOST_DB_NAME)
 
+
+def db_path_for_catalogue(name):
+    """Per-catalogue DB path. The `default` catalogue keeps the
+    legacy non-namespaced location so existing libraries upgrade
+    invisibly when this code lands — `$XDG_STATE/Alexandria/
+    library.<host>.db`. Other catalogues live one directory down
+    at `$XDG_STATE/Alexandria/<name>/library.<host>.db`."""
+    if not name or name == "default":
+        return DEFAULT_DB_PATH
+    return os.path.join(XDG_STATE, "Alexandria", name, _HOST_DB_NAME)
+
 # Pattern for any `library.<hash>.db` filename — used by the
 # migrator to spot stale-hash DBs left over from the brittle
 # hostname-based design.

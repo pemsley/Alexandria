@@ -1294,15 +1294,41 @@ def _do_copy_citation(style, row, parent_window, pop):
 
 
 class BrowserWindow(Adw.ApplicationWindow):
-    def __init__(self, app, conn):
+    def __init__(self, app, catalogue):
+        """`catalogue` is a `{name, library_root}` dict (see
+        `prefs.get_catalogues`). The window opens its own DB
+        connection for the catalogue's per-name path; multiple
+        windows can coexist, each pointed at a different
+        catalogue."""
         super().__init__(application=app)
-        self.conn = conn
-        self.set_title("Alexandria")
+        self.catalogue = catalogue
+        self.library_root = catalogue["library_root"]
+        # Per-catalogue DB. Migrations run once per open — both
+        # are idempotent so this is cheap even for catalogues
+        # that have already been brought up to date.
+        self.conn = index.open_db(
+            index.db_path_for_catalogue(catalogue["name"]))
+        sidecar.migrate_library_sidecars(self.library_root)
+        index.migrate_sidecar_paths(self.conn)
+        # Title: bare "Alexandria" for the default catalogue (to
+        # match the pre-multi-catalogue UX); name-suffixed for
+        # any user-created catalogue.
+        if catalogue["name"] == "default":
+            self.set_title("Alexandria")
+        else:
+            self.set_title(
+                "Alexandria — {}".format(catalogue["name"]))
         self.set_default_size(900, 700)
         # Icon picked up via the `icons/` search path registered
         # in `on_activate`. Name matches the application_id so
         # window managers and taskbars can use the same lookup.
         self.set_icon_name("io.github.pemsley.Alexandria")
+
+        # Close-request hook so closing this window checkpoints
+        # and closes its own DB connection. Without this, with
+        # multi-catalogue windows open, only the last-to-close
+        # window's conn would get a tidy shutdown via on_shutdown.
+        self.connect("close-request", self._on_close_request)
 
         # ---- Window-scoped Gio actions (driven by menu items) -----
         self._install_actions()
@@ -1369,6 +1395,25 @@ class BrowserWindow(Adw.ApplicationWindow):
         # END: hamburger first → far right; then mark filter; then
         # search toggle. Order in pack_end is rightmost-first.
         hamburger_menu = Gio.Menu()
+        # Catalogues section. One menu entry per configured
+        # catalogue (clicking opens that catalogue in a new
+        # window), plus "New catalogue…" which prompts for a name
+        # and a folder. The active catalogue is included for
+        # symmetry but is a no-op (the user is already looking at
+        # it) — they can tell which one they're in from the
+        # window title.
+        catalogues_section = Gio.Menu()
+        for c in prefs.get_catalogues():
+            catalogues_section.append(
+                "Open: " + c["name"],
+                "win.open-catalogue('{}')".format(
+                    c["name"].replace("'", "\\'")))
+        catalogues_section.append("New catalogue…",
+                                  "win.new-catalogue")
+        catalogues_section.append("Remove catalogue…",
+                                  "win.remove-catalogue")
+        hamburger_menu.append_section("Catalogues",
+                                      catalogues_section)
         discover_section = Gio.Menu()
         discover_section.append("Discover (OpenAlex)…", "win.discover")
         discover_section.append("Subscriptions…", "win.subscriptions")
@@ -1555,9 +1600,10 @@ class BrowserWindow(Adw.ApplicationWindow):
         self._import_window_timer_id = None
         self._import_count_toast = None
         self.library_watcher = watcher_mod.LibraryWatcher(
-            self.conn, LIBRARY_ROOT,
+            self.conn, self.library_root,
             on_change_cb=self._on_watcher_change,
-            on_import_start_cb=self._on_import_start)
+            on_import_start_cb=self._on_import_start,
+            skip_roots=self._other_catalogue_roots())
         self.library_watcher.start()
         self.library_watcher.reconcile_startup()
         self.connect("close-request", self._on_close_request)
@@ -1590,6 +1636,269 @@ class BrowserWindow(Adw.ApplicationWindow):
         self.search.grab_focus()
         self.search.select_region(0, -1)
         return True
+
+    def _other_catalogue_roots(self):
+        """All configured catalogue library_roots *except* this
+        window's. Passed to the watcher as `skip_roots` so the
+        reconcile walk doesn't descend into a nested sibling
+        catalogue's folder and import its PDFs into this DB."""
+        my = self.catalogue.get("name")
+        return [c["library_root"] for c in prefs.get_catalogues()
+                if c.get("name") != my and c.get("library_root")]
+
+    def _on_open_catalogue(self, name):
+        """Open `name` in a new BrowserWindow attached to the
+        same Adw.Application. If it's the catalogue we're already
+        looking at, raise our own window instead of duplicating.
+        Persists the choice so the next launch opens this
+        catalogue by default."""
+        if name == self.catalogue["name"]:
+            self.present()
+            return
+        cat = prefs.get_catalogue(name)
+        if cat is None:
+            self._toast("Unknown catalogue: {}".format(name))
+            return
+        try:
+            win = BrowserWindow(self.get_application(), cat)
+        except Exception as e:
+            self._toast("Open catalogue failed: {}".format(e),
+                        timeout=6)
+            return
+        prefs.set_current_catalogue(name)
+        win.present()
+
+    def _on_new_catalogue(self, _btn):
+        """Prompt for a name + library folder; on confirm, register
+        the catalogue in prefs and open it in a new window."""
+        dlg = Gtk.Window(transient_for=self, modal=True)
+        dlg.set_title("New catalogue")
+        dlg.set_default_size(520, 180)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_start(14)
+        box.set_margin_end(14)
+        box.set_margin_top(14)
+        box.set_margin_bottom(14)
+
+        name_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                           spacing=8)
+        name_row.append(Gtk.Label(label="Name", xalign=1.0,
+                                  width_chars=8))
+        name_entry = Gtk.Entry()
+        name_entry.set_hexpand(True)
+        name_entry.set_placeholder_text(
+            "e.g. teaching, personal, work")
+        name_row.append(name_entry)
+        box.append(name_row)
+
+        # Folder row: read-only entry plus a "Choose…" button. Default
+        # to a sibling of the current catalogue's root, named after
+        # whatever the user types, but updates only on explicit
+        # picking — auto-naming the folder from the entry is too
+        # magical for v0.
+        folder_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                             spacing=8)
+        folder_row.append(Gtk.Label(label="Folder", xalign=1.0,
+                                    width_chars=8))
+        folder_entry = Gtk.Entry()
+        folder_entry.set_hexpand(True)
+        folder_entry.set_placeholder_text("(pick a folder)")
+        folder_row.append(folder_entry)
+        pick_btn = Gtk.Button.new_with_label("Choose…")
+        folder_row.append(pick_btn)
+        box.append(folder_row)
+
+        msg = Gtk.Label(xalign=0.0)
+        msg.set_wrap(True)
+        box.append(msg)
+
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                          spacing=6)
+        btn_row.set_halign(Gtk.Align.END)
+        cancel_btn = Gtk.Button.new_with_label("Cancel")
+        cancel_btn.connect("clicked", lambda _b: dlg.close())
+        create_btn = Gtk.Button.new_with_label("Create")
+        create_btn.add_css_class("suggested-action")
+        btn_row.append(cancel_btn)
+        btn_row.append(create_btn)
+        box.append(btn_row)
+
+        def _on_pick(_b):
+            fd = Gtk.FileDialog()
+            fd.set_title("Pick the catalogue's PDF folder")
+            fd.set_initial_folder(
+                Gio.File.new_for_path(
+                    os.path.dirname(self.library_root)
+                    or os.path.expanduser("~")))
+
+            def _picked(d, result):
+                try:
+                    folder = d.select_folder_finish(result)
+                except GLib.Error:
+                    return
+                if folder is None:
+                    return
+                p = folder.get_path()
+                if p:
+                    folder_entry.set_text(p)
+            fd.select_folder(dlg, None, _picked)
+
+        pick_btn.connect("clicked", _on_pick)
+
+        def _on_create(_b):
+            name = (name_entry.get_text() or "").strip()
+            folder = (folder_entry.get_text() or "").strip()
+            if not name:
+                msg.set_text("Name is required.")
+                return
+            if not folder:
+                msg.set_text("Folder is required.")
+                return
+            if not os.path.isabs(folder):
+                msg.set_text("Folder must be an absolute path.")
+                return
+            if not prefs.add_catalogue(name, folder):
+                msg.set_text(
+                    "A catalogue named {!r} already exists.".format(name))
+                return
+            try:
+                os.makedirs(folder, exist_ok=True)
+            except OSError as e:
+                msg.set_text("Couldn't create folder: {}".format(e))
+                return
+            dlg.close()
+            # Open the new catalogue in a fresh window. (Doesn't
+            # auto-update the *current* window's hamburger menu —
+            # that picks up new catalogues on next open of the
+            # menu, since the menu is rebuilt by libadwaita on
+            # show. If it doesn't, restart Alexandria.)
+            self._on_open_catalogue(name)
+
+        create_btn.connect("clicked", _on_create)
+        name_entry.connect("activate", _on_create)
+        folder_entry.connect("activate", _on_create)
+
+        dlg.set_child(box)
+        dlg.present()
+
+    def _on_remove_catalogue(self, _btn):
+        """Prompt for which catalogue to remove. The currently-viewed
+        catalogue is excluded — you can't pull the rug out from
+        under the window that's removing it. Removal deletes the
+        prefs entry and (when the user opts in) the per-catalogue
+        SQLite cache directory; the catalogue's PDF folder on
+        disk is never touched."""
+        removable = [c for c in prefs.get_catalogues()
+                     if c["name"] != self.catalogue["name"]]
+        if not removable:
+            self._toast(
+                "No other catalogue to remove — switch to another "
+                "catalogue first, then remove this one from there.",
+                timeout=6)
+            return
+
+        dlg = Gtk.Window(transient_for=self, modal=True)
+        dlg.set_title("Remove catalogue")
+        dlg.set_default_size(520, 200)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_start(14)
+        box.set_margin_end(14)
+        box.set_margin_top(14)
+        box.set_margin_bottom(14)
+
+        pick_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                           spacing=8)
+        pick_row.append(Gtk.Label(label="Catalogue", xalign=1.0,
+                                  width_chars=12))
+        sl = Gtk.StringList()
+        for c in removable:
+            sl.append(c["name"])
+        dd = Gtk.DropDown(model=sl)
+        dd.set_hexpand(True)
+        pick_row.append(dd)
+        box.append(pick_row)
+
+        also_dbcache = Gtk.CheckButton(
+            label="Also delete the per-catalogue SQLite cache")
+        also_dbcache.set_active(True)
+        box.append(also_dbcache)
+
+        note = Gtk.Label(xalign=0.0)
+        note.set_wrap(True)
+        note.set_markup(
+            "<small><span alpha='75%'>The catalogue's PDF "
+            "folder on disk is never deleted — the PDFs and "
+            "sidecars stay put. Only the prefs entry and "
+            "(optionally) the regenerable SQLite cache "
+            "directory are removed.</span></small>")
+        box.append(note)
+
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                          spacing=6)
+        btn_row.set_halign(Gtk.Align.END)
+        cancel_btn = Gtk.Button.new_with_label("Cancel")
+        cancel_btn.connect("clicked", lambda _b: dlg.close())
+        remove_btn = Gtk.Button.new_with_label("Remove")
+        remove_btn.add_css_class("destructive-action")
+        btn_row.append(cancel_btn)
+        btn_row.append(remove_btn)
+        box.append(btn_row)
+
+        def _on_remove(_b):
+            idx = dd.get_selected()
+            if idx < 0 or idx >= len(removable):
+                return
+            name = removable[idx]["name"]
+            ok = prefs.remove_catalogue(name)
+            if not ok:
+                self._toast(
+                    "Couldn't remove {!r}.".format(name), timeout=6)
+                dlg.close()
+                return
+            if also_dbcache.get_active():
+                cache_dir = os.path.join(
+                    os.path.dirname(index.db_path_for_catalogue(name)))
+                # Safety: only delete a path under the Alexandria
+                # state dir; never touch home or anything outside.
+                state_root = os.path.realpath(
+                    os.path.join(index.XDG_STATE, "Alexandria"))
+                if (cache_dir
+                        and os.path.realpath(cache_dir).startswith(
+                            state_root + os.sep)
+                        and os.path.isdir(cache_dir)):
+                    try:
+                        shutil.rmtree(cache_dir)
+                    except Exception as e:
+                        self._toast(
+                            "Removed prefs entry; cache delete "
+                            "failed: {}".format(e), timeout=6)
+                        dlg.close()
+                        return
+            self._toast(
+                "Removed catalogue {!r}.".format(name), timeout=4)
+            dlg.close()
+
+        remove_btn.connect("clicked", _on_remove)
+        dlg.set_child(box)
+        dlg.present()
+
+    def _on_close_request(self, *_args):
+        """Window is being closed: checkpoint and close our DB
+        connection so the next open of this catalogue starts
+        clean. Returning False lets the window destruction
+        proceed."""
+        conn = getattr(self, "conn", None)
+        if conn is not None:
+            try:
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except Exception:
+                    pass
+                conn.close()
+            except Exception as e:
+                print("close: conn close failed:", e)
+            self.conn = None
+        return False
 
     def _open_about(self, _btn):
         """Adw.AboutDialog with the standard fields. Icon resolves
@@ -1694,7 +2003,7 @@ class BrowserWindow(Adw.ApplicationWindow):
 
         shell = os.environ.get("SHELL") or "/bin/sh"
         env = os.environ.copy()
-        env["ALEXANDRIA_LIBRARY_ROOT"] = LIBRARY_ROOT
+        env["ALEXANDRIA_LIBRARY_ROOT"] = self.library_root
         env["ALEXANDRIA_DB"] = index.DEFAULT_DB_PATH
         env_list = ["{}={}".format(k, v) for k, v in env.items()]
 
@@ -1710,7 +2019,7 @@ class BrowserWindow(Adw.ApplicationWindow):
                 print("[terminal] spawn failed:", err.message)
         self._terminal.spawn_async(
             Vte.PtyFlags.DEFAULT,
-            LIBRARY_ROOT,        # working directory
+            self.library_root,        # working directory
             [shell],             # argv
             env_list,            # envv
             GLib.SpawnFlags.DEFAULT,
@@ -1756,12 +2065,24 @@ class BrowserWindow(Adw.ApplicationWindow):
             ("preferences",   self._open_preferences),
             ("toggle-terminal", self._on_toggle_terminal),
             ("about",         self._open_about),
+            ("new-catalogue", self._on_new_catalogue),
+            ("remove-catalogue", self._on_remove_catalogue),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect(
                 "activate",
                 lambda a, p, h=handler: h(None))
             self.add_action(action)
+
+        # `open-catalogue` takes a string parameter (the catalogue
+        # name) — Gio.SimpleAction needs an explicit parameter
+        # type, so it lives outside the parameterless loop above.
+        open_cat_action = Gio.SimpleAction.new(
+            "open-catalogue", GLib.VariantType.new("s"))
+        open_cat_action.connect(
+            "activate",
+            lambda a, p: self._on_open_catalogue(p.get_string()))
+        self.add_action(open_cat_action)
 
     # --- Import (file dialog + background thread) -----------------------
 
@@ -1862,7 +2183,7 @@ class BrowserWindow(Adw.ApplicationWindow):
 
         try:
             counts = bibtex_import.import_bib(
-                self.conn, bib_path, LIBRARY_ROOT, on_progress=progress)
+                self.conn, bib_path, self.library_root, on_progress=progress)
         except Exception as e:
             print("BibTeX import failed:", e)
             counts = None
@@ -2678,7 +2999,7 @@ class BrowserWindow(Adw.ApplicationWindow):
     def _do_ghost_drop(self, ghost_row, src_path):
         try:
             new_path, status, msg = bibtex_import.attach_pdf_to_ghost(
-                self.conn, ghost_row, src_path, LIBRARY_ROOT)
+                self.conn, ghost_row, src_path, self.library_root)
         except Exception as e:
             print("attach_pdf_to_ghost failed:", e)
             new_path, status, msg = None, "error", str(e)
@@ -2711,7 +3032,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         return None
 
     def _do_drop_import(self, paths):
-        os.makedirs(LIBRARY_ROOT, exist_ok=True)
+        os.makedirs(self.library_root, exist_ok=True)
         results = {"imported": [], "duplicate": [], "exists": [],
                    "error": [], "merged": []}
         for src in paths:
@@ -2727,7 +3048,7 @@ class BrowserWindow(Adw.ApplicationWindow):
                 try:
                     new_path, gstatus, gmsg = (
                         bibtex_import.attach_pdf_to_ghost(
-                            self.conn, ghost, src, LIBRARY_ROOT))
+                            self.conn, ghost, src, self.library_root))
                 except Exception as e:
                     results["error"].append((src, None, str(e)))
                     continue
@@ -2737,7 +3058,7 @@ class BrowserWindow(Adw.ApplicationWindow):
                     results["error"].append((src, None, gmsg))
                 continue
 
-            target = os.path.join(LIBRARY_ROOT, os.path.basename(src))
+            target = os.path.join(self.library_root, os.path.basename(src))
             if os.path.realpath(src) == os.path.realpath(target):
                 # Already in the library — just (re)import in place.
                 try:
@@ -3008,7 +3329,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         """Public entry point used by `viewer.py` when the user clicks
         the "Add to library" button on a citation popover. Wraps the
         BibTeX-style import path so the viewer doesn't have to know
-        about `conn`, `LIBRARY_ROOT`, or the cards-list refresh.
+        about `conn`, `self.library_root`, or the cards-list refresh.
 
         `br` is a BibTeX-shaped dict (title/authors/year/journal/doi
         plus a synthesised `bibtex_key`). `also_get_pdf=True` chases
@@ -3021,7 +3342,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         "Fetching PDF…" then a terminal state)."""
         try:
             rec, status = bibtex_import.import_record(
-                self.conn, br, LIBRARY_ROOT)
+                self.conn, br, self.library_root)
         except Exception as e:
             GLib.idle_add(on_done, False,
                           "Import failed: {}".format(e))
@@ -3152,7 +3473,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         # remove the ghost.
         try:
             new_path, status, msg = bibtex_import.attach_pdf_to_ghost(
-                self.conn, row, tmp_path, LIBRARY_ROOT)
+                self.conn, row, tmp_path, self.library_root)
         except Exception as e:
             new_path, status, msg = None, "error", str(e)
         try:
@@ -3242,10 +3563,10 @@ class BrowserWindow(Adw.ApplicationWindow):
                           "no OA PDF URL available")
             return
 
-        os.makedirs(LIBRARY_ROOT, exist_ok=True)
+        os.makedirs(self.library_root, exist_ok=True)
         # Filename: derive from DOI.
         fname = doi.replace("/", "_") + ".pdf"
-        target = os.path.join(LIBRARY_ROOT, fname)
+        target = os.path.join(self.library_root, fname)
         if os.path.exists(target):
             GLib.idle_add(self._add_pv_done, btn, False, "filename clash")
             return
@@ -4367,7 +4688,7 @@ class BrowserWindow(Adw.ApplicationWindow):
 
         lib_row = Adw.ActionRow()
         lib_row.set_title("PDF Folder")
-        lib_row.set_subtitle(LIBRARY_ROOT)
+        lib_row.set_subtitle(self.library_root)
         lib_row.set_subtitle_selectable(True)
         choose_btn = Gtk.Button(label="Choose…")
         choose_btn.set_valign(Gtk.Align.CENTER)
@@ -4386,10 +4707,18 @@ class BrowserWindow(Adw.ApplicationWindow):
             new_path = folder.get_path()
             if not new_path:
                 return
-            global LIBRARY_ROOT
-            LIBRARY_ROOT = new_path
+            # Update the current catalogue's library_root in
+            # the saved list, and the legacy top-level key (so
+            # pre-catalogue config consumers still find it).
+            self.library_root = new_path
+            self.catalogue["library_root"] = new_path
             data = prefs.load()
             data["library_root"] = new_path
+            cats = list(prefs.get_catalogues())
+            for c in cats:
+                if c["name"] == self.catalogue["name"]:
+                    c["library_root"] = new_path
+            data["catalogues"] = cats
             try:
                 prefs.save(data)
             except Exception as exc:
@@ -4402,16 +4731,17 @@ class BrowserWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
             self.library_watcher = watcher_mod.LibraryWatcher(
-                self.conn, LIBRARY_ROOT,
+                self.conn, self.library_root,
                 on_change_cb=self._on_watcher_change,
-                on_import_start_cb=self._on_import_start)
+                on_import_start_cb=self._on_import_start,
+                skip_roots=self._other_catalogue_roots())
             self.library_watcher.start()
             self._reload(self.search.get_text() or None)
 
         def _on_choose_lib(_b):
             fd = Gtk.FileDialog()
             fd.set_title("Choose PDF Folder")
-            fd.set_initial_folder(Gio.File.new_for_path(LIBRARY_ROOT))
+            fd.set_initial_folder(Gio.File.new_for_path(self.library_root))
             fd.select_folder(self, None, _on_lib_folder_chosen)
 
         choose_btn.connect("clicked", _on_choose_lib)
@@ -4534,14 +4864,14 @@ def main(argv):
     # the system) and gives us native HeaderBar / Toast support.
     app = Adw.Application(application_id="io.github.pemsley.Alexandria")
 
-    # Thread the conn through a mutable closure so the `shutdown`
-    # handler can close it after the last window is gone. SQLite
-    # cleanup matters here: WAL-mode databases need a graceful close
-    # to flip the WAL pointer; otherwise the *next* launch sees a
-    # dirty WAL and (depending on the OS/filesystem) can fail to
-    # acquire its lock — the "disk I/O error on launch" symptom
-    # documented in the Watcher BACKLOG entry.
-    state = {"conn": None}
+    # SQLite cleanup matters here: WAL-mode databases need a
+    # graceful close to flip the WAL pointer; otherwise the next
+    # launch sees a dirty WAL and (depending on the OS/filesystem)
+    # can fail to acquire its lock — the "disk I/O error on
+    # launch" symptom documented in the Watcher BACKLOG entry.
+    # Each BrowserWindow owns its own conn now (one per catalogue)
+    # and closes it via a `close-request` hook; `on_shutdown` is
+    # the belt-and-braces fallback for windows that bypassed it.
 
     def on_activate(app):
         # Libadwaita owns the dark/light decision via Adw.StyleManager.
@@ -4574,51 +4904,42 @@ def main(argv):
         except Exception as e:
             print("[icon] theme search-path register failed:", e)
 
-        # DB open is deferred until after the Adw.Application is up
-        # so that a failure (most often a stale-lock condition) can
-        # be presented as a Gtk.AlertDialog instead of dumping a raw
-        # sqlite3 traceback to the terminal.
+        # Open the catalogue the user last had selected. Each
+        # BrowserWindow opens its own per-catalogue DB connection
+        # and runs the once-per-library migrations inside its
+        # constructor (both migrations are idempotent — cheap on
+        # already-upgraded libraries). DB open is deferred until
+        # after the Adw.Application is up so a failure (typically
+        # a stale-lock condition) can surface as a Gtk.AlertDialog
+        # rather than a raw sqlite3 traceback.
         try:
-            conn = index.open_db()
+            catalogue = prefs.get_catalogue(
+                prefs.get_current_catalogue_name())
+            win = BrowserWindow(app, catalogue)
         except sqlite3.OperationalError as e:
             _show_db_error_and_quit(app, str(e))
             return
-
-        # One-shot rename of any legacy `*.pdf.meta.json` sidecars
-        # to `*.pdf.alexandria` (pre-v0.1.0 on-disk-format change).
-        # Both calls are idempotent — they cost a directory walk
-        # and a no-op SQL UPDATE on libraries that have already
-        # migrated.
-        sidecar.migrate_library_sidecars(LIBRARY_ROOT)
-        index.migrate_sidecar_paths(conn)
-
-        state["conn"] = conn
-        win = BrowserWindow(app, conn)
         win.present()
 
     def on_shutdown(_app):
         # Fires after the last window is destroyed and the main loop
-        # is exiting. Daemon refresher threads are already being
-        # torn down by interpreter shutdown; closing the conn here
-        # gives SQLite the chance to checkpoint the WAL even if a
-        # thread was mid-write when killed.
-        conn = state.get("conn")
-        if conn is None:
-            return
-        try:
-            # A WAL checkpoint before close pushes all committed
-            # pages into the main DB so the WAL can be safely
-            # truncated. Without this, a crash or kill mid-write
-            # would leave the WAL in a "needs recovery" state that
-            # the next open has to detect and fix.
+        # is exiting. Each BrowserWindow normally closes its own
+        # conn on `close-request`; this is the belt-and-braces pass
+        # for windows that bypass that path (e.g. a force-kill).
+        # WAL checkpoint before close pushes committed pages into
+        # the main DB so the WAL can be safely truncated.
+        for win in app.get_windows():
+            conn = getattr(win, "conn", None)
+            if conn is None:
+                continue
             try:
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            except Exception:
-                pass
-            conn.close()
-        except Exception as e:
-            print("shutdown: conn close failed:", e)
-        state["conn"] = None
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except Exception:
+                    pass
+                conn.close()
+            except Exception as e:
+                print("shutdown: window conn close failed:", e)
 
     app.connect("activate", on_activate)
     app.connect("shutdown", on_shutdown)

@@ -26,5 +26,10 @@ def get_ro_connection():
     uri = "file:{}?mode=ro".format(config.db_path())
     conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    # In WAL mode reads don't normally block on writers, but during
+    # a checkpoint there's a brief window where they can. Match
+    # the GUI connection's 5 s wait so MCP tool calls don't pop
+    # `database is locked` for a sub-second race.
+    conn.execute("PRAGMA busy_timeout = 5000")
     _tls.ro_conn = conn
     return conn

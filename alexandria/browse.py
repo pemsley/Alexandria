@@ -1377,6 +1377,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         tools_section.append("Toggle terminal", "win.toggle-terminal")
         hamburger_menu.append_section(None, tools_section)
         hamburger_menu.append("Preferences…", "win.preferences")
+        hamburger_menu.append("About Alexandria", "win.about")
         hamburger_btn = Gtk.MenuButton()
         hamburger_btn.set_icon_name("open-menu-symbolic")
         hamburger_btn.set_menu_model(hamburger_menu)
@@ -1590,6 +1591,40 @@ class BrowserWindow(Adw.ApplicationWindow):
         self.search.select_region(0, -1)
         return True
 
+    def _open_about(self, _btn):
+        """Adw.AboutDialog with the standard fields. Icon resolves
+        via the icon-theme search path registered in `on_activate`
+        (or via the system install when present)."""
+        from . import __version__ as _alexandria_version
+        dlg = Adw.AboutDialog(
+            application_name="Alexandria",
+            application_icon="io.github.pemsley.Alexandria",
+            version=_alexandria_version,
+            developer_name="Paul Emsley",
+            copyright="© 2026 Paul Emsley",
+            license_type=Gtk.License.GPL_3_0,
+            website="https://github.com/pemsley/Alexandria",
+            issue_url=("https://github.com/pemsley/Alexandria/"
+                       "issues"),
+            comments=("A personal library for scientific PDFs. "
+                      "\n\n"
+                      "Alexandria relies heavily on OpenAlex to provide the associated metadata "
+                      "(CrossRef also).\n\n"
+                      "The per-PDF <tt>.alexandria</tt> JSON sidecar is the "
+                      "source of truth, and the SQLite index is a "
+                      "regenerable cache."),
+        )
+        # Acknowledge OpenAlex — the primary metadata source for
+        # citations, authorships, funders / awards, abstracts and
+        # related works. Plain name in the acknowledgement section
+        # because libadwaita's `Name <url>` tokeniser strips the
+        # URL but leaves the leading `<` visible (Adw 1.9). The
+        # actual clickable link lives on the Details page via
+        # add_link, which renders cleanly.
+        dlg.add_acknowledgement_section("Data sources", ["OpenAlex"])
+        dlg.add_link("OpenAlex", "https://openalex.org")
+        dlg.present(self)
+
     def _on_toggle_terminal(self, _btn):
         """Hamburger 'Toggle terminal' entry. Lazily spawns a $SHELL
         in a Vte.Terminal at the bottom of the window on first call;
@@ -1720,6 +1755,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             ("subscriptions", self._open_subscriptions),
             ("preferences",   self._open_preferences),
             ("toggle-terminal", self._on_toggle_terminal),
+            ("about",         self._open_about),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect(

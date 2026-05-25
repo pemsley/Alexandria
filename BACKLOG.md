@@ -4,38 +4,18 @@ Pending features, roughly grouped. Newest at the top of each section.
 
 ## Top priority
 
-- **Set `PRAGMA busy_timeout` on the SQLite connection.** Observed
-  in the wild: `database is locked` cascades when several background
-  threads write concurrently — PDB-mention indexer, author-score
-  refresher, the watcher's `import_pdf` path, and the GUI's delete
-  action all race for the writer slot. Reproduction was a single
-  PDF drop into the library:
-  ```
-  [importer] pdb indexing failed for cowtan2014automated.pdf: database is locked
-  author-score refresher: cache write failed for A5030206883: database is locked
-  ... (×22)
-  watcher: delete failed for qj5005_rev.pdf: database is locked
-  ```
-  WAL is already enabled (`index.py:720`), so reads are concurrent
-  with one writer — but `busy_timeout` is left at the default `0`,
-  meaning the second writer fails *immediately* rather than waiting.
-  Fix is one line after `PRAGMA journal_mode=WAL`:
-  ```python
-  conn.execute("PRAGMA busy_timeout = 5000")    # 5 seconds
-  ```
-  Five seconds is the conventional value and trivially long enough
-  to outlast any single UPSERT in this codebase. Belt-and-braces:
-  also serialise high-volume writers (PDB indexer, author-score
-  refresher) through a small write queue so the 5 s budget isn't
-  burnt on contention with each other — but the busy_timeout alone
-  removes the user-visible failure mode.
-
-  Secondary symptom seen in the same log — `pdb indexing failed:
-  another row available` — looks like a separate bug: a SELECT that
-  expected one row returned multiple, or a cursor was iterated past
-  its intended single fetch. Worth investigating once the lock
-  cascade is fixed (it may simply be a downstream effect of the
-  lock-induced retry).
+- **PDB indexer: "another row available" failure.** Seen once in
+  the wild alongside a `database is locked` storm; the lock storm
+  was the dominant symptom and is now fixed (PRAGMA busy_timeout,
+  commit cb89f08), but this side-message may be an independent
+  bug — a SELECT that expected one row returned multiple, or a
+  cursor was iterated past its intended single fetch. Worth a
+  read of `pdb_mentions.index_pdb_mentions_for_paper` and its
+  inner queries to see whether the offending SELECT can return
+  duplicate rows post-backfill. May simply have been a downstream
+  artefact of the lock-induced retry — re-check by triggering a
+  cold import storm under the new busy_timeout and grep'ing for
+  the message.
 
 - **Before v0.2: unguarded-network-call sweep.** Audit every GTK
   click / activate handler in the codebase for synchronous network

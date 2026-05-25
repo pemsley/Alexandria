@@ -13,8 +13,11 @@ An SQLite database is constructed using the sidecars for fast
 searching.
 
 Alexandria is intended to be XDG Base Directory Protocol compliant. It
-write, by default, to $HOME/Documents/Alexandria and the database to
-$HOME/.local/state/Alexandria
+write, by default, to `$HOME/Documents/Alexandria` and the database to
+`$HOME/.local/state/Alexandria`.
+
+## Screenshot
+![Alexandria main window example — dark mode](data/screenshots/screenshot-dark-mode-main-window.png)
 
 ## Install
 
@@ -24,9 +27,10 @@ $HOME/.local/state/Alexandria
 ## Usage
 
   Upon opening Alexandria, it will detect pdfs files in
-  $HOME/Documents/Alexandria and try to create a thumbnail png and the
+  `$HOME/Documents/Alexandria` and try to create a thumbnail png and the
   associated metadata (if they don't already exist).
 
-[1] poppler https://poppler.freedesktop.org/
-[2] titles, authors, journal, year, DOI
+## Notes
+- [1] poppler https://poppler.freedesktop.org/
+- [2] titles, authors, journal, year, DOI
 

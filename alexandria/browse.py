@@ -1299,6 +1299,10 @@ class BrowserWindow(Adw.ApplicationWindow):
         self.conn = conn
         self.set_title("Alexandria")
         self.set_default_size(900, 700)
+        # Icon picked up via the `icons/` search path registered
+        # in `on_activate`. Name matches the application_id so
+        # window managers and taskbars can use the same lookup.
+        self.set_icon_name("io.github.pemsley.Alexandria")
 
         # ---- Window-scoped Gio actions (driven by menu items) -----
         self._install_actions()
@@ -4515,6 +4519,24 @@ def main(argv):
             gs.reset_property("gtk-application-prefer-dark-theme")
         Adw.StyleManager.get_default().set_color_scheme(
             Adw.ColorScheme.PREFER_LIGHT)
+
+        # Register the in-tree `icons/` directory so windows can
+        # `set_icon_name("io.github.pemsley.Alexandria")` and pick
+        # up our SVG without requiring the user to install it into
+        # ~/.local/share/icons. The icon-theme search path expects
+        # the standard `<dir>/hicolor/scalable/apps/<name>.svg`
+        # layout, which we provide at `icons/hicolor/...`.
+        try:
+            display = Gdk.Display.get_default()
+            if display is not None:
+                theme = Gtk.IconTheme.get_for_display(display)
+                here = os.path.dirname(os.path.abspath(__file__))
+                icon_dir = os.path.realpath(
+                    os.path.join(here, "..", "icons"))
+                if os.path.isdir(icon_dir):
+                    theme.add_search_path(icon_dir)
+        except Exception as e:
+            print("[icon] theme search-path register failed:", e)
 
         # DB open is deferred until after the Adw.Application is up
         # so that a failure (most often a stale-lock condition) can

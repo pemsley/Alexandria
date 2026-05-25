@@ -719,6 +719,13 @@ def open_db(path=DEFAULT_DB_PATH):
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    # Concurrent background writers (PDB indexer, author-score
+    # refresher, watcher import, GUI delete) used to fail
+    # immediately with `database is locked` because busy_timeout
+    # defaults to 0. Five seconds is comfortably longer than any
+    # single UPSERT in this codebase, so contenders queue politely
+    # instead of failing.
+    conn.execute("PRAGMA busy_timeout = 5000")
     # ON DELETE CASCADE on `discovered.subscription_id` only fires
     # when foreign-key enforcement is enabled — SQLite leaves this
     # off by default for backwards compatibility. Without this,

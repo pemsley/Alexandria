@@ -2,6 +2,7 @@
 #
 #   make install     — pip install --user, plus .desktop and icon
 #   make uninstall   — reverse the above
+#   make sync-icon   — copy data/<id>.svg → icons/hicolor/.../<id>.svg
 #   make tar         — source tarball for the current commit
 #
 # Override PREFIX for system-wide install (needs root):
@@ -9,6 +10,20 @@
 #
 # Override VERSION when tagging a release:
 #   make tar VERSION=0.2.0
+#
+# Note on the two icon paths:
+#   * data/$(ICON)               — canonical, installed by
+#                                  `make install-data` (and any
+#                                  Flatpak/distro build).
+#   * icons/hicolor/scalable/apps/$(ICON)
+#                                — duplicate consumed by GTK at
+#                                  runtime via Gtk.IconTheme.
+#                                  add_search_path("icons/")  in
+#                                  alexandria/browse.py, so the
+#                                  icon resolves when running from
+#                                  source without an install step.
+# Both must carry identical bytes. Edit `data/$(ICON)` and run
+# `make sync-icon` (or it's done automatically by `make install`).
 
 PREFIX  ?= $(HOME)/.local
 VERSION ?= 0.1.0
@@ -21,20 +36,33 @@ APP_ID    := io.github.pemsley.Alexandria
 DESKTOP   := $(APP_ID).desktop
 ICON      := $(APP_ID).svg
 
+# In-tree copy that GTK reads at runtime when running from source.
+# Kept identical to data/$(ICON) via `make sync-icon`.
+DEV_ICON_DIR := icons/hicolor/scalable/apps
+DEV_ICON     := $(DEV_ICON_DIR)/$(ICON)
+
 PYTHON ?= python3
 
-.PHONY: install install-data uninstall uninstall-data clean dev tar
+.PHONY: install install-data uninstall uninstall-data clean dev tar sync-icon
 
-install: install-data
+install: install-data sync-icon
 	$(PYTHON) -m pip install --user .
 
-install-data:
+install-data: sync-icon
 	install -d $(DESKTOP_DIR) $(ICON_DIR)
 	install -m 644 data/$(DESKTOP) $(DESKTOP_DIR)/
 	install -m 644 data/$(ICON)    $(ICON_DIR)/
 	-update-desktop-database $(DESKTOP_DIR) 2>/dev/null
 	-gtk4-update-icon-cache  $(ICON_BASE) 2>/dev/null
 	-gtk-update-icon-cache   $(ICON_BASE) 2>/dev/null
+
+# Copy the canonical icon to the in-tree runtime location. Safe to
+# re-run; cheap to make a no-op when the two are already identical.
+sync-icon: $(DEV_ICON)
+
+$(DEV_ICON): data/$(ICON)
+	install -d $(DEV_ICON_DIR)
+	cp -f $< $@
 
 uninstall: uninstall-data
 	-$(PYTHON) -m pip uninstall -y alexandria

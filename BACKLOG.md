@@ -4,6 +4,39 @@ Pending features, roughly grouped. Newest at the top of each section.
 
 ## Top priority
 
+- **Set `PRAGMA busy_timeout` on the SQLite connection.** Observed
+  in the wild: `database is locked` cascades when several background
+  threads write concurrently — PDB-mention indexer, author-score
+  refresher, the watcher's `import_pdf` path, and the GUI's delete
+  action all race for the writer slot. Reproduction was a single
+  PDF drop into the library:
+  ```
+  [importer] pdb indexing failed for cowtan2014automated.pdf: database is locked
+  author-score refresher: cache write failed for A5030206883: database is locked
+  ... (×22)
+  watcher: delete failed for qj5005_rev.pdf: database is locked
+  ```
+  WAL is already enabled (`index.py:720`), so reads are concurrent
+  with one writer — but `busy_timeout` is left at the default `0`,
+  meaning the second writer fails *immediately* rather than waiting.
+  Fix is one line after `PRAGMA journal_mode=WAL`:
+  ```python
+  conn.execute("PRAGMA busy_timeout = 5000")    # 5 seconds
+  ```
+  Five seconds is the conventional value and trivially long enough
+  to outlast any single UPSERT in this codebase. Belt-and-braces:
+  also serialise high-volume writers (PDB indexer, author-score
+  refresher) through a small write queue so the 5 s budget isn't
+  burnt on contention with each other — but the busy_timeout alone
+  removes the user-visible failure mode.
+
+  Secondary symptom seen in the same log — `pdb indexing failed:
+  another row available` — looks like a separate bug: a SELECT that
+  expected one row returned multiple, or a cursor was iterated past
+  its intended single fetch. Worth investigating once the lock
+  cascade is fixed (it may simply be a downstream effect of the
+  lock-induced retry).
+
 - **Before v0.2: unguarded-network-call sweep.** Audit every GTK
   click / activate handler in the codebase for synchronous network
   calls on the main thread. Known-clean sites: the citation /
@@ -699,12 +732,41 @@ via `extract.CROSSREF_USER_AGENT`.
 - **CrossRef funder fallback.** OpenAlex `awards`/`funders` is
   the primary source for the card "Funded by" line and the
   author-dialog row, but coverage is patchy — many works have
-  zero entries. CrossRef's `/works/{doi}` carries a
-  `funder: [{ name, DOI, award: [...] }]` block we currently
-  drop. Pull it in `_fetch_crossref_work_message` as a fallback
-  when the OpenAlex grants list is empty; map into the same
+  zero entries — *and* the entries it does have are noisy in a
+  way CrossRef's publisher-deposited funder block usually isn't.
+  CrossRef's `/works/{doi}` carries a `funder: [{ name, DOI,
+  award: [...] }]` block we currently drop. Pull it in
+  `_fetch_crossref_work_message` as a fallback when the OpenAlex
+  grants list is empty (and possibly as a *preferred* source when
+  the publisher deposited it); map into the same
   `[{funder, award_id}]` shape we already persist. Composes with
   the aggregated PI funding profile item under Discovery.
+
+  **Reference case study — `10.1007/s10822-015-9866-z` (WONKA).**
+  The paper's funding paragraph lists two genuine grants —
+  `EP/G037280/1` (EPSRC, to Bradley) and `092809/Z/10/Z`
+  (Wellcome, to the SGC). OpenAlex's `awards` array produces:
+  ```
+  EPSRC                                    EP/G037280/1       ✓
+  Wellcome Trust                           092809/Z/10/Z      ✓
+  Wellcome Trust                           1097737            ✗  charity reg #, not a grant
+  Ontario Ministry of Economic Dev.        092809/Z/10/Z      ✗  cross-attributed
+  ```
+  …plus a phantom `Ministero dello Sviluppo Economico` in the
+  funder list (no Italian funding in the paper — likely a fuzzy
+  substring match against "Ministry of Economic Development").
+  Three failure modes in one paper:
+    1. A non-grant numeric identifier from the body text scooped
+       up as an award_id and pinned to the nearest funder.
+    2. One real grant duplicated across multiple funders that
+       happen to co-occur in the funding paragraph.
+    3. A phantom funder added via fuzzy name match.
+  CrossRef's `funder:` block doesn't do any of these — it stores
+  exactly what the publisher deposited. Even if we keep OpenAlex
+  as the data shape, taking CrossRef's `funder:` as ground truth
+  for which `(funder, award_id)` pairs to display would eliminate
+  all three classes of error on papers where CrossRef has the
+  data.
 
 ## OpenAlex client
 

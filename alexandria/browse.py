@@ -44,7 +44,8 @@ from . import (index, edit_dialog, importer, metrics, sidecar, extract,
                viewer, marks_config, prefs, watcher as watcher_mod,
                author_works, bibtex_import, bibtex_export, ris_export,
                csl_export, opener, references_pdf, discover, csl_format,
-               feed, feed_window, import_toast, pdb_mentions)
+               feed, feed_window, import_toast, pdb_mentions,
+               funding_links)
 
 LIBRARY_ROOT = prefs.get_library_root()
 
@@ -847,10 +848,13 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
         star_lbl.set_halign(Gtk.Align.START)
         text.append(star_lbl)
 
-    # Funders. Up to two displayed inline ("Funded by NIH, Wellcome");
-    # the rest collapse to "+N more" so a heavily-funded consortium
-    # paper doesn't blow the card height up. Award IDs go into the
-    # tooltip. Same shape and styling as the author-works rows.
+    # Funders. Up to two displayed inline on the button label
+    # ("Funded by NIH, Wellcome"); the rest collapse to "+N more"
+    # so a heavily-funded consortium paper doesn't blow the card
+    # height up. Click → popover with each grant as a clickable
+    # link to the registry (Gateway to Research for UKRI funders,
+    # NIH RePORTER, NSF Award Search, OSTI, CORDIS — see
+    # funding_links.py for the dispatch table).
     grants_json = (row["grants_json"]
                    if "grants_json" in row.keys() else None)
     try:
@@ -858,31 +862,45 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     except (TypeError, ValueError):
         grants = []
     if grants:
-        visible = grants[:2]
-        extra = len(grants) - len(visible)
-        funder_bits = [g["funder"] for g in visible if g.get("funder")]
-        if funder_bits:
-            txt = "Funded by " + ", ".join(funder_bits)
+        # Dedupe: OpenAlex's awards array often repeats the same
+        # (funder, award_id) pair (the Argonne paper had 33 awards
+        # collapsing to 9 unique funders).
+        seen = set()
+        unique = []
+        for g in grants:
+            key = (g.get("funder") or "", g.get("award_id") or "")
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(g)
+        # Distinct funder names for the button label.
+        funder_names = []
+        for g in unique:
+            f = g.get("funder")
+            if f and f not in funder_names:
+                funder_names.append(f)
+        if funder_names:
+            visible = funder_names[:2]
+            extra = len(funder_names) - len(visible)
+            txt = "Funded by " + ", ".join(visible)
             if extra > 0:
                 txt += " · +{} more".format(extra)
-            tip_parts = []
-            for g in grants:
-                fname = g.get("funder")
-                if not fname:
-                    continue
-                if g.get("award_id"):
-                    tip_parts.append("{} ({})".format(fname, g["award_id"]))
-                else:
-                    tip_parts.append(fname)
+            funder_btn = Gtk.Button()
+            funder_btn.add_css_class("flat")
+            funder_btn.set_halign(Gtk.Align.START)
+            funder_btn.set_can_focus(False)
             funder_lbl = Gtk.Label(xalign=0.0)
-            funder_lbl.set_wrap(True)
-            funder_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
             funder_lbl.set_markup(
                 "<small><span alpha='75%'>{}</span></small>".format(
                     GLib.markup_escape_text(txt)))
-            if tip_parts:
-                funder_lbl.set_tooltip_text("\n".join(tip_parts))
-            text.append(funder_lbl)
+            funder_btn.set_child(funder_lbl)
+            funder_btn.set_tooltip_text(
+                "Show all funders and award IDs with clickable links")
+            funder_btn.connect(
+                "clicked",
+                lambda b, gs=unique: _open_funders_popover(
+                    b, gs, parent_window))
+            text.append(funder_btn)
 
     # Auto-keywords (OpenAlex concepts). Hidden by default — they bulk
     # the card up without being especially actionable. Will be revealed
@@ -948,6 +966,67 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     box.add_controller(cite_click)
 
     return box
+
+
+def _open_funders_popover(anchor_btn, grants, parent_window):
+    """Popover anchored under the card's 'Funded by …' button. One
+    row per `(funder, award_id)`: funder name in plain text on the
+    left, award ID as a clickable link on the right pointing at the
+    relevant registry (Gateway to Research / NIH RePORTER / NSF /
+    OSTI / CORDIS) or a DuckDuckGo search fallback. `grants` is
+    the already-deduped list from the card builder."""
+    pop = Gtk.Popover()
+    pop.set_parent(anchor_btn)
+    pop.set_has_arrow(True)
+    pop.set_autohide(True)
+
+    outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+    outer.set_margin_start(10)
+    outer.set_margin_end(10)
+    outer.set_margin_top(8)
+    outer.set_margin_bottom(8)
+
+    header = Gtk.Label(xalign=0.0)
+    header.set_markup("<b>Funding</b>")
+    header.set_margin_bottom(4)
+    outer.append(header)
+
+    # Sort by funder name so the same funder's awards cluster.
+    rows = sorted(
+        grants, key=lambda g: ((g.get("funder") or "").lower(),
+                               (g.get("award_id") or "")))
+
+    grid = Gtk.Grid()
+    grid.set_column_spacing(12)
+    grid.set_row_spacing(2)
+    for i, g in enumerate(rows):
+        fname = g.get("funder") or "(unknown funder)"
+        aid = g.get("award_id")
+        f_lbl = Gtk.Label(xalign=0.0)
+        f_lbl.set_text(fname)
+        f_lbl.set_max_width_chars(55)
+        f_lbl.set_wrap(True)
+        f_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        grid.attach(f_lbl, 0, i, 1, 1)
+        if aid:
+            url = funding_links.funding_url(fname, aid)
+            a_lbl = Gtk.Label(xalign=0.0)
+            a_lbl.set_use_markup(True)
+            if url:
+                a_lbl.set_markup("<a href='{}'>{}</a>".format(
+                    GLib.markup_escape_text(url),
+                    GLib.markup_escape_text(aid)))
+                a_lbl.connect(
+                    "activate-link",
+                    lambda _l, uri: (
+                        parent_window._open_uri_external(uri), True)[1])
+            else:
+                a_lbl.set_text(aid)
+            a_lbl.set_selectable(True)
+            grid.attach(a_lbl, 1, i, 1, 1)
+    outer.append(grid)
+    pop.set_child(outer)
+    pop.popup()
 
 
 def _make_pdb_chip(pdb_id, parent_window):

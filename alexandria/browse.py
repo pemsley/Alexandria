@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 
 import gi
 gi.require_version("Gtk", "4.0")
@@ -898,8 +899,8 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
                 "Show all funders and award IDs with clickable links")
             funder_btn.connect(
                 "clicked",
-                lambda b, gs=unique: _open_funders_popover(
-                    b, gs, parent_window))
+                lambda b, gs=unique, d=row["doi"]:
+                    _open_funders_popover(b, gs, d, parent_window))
             text.append(funder_btn)
 
     # Auto-keywords (OpenAlex concepts). Hidden by default — they bulk
@@ -968,13 +969,15 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     return box
 
 
-def _open_funders_popover(anchor_btn, grants, parent_window):
+def _open_funders_popover(anchor_btn, grants, doi, parent_window):
     """Popover anchored under the card's 'Funded by …' button. One
     row per `(funder, award_id)`: funder name in plain text on the
     left, award ID as a clickable link on the right pointing at the
     relevant registry (Gateway to Research / NIH RePORTER / NSF /
     OSTI / CORDIS) or a DuckDuckGo search fallback. `grants` is
-    the already-deduped list from the card builder."""
+    the already-deduped list from the card builder. `doi` is the
+    paper's DOI — used to build the footer link to the OpenAlex
+    Work page where errors can be reported."""
     pop = Gtk.Popover()
     pop.set_parent(anchor_btn)
     pop.set_has_arrow(True)
@@ -1025,6 +1028,31 @@ def _open_funders_popover(anchor_btn, grants, parent_window):
             a_lbl.set_selectable(True)
             grid.attach(a_lbl, 1, i, 1, 1)
     outer.append(grid)
+
+    # Footer: link to the OpenAlex Work page so the user can
+    # report errors upstream (OpenAlex's funder/award extraction
+    # is occasionally wrong — see BACKLOG entry "CrossRef funder
+    # fallback" for examples). Only useful when we have a DOI,
+    # which is almost always.
+    if doi:
+        sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        sep.set_margin_top(6)
+        sep.set_margin_bottom(4)
+        outer.append(sep)
+        oa_url = ("https://openalex.org/works/doi:"
+                  + urllib.parse.quote(doi, safe=""))
+        foot = Gtk.Label(xalign=0.0)
+        foot.set_use_markup(True)
+        foot.set_markup(
+            "<small><span alpha='65%'>Source: OpenAlex · </span>"
+            "<a href='{}'>Report errors</a></small>".format(
+                GLib.markup_escape_text(oa_url)))
+        foot.connect(
+            "activate-link",
+            lambda _l, uri: (
+                parent_window._open_uri_external(uri), True)[1])
+        outer.append(foot)
+
     pop.set_child(outer)
     pop.popup()
 

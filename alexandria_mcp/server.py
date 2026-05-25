@@ -499,6 +499,114 @@ def get_sidecars(paper_ids: list[int]) -> list[dict]:
 
 
 @mcp.tool()
+def get_citation_neighbourhood(
+    paper_id: int,
+    citers_limit: int = 25,
+    citers_sort: str = "cited",
+    refs_limit: int = 50,
+) -> dict:
+    """One-hop citation graph around a library paper. Returns the
+    seed paper plus its OpenAlex-known references (papers the seed
+    cites) and citers (papers that cite the seed), each annotated
+    with whether they're already in the user's library.
+
+    Use this when the conversation turns to "what does this paper
+    build on?" / "who's picked this up?" / "what in my library
+    connects to this?". The library-local cross-references are
+    the interesting bit — `in_library: true` rows are papers the
+    user has already engaged with that sit in the same
+    conversation.
+
+    No edges between refs / citers in this version — those need
+    one OpenAlex call per node and would dominate the cost.
+
+    Arguments:
+        paper_id     — library row id of the seed.
+        citers_limit — top-N most-cited (or most-recent) papers
+                       that cite the seed. OpenAlex can serve
+                       thousands for popular papers; the cap is
+                       what keeps the response readable.
+        citers_sort  — 'cited' (default; most-cited first, useful
+                       for influence) or 'recent' (newest first,
+                       useful for "who's working on this now").
+        refs_limit   — at most N references back from the seed.
+                       Most papers have 20–80; default 50 covers
+                       the typical case without flooding.
+
+    Returns:
+        seed: {paper_id, title, year, doi, journal} — your row.
+        references: list of {openalex_id, doi, title, year,
+            journal, citations, first_author, last_author,
+            in_library, library_paper_id}.
+        citers: same shape as `references`.
+        stats: counts (n_references, n_citers, in_library_*).
+    """
+    if citers_sort not in ("cited", "recent"):
+        raise ValueError(
+            "citers_sort must be 'cited' or 'recent' ({} given)".format(
+                citers_sort))
+    citers_limit = max(1, min(int(citers_limit), 200))
+    refs_limit = max(1, min(int(refs_limit), 200))
+
+    conn = db.get_ro_connection()
+    seed_row = conn.execute(
+        "SELECT id, title, year, doi, journal FROM papers WHERE id = ?",
+        (paper_id,)).fetchone()
+    if seed_row is None:
+        raise ValueError("unknown paper_id {}".format(paper_id))
+    doi = seed_row["doi"]
+    if not doi:
+        raise ValueError(
+            "paper {} has no DOI — citation graph needs one to "
+            "look up OpenAlex".format(paper_id))
+
+    refs, _refs_source = metrics.fetch_references(
+        doi=doi, limit=refs_limit)
+    citers = metrics.fetch_cited_by(
+        doi=doi, sort=citers_sort, limit=citers_limit)
+
+    # In-library annotation. One query against papers.doi, then a
+    # dict lookup per ref/citer.
+    lib_dois: dict = {}
+    for r in conn.execute(
+            "SELECT id, doi FROM papers "
+            "WHERE doi IS NOT NULL AND doi <> ''").fetchall():
+        lib_dois[r["doi"].lower()] = r["id"]
+
+    def _annotate(rows):
+        n_in = 0
+        for w in rows:
+            d = (w.get("doi") or "").lower()
+            lp = lib_dois.get(d)
+            w["in_library"] = lp is not None
+            w["library_paper_id"] = lp
+            if lp is not None:
+                n_in += 1
+        return n_in
+
+    n_refs_in = _annotate(refs)
+    n_citers_in = _annotate(citers)
+
+    return {
+        "seed": {
+            "paper_id": seed_row["id"],
+            "title": seed_row["title"],
+            "year": seed_row["year"],
+            "doi": seed_row["doi"],
+            "journal": seed_row["journal"],
+        },
+        "references": refs,
+        "citers": citers,
+        "stats": {
+            "n_references": len(refs),
+            "n_citers": len(citers),
+            "in_library_references": n_refs_in,
+            "in_library_citers": n_citers_in,
+        },
+    }
+
+
+@mcp.tool()
 def get_pdf_texts(
     paper_ids: list[int],
     page_from: int = 1,

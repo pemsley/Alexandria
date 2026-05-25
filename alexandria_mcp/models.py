@@ -25,6 +25,20 @@ class PaperSummary:
 
 
 @dataclass
+class PdfText:
+    """One paper's extracted PDF text, sliced to a page range and
+    char cap. `error` is set instead of `text` for ghosts
+    (no PDF on disk), missing files, or extractor failures."""
+    paper_id: int
+    page_count: Optional[int]
+    page_from: int
+    page_to: Optional[int]
+    text: str
+    truncated: bool
+    error: Optional[str]
+
+
+@dataclass
 class PaperDetail:
     """Full paper record from the indexed columns. Returned by
     `get_papers`. For fields the database doesn't promote to

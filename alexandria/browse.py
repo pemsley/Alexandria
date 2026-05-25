@@ -1515,6 +1515,35 @@ class BrowserWindow(Adw.ApplicationWindow):
         # Paned position governs actual rendered size; this is just
         # the minimum / fallback.
         self._terminal.set_size(80, 12)
+        # VTE defaults to pure #000 which reads as a hard black slab
+        # against Adwaita's dark surface (~#242424). Tint it toward
+        # the theme's view-bg so the panel feels part of the window
+        # rather than a void cut into it.
+        bg = Gdk.RGBA()
+        if _is_dark_theme(self):
+            bg.parse("#1e1e1e")
+        else:
+            bg.parse("#ffffff")
+        self._terminal.set_color_background(bg)
+        # Ctrl-+ / Ctrl-- / Ctrl-0 — zoom convention every terminal
+        # emulator uses. Scoped to the terminal widget so the rest
+        # of the window's keybindings aren't shadowed.
+        zoom = Gtk.ShortcutController()
+        zoom.set_scope(Gtk.ShortcutScope.LOCAL)
+        for trig, delta in (
+            ("<Control>plus",  +0.1),
+            ("<Control>equal", +0.1),    # `+` without Shift on US layouts
+            ("<Control>minus", -0.1),
+        ):
+            zoom.add_shortcut(Gtk.Shortcut.new(
+                trigger=Gtk.ShortcutTrigger.parse_string(trig),
+                action=Gtk.CallbackAction.new(
+                    lambda *_a, d=delta: self._terminal_zoom(d))))
+        zoom.add_shortcut(Gtk.Shortcut.new(
+            trigger=Gtk.ShortcutTrigger.parse_string("<Control>0"),
+            action=Gtk.CallbackAction.new(
+                lambda *_a: self._terminal_zoom_reset())))
+        self._terminal.add_controller(zoom)
         self._terminal_wrapper.append(self._terminal)
 
         shell = os.environ.get("SHELL") or "/bin/sh"
@@ -1545,6 +1574,22 @@ class BrowserWindow(Adw.ApplicationWindow):
             None,                # cancellable
             _on_spawned,         # callback
         )
+
+    def _terminal_zoom(self, delta):
+        """Bump the terminal's font scale by `delta`, clamped to a
+        sane range so accidental key-repeat can't make the text
+        unreadably tiny or absurdly huge."""
+        if self._terminal is None:
+            return True
+        new = max(0.5, min(3.0, self._terminal.get_font_scale() + delta))
+        self._terminal.set_font_scale(new)
+        return True
+
+    def _terminal_zoom_reset(self):
+        if self._terminal is None:
+            return True
+        self._terminal.set_font_scale(1.0)
+        return True
 
     def _on_search(self, entry):
         self._reload(entry.get_text() or None)

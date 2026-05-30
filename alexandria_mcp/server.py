@@ -499,6 +499,34 @@ def get_sidecars(paper_ids: list[int]) -> list[dict]:
 
 
 @mcp.tool()
+def recently_added(days: int = 7, limit: int = 50) -> list[dict]:
+    """Papers added to the library in the last `days` days,
+    most-recently-added first.
+
+    `added_date` in the index is stored at day resolution
+    (YYYY-MM-DD), so smaller windows than a day aren't
+    expressible: `days=1` returns everything added today,
+    `days=7` covers a rolling week, `days=30` a month, etc.
+
+    Useful for "what's new in my library since last week",
+    "what did I just import", or catching up after a batch
+    import. Pair with `get_papers` for full records on any IDs
+    that look interesting."""
+    days = max(1, min(int(days), 3650))
+    limit = max(1, min(int(limit), 200))
+    conn = db.get_ro_connection()
+    rows = conn.execute(
+        "SELECT * FROM papers "
+        "WHERE added_date IS NOT NULL "
+        "  AND added_date >= date('now', ?) "
+        "ORDER BY added_date DESC, id DESC "
+        "LIMIT ?",
+        ("-{} days".format(days - 1), limit),
+    ).fetchall()
+    return [asdict(_row_to_summary(r)) for r in rows]
+
+
+@mcp.tool()
 def get_citation_neighbourhood(
     paper_id: int,
     citers_limit: int = 25,

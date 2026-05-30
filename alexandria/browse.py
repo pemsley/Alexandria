@@ -891,6 +891,12 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
             funder_btn.set_halign(Gtk.Align.START)
             funder_btn.set_can_focus(False)
             funder_lbl = Gtk.Label(xalign=0.0)
+            # Wrap with a width cap so a long funder name (or two)
+            # doesn't set the whole window's minimum width. The full
+            # list stays available via the click-popover and tooltip.
+            funder_lbl.set_wrap(True)
+            funder_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            funder_lbl.set_max_width_chars(60)
             funder_lbl.set_markup(
                 "<small><span alpha='75%'>{}</span></small>".format(
                     GLib.markup_escape_text(txt)))

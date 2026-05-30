@@ -16,11 +16,25 @@ import re
 
 from gi.repository import GLib
 
+try:
+    import gi
+    gi.require_version("Pango", "1.0")
+    from gi.repository import Pango
+except Exception:  # pragma: no cover - Pango is always present in the GUI
+    Pango = None
+
 # Pango-supported inline tags we accept verbatim. Everything outside
 # this list is escaped.
 _SAFE_INLINE_TAGS = ("i", "b", "u", "s", "em", "strong",
                      "sub", "sup", "small", "tt")
+# The capture pass also protects the exact small-caps span we emit
+# from <scp> (see _translate_scp) plus its closing </span>, so they
+# survive escaping. We only ever generate this span ourselves —
+# source metadata uses <scp>, not <span> — so matching the literal
+# open tag (not arbitrary attributes) keeps untrusted span attributes
+# from leaking through.
 _SAFE_TAG_RE = re.compile(
+    r'<span variant="smallcaps">|</span>|'
     r"</?(?:" + "|".join(_SAFE_INLINE_TAGS) + r")\s*/?>", re.IGNORECASE)
 
 # Pad missing spaces around inline tags: when a tag butts up against a
@@ -39,6 +53,42 @@ def _pad_inline_tags(text):
     return text
 
 
+# Publisher metadata (esp. JATS-derived titles from CrossRef) uses
+# <scp> for small-caps — e.g. "<scp>EM</scp>", "<scp>ATPase</scp>".
+# Pango has no <scp> tag, but renders small-caps via
+# <span variant="smallcaps">…</span>. Translate to that, done before
+# the whitelist capture below so the span is protected from escaping.
+_SCP_PAIR_RE = re.compile(r"<scp>(.*?)</scp>", re.IGNORECASE | re.DOTALL)
+_SCP_ANY_RE = re.compile(r"</?scp\s*>", re.IGNORECASE)
+
+_SMALLCAPS_OPEN = '<span variant="smallcaps">'
+_SMALLCAPS_CLOSE = "</span>"
+
+
+def _translate_scp(text):
+    # Convert balanced <scp>…</scp> to a small-caps span, then drop any
+    # orphan tags left over (CrossRef/JATS titles sometimes carry an
+    # unmatched </scp>, which would otherwise leave an unbalanced span
+    # and make Pango reject the whole string).
+    text = _SCP_PAIR_RE.sub(_SMALLCAPS_OPEN + r"\1" + _SMALLCAPS_CLOSE, text)
+    return _SCP_ANY_RE.sub("", text)
+
+
+def _markup_parses(s):
+    """True if `s` is valid Pango markup. Malformed source metadata
+    (e.g. an orphan </scp> in a CrossRef/JATS title) can survive the
+    whitelist as an unbalanced tag, which Pango rejects — and
+    set_markup() would then raise. Callers use this to fall back to
+    plain escaped text instead of crashing."""
+    if Pango is None:
+        return True
+    try:
+        Pango.parse_markup(s, -1, "\x00")
+        return True
+    except Exception:
+        return False
+
+
 # Two private-use Unicode codepoints (Basic Multilingual Plane PUA,
 # U+E000–U+F8FF). They don't appear in real metadata strings, so we
 # can safely use them as opening/closing markers around the indices
@@ -55,6 +105,8 @@ def safe_pango_markup(text):
     safe to pass to Gtk.Label.set_markup()."""
     if not text:
         return ""
+    original = text
+    text = _translate_scp(text)
     text = _pad_inline_tags(text)
     placeholders = []
 
@@ -69,4 +121,10 @@ def safe_pango_markup(text):
     def _restore(m):
         return placeholders[int(m.group(1))]
 
-    return _PLACEHOLDER_RE.sub(_restore, escaped)
+    result = _PLACEHOLDER_RE.sub(_restore, escaped)
+    # Malformed source markup can yield unbalanced tags Pango rejects;
+    # degrade to fully-escaped plain text rather than letting
+    # set_markup() raise.
+    if not _markup_parses(result):
+        return GLib.markup_escape_text(original)
+    return result

@@ -1921,7 +1921,14 @@ class BrowserWindow(Adw.ApplicationWindow):
                       "(CrossRef also).\n\n"
                       "The per-PDF <tt>.alexandria</tt> JSON sidecar is the "
                       "source of truth, and the SQLite index is a "
-                      "regenerable cache."),
+                      "regenerable cache.\n\n"
+                      "Each citation sparkline is drawn in a single colour, "
+                      "chosen by its peak citations in any one year:\n"
+                      "<span foreground=\"#888888\">grey</span> fewer than 10 · "
+                      "<span foreground=\"#44aaaa\">cyan</span> 10–19 · "
+                      "<span foreground=\"#44aa44\">green</span> 20–39 · "
+                      "<span foreground=\"#b8860b\">goldenrod</span> 40+ "
+                      "(matching the Citation-Classic stars)."),
         )
         # Acknowledge OpenAlex — the primary metadata source for
         # citations, authorships, funders / awards, abstracts and
@@ -3641,11 +3648,35 @@ class BrowserWindow(Adw.ApplicationWindow):
             300, self._do_debounced_reload)
         return False
 
+    def _register_author_window(self, win):
+        """Track an open AuthorWorksWindow so it can be told to refresh
+        its in-library badges when an import lands (e.g. via the browser
+        extension) while it's open. Deregisters itself on close."""
+        if not hasattr(self, "_author_windows"):
+            self._author_windows = []
+        self._author_windows.append(win)
+
+        def _on_close(_w):
+            try:
+                self._author_windows.remove(_w)
+            except ValueError:
+                pass
+            return False
+        win.connect("close-request", _on_close)
+
     def _do_debounced_reload(self):
         self._reload_timer_id = None
         self._reload(self.search.get_text() or None)
         self.status.set_text("Library updated ({})".format(
             getattr(self, "_pending_reload_status", "")))
+        # Live-refresh any open author dialogs so a paper imported
+        # elsewhere (browser extension, another window) flips its
+        # '✓ in library' badge without needing a reopen.
+        for win in list(getattr(self, "_author_windows", ())):
+            try:
+                win.refresh_in_library()
+            except Exception as e:
+                print("[author_works] in-library refresh failed:", e)
         return False  # don't repeat
 
     # --- Import-start toasts -----------------------------------------
@@ -4874,17 +4905,11 @@ def main(argv):
     # the belt-and-braces fallback for windows that bypassed it.
 
     def on_activate(app):
-        # Libadwaita owns the dark/light decision via Adw.StyleManager.
-        # If the user has the legacy GtkSettings:gtk-application-prefer-
-        # dark-theme set (via ~/.config/gtk-4.0/settings.ini), libadwaita
-        # warns and refuses to honour it. Reset the legacy property so
-        # the warning goes away, then express our preference the
-        # supported way.
-        gs = Gtk.Settings.get_default()
-        if gs is not None:
-            gs.reset_property("gtk-application-prefer-dark-theme")
-        Adw.StyleManager.get_default().set_color_scheme(
-            Adw.ColorScheme.PREFER_LIGHT)
+        # Follow the system light/dark preference — no explicit
+        # set_color_scheme call. The card/title colours adapt at
+        # render time via Adw.StyleManager.get_dark() (see
+        # _title_color / _is_dark), so a dark system theme is honoured
+        # rather than overridden.
 
         # Register the in-tree `icons/` directory so windows can
         # `set_icon_name("io.github.pemsley.Alexandria")` and pick

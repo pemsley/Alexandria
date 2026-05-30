@@ -106,6 +106,13 @@ def safe_pango_markup(text):
     if not text:
         return ""
     original = text
+    # OpenAlex/JATS titles sometimes arrive with markup *entity-encoded*
+    # (e.g. "&lt;scp&gt;RELION&lt;/scp&gt;", "GABA&lt;sub&gt;A&lt;/sub&gt;")
+    # rather than as real tags. Decode those four entities first so the
+    # tag-translation + whitelist pass below sees real <scp>/<sub>/...
+    # The whole string is re-escaped afterwards, so this is safe.
+    text = (text.replace("&lt;", "<").replace("&gt;", ">")
+                .replace("&quot;", '"').replace("&amp;", "&"))
     text = _translate_scp(text)
     text = _pad_inline_tags(text)
     placeholders = []

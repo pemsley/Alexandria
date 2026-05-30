@@ -797,6 +797,37 @@ class AuthorWorksWindow(Gtk.Window):
         works = self._cached_or_fetch_works(orcid, oa_id, self._works_sort)
         GLib.idle_add(self._apply_works_only, works)
 
+    def refresh_in_library(self):
+        """Recompute which listed works are now in the library and
+        rebuild the rows in place. Called by the parent BrowserWindow
+        after an import lands elsewhere (e.g. the browser extension)
+        while this window is open, so the '✓ in library' badge and the
+        Add-to-Archive button update without reopening the dialog.
+
+        Self-contained: works are recovered from the per-row stash set
+        in _make_work_row, so this doesn't depend on the fetch path.
+        A no-op when membership is unchanged, to avoid needless
+        rebuilds on unrelated reloads."""
+        try:
+            new_existing = _existing_dois(self.conn)
+        except Exception:
+            return
+        if new_existing == self._existing:
+            return
+        self._existing = new_existing
+        works = []
+        child = self.list_box.get_first_child()
+        while child is not None:
+            w = getattr(child, "_work", None)
+            if w is not None:
+                works.append(w)
+            child = child.get_next_sibling()
+        if not works:
+            return
+        self.list_box_clear()
+        for w in works:
+            self.list_box.append(self._make_work_row(w))
+
     def _apply_works_only(self, works):
         if not works:
             self.status.set_markup(self._empty_status_markup())
@@ -835,6 +866,17 @@ class AuthorWorksWindow(Gtk.Window):
             self.status.set_markup(blocked)
             return
         if profile:
+            # The per-work authorship dict often lacks an ORCID (OpenAlex
+            # only carries it when the publisher deposited one for that
+            # specific paper). The author *record* we just fetched
+            # usually has it — so backfill the ORCID line when the
+            # authorship didn't supply one.
+            if not self.authorship.get("orcid") and profile.get("orcid"):
+                self.authorship["orcid"] = profile["orcid"]
+                self._sub_orcid_lbl.set_markup(
+                    "<span size='small' alpha='75%'>ORCID {}</span>".format(
+                        GLib.markup_escape_text(profile["orcid"])))
+                self._sub_orcid_lbl.set_visible(True)
             bits = []
             if profile.get("works_count"):
                 bits.append("{} works".format(profile["works_count"]))
@@ -1189,6 +1231,10 @@ class AuthorWorksWindow(Gtk.Window):
             box.append(btn_row)
 
         frame.set_child(box)
+        # Stash the work dict on the row so refresh_in_library() can
+        # rebuild this row in place when library membership changes
+        # (e.g. an import landing via the browser extension).
+        frame._work = w
         return frame
 
     # ------------------------------------------------------------------
@@ -1286,5 +1332,12 @@ def open_window(parent, conn, authorship):
         dlg.show(parent)
         return None
     win = AuthorWorksWindow(parent, conn, authorship)
+    # Register with the parent BrowserWindow (when it supports it) so
+    # an import landing elsewhere can live-refresh this window's
+    # in-library badges. Guarded: any parent lacking the hook (or a
+    # different caller) simply won't get live updates.
+    reg = getattr(parent, "_register_author_window", None)
+    if reg is not None:
+        reg(win)
     win.present()
     return win

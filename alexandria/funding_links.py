@@ -2,8 +2,8 @@
 
 A small dispatch table that knows where each funder publishes
 their grant records. For matches, builds a deep link straight to
-the award; for misses, falls back to a DuckDuckGo search for the
-award ID plus funder name (almost always a one-click landing).
+the award; for misses, returns None so the caller can render the
+award ID as plain (non-link) text.
 
 Match strategy: case-insensitive substring against the lowercased
 funder display name. First match in `_DISPATCH` wins, so order
@@ -68,25 +68,16 @@ _DISPATCH = [
 
 
 def funding_url(funder, award_id):
-    """Return a clickable URL for `(funder, award_id)`, or a
-    DuckDuckGo search URL as the universal fallback. Returns None
-    only when both funder and award_id are empty/None — i.e. when
-    there is nothing to search for at all."""
+    """Return a clickable registry URL for `(funder, award_id)`, or
+    None when the funder isn't in the dispatch table (or there's no
+    award ID to link to). A None result means the caller should show
+    the award ID as plain text rather than a link."""
     fname = (funder or "").strip()
     aid = (award_id or "").strip()
-    if not (fname or aid):
+    if not aid:
         return None
     low = fname.lower()
     for pattern, template in _DISPATCH:
-        if pattern in low and aid:
+        if pattern in low:
             return template.format(award_id=urllib.parse.quote(aid, safe=""))
-    # Fallback: DuckDuckGo search for the award ID + funder. Quoting
-    # both terms forces a literal-string match, which usually lands
-    # on the canonical project page.
-    parts = []
-    if aid:
-        parts.append('"{}"'.format(aid))
-    if fname:
-        parts.append('"{}"'.format(fname))
-    q = " ".join(parts)
-    return "https://duckduckgo.com/?q=" + urllib.parse.quote(q, safe="")
+    return None

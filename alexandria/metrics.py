@@ -651,6 +651,7 @@ def fetch_works_by_author(orcid=None, openalex_id=None, since=None,
 
 def fetch_author_profile(orcid=None, openalex_id=None):
     """Return {works_count, cited_by_count, h_index, i10_index, name,
+    orcid (bare digits or None),
     counts_by_year: [{year, works_count, cited_by_count}, ...],
     affiliations: [{display_name, openalex_id, year_min, year_max}, ...]}
     or None.
@@ -707,6 +708,7 @@ def fetch_author_profile(orcid=None, openalex_id=None):
     aff_rows.sort(key=lambda r: r["year_max"], reverse=True)
     return {
         "name": data.get("display_name"),
+        "orcid": _strip_orcid(data.get("orcid")),
         "works_count": data.get("works_count") or 0,
         "cited_by_count": data.get("cited_by_count") or 0,
         "h_index": summ.get("h_index"),

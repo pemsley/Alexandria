@@ -1055,7 +1055,22 @@ class AuthorWorksWindow(Gtk.Window):
                 "<b>PRE</b></span>")
             pre.set_valign(Gtk.Align.START)
             pre.set_tooltip_text("Preprint")
-            title_row.append(pre)
+            # Prepend so PRE leads the title ("PRE  Title"), matching
+            # the main library card rather than trailing after it.
+            title_row.prepend(pre)
+
+        # Author-response chip — the peer-review response companion to
+        # a paper (OpenAlex titles these "Author Response: ..." /
+        # "Author response for ..."). Prepended like PRE so it leads
+        # the title.
+        if "author response" in title.lower():
+            ar = Gtk.Label()
+            ar.set_markup(
+                "<span size='small' foreground='#4d9f96'>"
+                "<b>AR</b></span>")
+            ar.set_valign(Gtk.Align.START)
+            ar.set_tooltip_text("Author response (peer-review companion)")
+            title_row.prepend(ar)
 
         # Venue chip (Zenodo / JoVE / bioRxiv / arXiv / ...). One
         # at most. Sits between the title and the in-library

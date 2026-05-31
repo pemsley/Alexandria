@@ -1,0 +1,106 @@
+
+# ---- possible io.github.pemsley.Alexandria.yml:
+
+app-id: io.github.pemsley.Alexandria
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+command: alexandria-browse
+
+finish-args:
+  - --share=network          # CrossRef / OpenAlex / arXiv API calls
+  - --share=ipc              # X11 shared-memory transport
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri             # GPU acceleration
+  - --filesystem=xdg-documents   # PDF library (default ~/Documents/Alexandria) + sidecar JSON files
+
+build-options:
+  env:
+    PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    PIP_NO_COMPILE: '1'
+
+modules:
+
+  # ── poppler-data (encoding tables, CMap files) ──────────────────────────
+  - name: poppler-data
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+    sources:
+      - type: archive
+        url: https://poppler.freedesktop.org/poppler-data-0.4.12.tar.gz
+        sha256: c835b640a40ce357e1b83666aabd95edffa24ddddd49b8daff63adb851cdab74
+
+  # ── Poppler ──────────────────────────────────────────────────────────────
+  # Provides gi.repository.Poppler (viewer, references panel)
+  # and /app/bin/pdftotext (metadata extraction pipeline).
+  # Not in the GNOME Platform runtime — must be bundled.
+  #
+  - name: poppler
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_INSTALL_LIBDIR=lib
+      - -DBUILD_GTK_TESTS=OFF
+      - -DBUILD_QT5_TESTS=OFF
+      - -DBUILD_QT6_TESTS=OFF
+      - -DENABLE_BOOST=OFF
+      - -DENABLE_CPP=OFF
+      - -DENABLE_GLIB=ON
+      - -DENABLE_GOBJECT_INTROSPECTION=ON
+      - -DENABLE_UTILS=ON
+      - -DENABLE_QT5=OFF
+      - -DENABLE_QT6=OFF
+      - -DWITH_NSS3=OFF
+    sources:
+      - type: archive
+        url: https://poppler.freedesktop.org/poppler-24.11.0.tar.xz
+        sha256: 7723d880565211740c13649d24a300257b86ddd7fa2d208187ff7e5cc8dfbd58
+
+  - python-deps.yaml
+
+  # ── Alexandria ───────────────────────────────────────────────────────────
+  # see pyproject.toml for python dependencies.
+  - name: alexandria
+    buildsystem: simpleO
+    build-commands:
+      - pip3 install --prefix=/app --no-deps --no-build-isolation .
+      - install -Dm644 COPYING
+            /app/share/licenses/io.github.pemsley.Alexandria/COPYING
+      - install -Dm644 data/io.github.pemsley.Alexandria.desktop
+            /app/share/applications/io.github.pemsley.Alexandria.desktop
+      - install -Dm644 data/io.github.pemsley.Alexandria.svg
+            /app/share/icons/hicolor/scalable/apps/io.github.pemsley.Alexandria.svg
+      - install -Dm644 data/io.github.pemsley.Alexandria.metainfo.xml
+            /app/share/metainfo/io.github.pemsley.Alexandria.metainfo.xml
+    sources:
+      # Flathub builders pull from a fixed ref. Local dev builds can
+      # comment this block out and substitute `type: dir, path: .`
+      # to test working-tree changes without tagging.
+      #
+      # Currently pointed at the local bare repo for a dry-run test.
+      # Before submitting to Flathub, change `url:` to
+      # `https://github.com/pemsley/Alexandria.git`.
+      - type: git
+        url: file:///home/paule/Projects/pdf-organizer-bare.git
+        tag: v0.0.1
+        commit: 18bfa97b9531f24b128c6b4c82e241da40715b52
+
+
+# ---- flatpak notes
+
+This project was rejected from flatpak
+
+   https://github.com/flathub/flathub/pull/8696
+
+I did indeed ask Claude to help with the submission process, as it was a bit
+convoluted. But the actual pull request was written by hand.
+
+This project was indeed written to a large extent using Claude. That, it seems to me
+is a sign of times, not a cause for rejection.
+
+I hope that this can be reviewed - if this is slop then Coot is slop too.
+
+
+

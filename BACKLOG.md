@@ -17,24 +17,6 @@ Pending features, roughly grouped. Newest at the top of each section.
   cold import storm under the new busy_timeout and grep'ing for
   the message.
 
-- **Before v0.2: unguarded-network-call sweep.** Audit every GTK
-  click / activate handler in the codebase for synchronous network
-  calls on the main thread. Known-clean sites: the citation /
-  author-score / feed refresher threads, `_on_find_doi` (uses
-  `threading.Thread` + `GLib.idle_add`), the BibTeX-ghost
-  Get-PDF flow. Not yet audited end-to-end: every other place a
-  button or menu entry kicks off OpenAlex / CrossRef / Unpaywall
-  / DOI-resolve work. Practical grep is something like
-  `grep -nE "connect\([\"']clicked|connect\([\"']activate" pdforg/*.py`
-  and walk the call chain from each callback into the metrics /
-  feed / discover layer, flagging any `requests.get` (or
-  `_http_get_json`) that's reachable without an intervening
-  thread + `GLib.idle_add` for the UI update. Probably 10 minutes
-  for the audit, plus whatever fixes fall out. Prompted by a
-  Gemini code-review pass that flagged the pattern but didn't
-  actually find a violation — would be good to be able to claim
-  the property holds globally rather than per-spot-check.
-
 ## Import / ingestion
 - **Drag-and-drop / CLI imports from outside the library tree
   (Flatpak).** Menu-driven Import Files / Import Folder now go
@@ -928,8 +910,14 @@ via `extract.CROSSREF_USER_AGENT`.
   it exposes a REST API that takes a grant reference and returns
   the project record. NIH RePORTER is the obvious analogue for US
   funders. Per-funder routing: dispatch on the `funder` name to
-  pick the right registry; fall through to a Google search for
-  the bare award_id when none matches.
+  pick the right registry (`funding_links.funding_url` already does
+  this for GtR / NIH / NSF / OSTI / CORDIS).
+
+  Unmatched funders currently fall through to **plain text** — the
+  earlier DuckDuckGo-search fallback was removed (it landed on
+  useless result pages). If a generic fallback is wanted again,
+  it needs to be one that actually resolves to the grant record,
+  not a bare web search.
 
 ## Watcher
 - Recursive subdir watching (currently flat on `LIBRARY_ROOT`)

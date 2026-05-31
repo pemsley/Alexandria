@@ -104,7 +104,7 @@ def _render_page(pdf_path, page, dest_root, width):
     return produced
 
 
-def make_thumbnail(pdf_path, out_path, width=240, title=None):
+def make_thumbnail(pdf_path, out_path, width=280, title=None):
     """Render a representative page of `pdf_path` to `out_path` as a
     PNG at the given pixel width. Picks the page that carries the
     paper's `title`; falls back to page 1 when the title is unknown,

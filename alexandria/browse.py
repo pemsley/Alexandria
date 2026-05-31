@@ -524,7 +524,7 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     is_ghost = sidecar.is_ghost_path(row["pdf_path"])
 
     img = Gtk.Image()
-    img.set_pixel_size(120)
+    img.set_pixel_size(140)
     # Ghost (BibTeX-only) entries have no PDF and no thumbnail; show a
     # generic "no document" icon to make the difference obvious.
     img.set_from_icon_name("text-x-generic-symbolic" if is_ghost
@@ -537,7 +537,7 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
         except Exception:
             pass
     frame = Gtk.Frame()
-    frame.set_size_request(130, 160)
+    frame.set_size_request(146, 185)
     comment_count = (0 if is_ghost
                      else _pdf_comment_count(row["sidecar_path"]))
     if comment_count:

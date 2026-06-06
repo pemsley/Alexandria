@@ -43,7 +43,8 @@ DEV_ICON     := $(DEV_ICON_DIR)/$(ICON)
 
 PYTHON ?= python3
 
-.PHONY: install install-data uninstall uninstall-data clean dev tar sync-icon
+.PHONY: install install-data uninstall uninstall-data clean dev tar sync-icon \
+        app install-app uninstall-app
 
 install: install-data sync-icon
 	$(PYTHON) -m pip install --user .
@@ -89,6 +90,27 @@ tar:
 	    --prefix=alexandria-$(VERSION)/ \
 	    -o alexandria-$(VERSION).tar.gz \
 	    $(REF)
+
+# --- macOS .app bundle -------------------------------------------
+# `make app` builds dist/Alexandria.app so the Dock shows the proper
+# icon and app name instead of Python's. `make install-app` drops it
+# into ~/Applications (no sudo). The .app launches `python3 -m
+# alexandria.browse`, so `make install` (or `pip install --user .`)
+# must have been run against a python3 the .app can find at launch.
+APP_BUNDLE_NAME := Alexandria.app
+APP_BUNDLE_DST  := $(HOME)/Applications
+
+app:
+	./make-app.sh
+
+install-app: app
+	install -d $(APP_BUNDLE_DST)
+	rm -rf $(APP_BUNDLE_DST)/$(APP_BUNDLE_NAME)
+	cp -R dist/$(APP_BUNDLE_NAME) $(APP_BUNDLE_DST)/
+	@echo "installed $(APP_BUNDLE_DST)/$(APP_BUNDLE_NAME)"
+
+uninstall-app:
+	rm -rf $(APP_BUNDLE_DST)/$(APP_BUNDLE_NAME)
 
 clean:
 	rm -rf build dist *.egg-info alexandria*.tar.gz

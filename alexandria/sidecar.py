@@ -52,7 +52,14 @@ def thumb_path_for(pdf_path):
 def is_ghost_path(pdf_path):
     """True for synthetic `bibtex:<key>` identifiers used by BibTeX-only
     library entries (no PDF on disk)."""
-    return bool(pdf_path) and pdf_path.startswith(GHOST_PATH_PREFIX)
+    if not pdf_path:
+        return False
+    # Older rows occasionally stored pdf_path as bytes (BLOB affinity)
+    # via a path-encoding round-trip; tolerate either type here so the
+    # whole catalogue doesn't fail to load on a single bad row.
+    if isinstance(pdf_path, (bytes, bytearray)):
+        return bytes(pdf_path).startswith(GHOST_PATH_PREFIX.encode("utf-8"))
+    return pdf_path.startswith(GHOST_PATH_PREFIX)
 
 
 def ghost_pdf_path(bibtex_key):

@@ -24,8 +24,41 @@ OpenAlex enrichment runs for every entry that has a DOI.
 import os
 import re
 import shutil
+import uuid
 
 from . import sidecar, importer, index, metrics, extract
+
+
+def br_from_metadata(resolved):
+    """Build a BibTeX-shaped record (the `br` dict consumed by
+    `import_record` / `BrowserWindow.add_reference_from_viewer`) from a
+    resolved metadata dict in the shape `metrics.fetch_work_by_doi` /
+    `metrics.resolve_doi` return. Synthesises a citekey
+    (<surname><year><first-title-word>, fallback ref<hex>)."""
+    first = resolved.get("first_author") or "ref"
+    surname_src = first.split()[-1] if first.split() else "ref"
+    surname = re.sub(r"[^a-z]", "", surname_src.lower()) or "ref"
+    title = resolved.get("title") or ""
+    first_word = ""
+    for w in title.split():
+        cleaned = re.sub(r"[^a-zA-Z]", "", w).lower()
+        if cleaned:
+            first_word = cleaned
+            break
+    year = resolved.get("year") or "nodate"
+    key = "{}{}{}".format(surname, year, first_word)[:48]
+    if not key:
+        key = "ref" + uuid.uuid4().hex[:8]
+    return {
+        "bibtex_key": key,
+        "bibtex_type": "article",
+        "title": resolved.get("title"),
+        "authors": resolved.get("authors") or [],
+        "year": str(resolved["year"]) if resolved.get("year") else None,
+        "journal": resolved.get("journal"),
+        "doi": resolved.get("doi"),
+        "bibtex_extra": {},
+    }
 
 
 def _enrich_with_openalex(rec):

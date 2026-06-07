@@ -1862,6 +1862,63 @@ def fetch_work_by_doi(doi):
     }
 
 
+def _work_from_crossref_message(msg, fallback_doi=None):
+    """Map a CrossRef /works message into the dict shape
+    `fetch_work_by_doi` returns. OA fields are absent in CrossRef, so
+    is_oa=False / oa_url=None; the PDF-fetch path re-queries OpenAlex by
+    DOI regardless."""
+    titles = msg.get("title")
+    title = (str(titles[0]).strip() or None
+             if isinstance(titles, list) and titles else None)
+    authors = []
+    for a in (msg.get("author") or []):
+        given = (a.get("given") or "").strip()
+        family = (a.get("family") or "").strip()
+        full = (given + " " + family).strip()
+        if full:
+            authors.append(full)
+    cont = msg.get("container-title")
+    journal = (str(cont[0]).strip() or None
+               if isinstance(cont, list) and cont else None)
+    year = None
+    issued = (msg.get("issued") or {}).get("date-parts") or []
+    if issued and issued[0]:
+        try:
+            year = int(issued[0][0])
+        except (ValueError, TypeError, IndexError):
+            year = None
+    doi = _normalize_doi(msg.get("DOI")) or fallback_doi
+    return {
+        "openalex_id": None,
+        "doi": doi,
+        "title": title,
+        "year": year,
+        "publication_date": None,
+        "journal": journal,
+        "first_author": authors[0] if authors else None,
+        "last_author": authors[-1] if authors else None,
+        "authors": authors,
+        "citations": 0,
+        "is_oa": False,
+        "oa_url": None,
+    }
+
+
+def resolve_doi(doi):
+    """Resolve a DOI to a normalised metadata dict (same shape as
+    fetch_work_by_doi). OpenAlex first, CrossRef fallback. None if
+    neither source has the DOI."""
+    if not doi:
+        return None
+    work = fetch_work_by_doi(doi)
+    if work:
+        return work
+    msg = _fetch_crossref_work_message(doi)
+    if not msg:
+        return None
+    return _work_from_crossref_message(msg, fallback_doi=doi)
+
+
 def fetch_related_works(doi=None, openalex_id=None, limit=12):
     """Return OpenAlex's `related_works` for a paper, resolved to
     [{openalex_id, doi, title, year, journal, first_author, last_author},

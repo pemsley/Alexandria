@@ -4,18 +4,24 @@ Pending features, roughly grouped. Newest at the top of each section.
 
 ## Top priority
 
-- **PDB indexer: "another row available" failure.** Seen once in
-  the wild alongside a `database is locked` storm; the lock storm
-  was the dominant symptom and is now fixed (PRAGMA busy_timeout,
-  commit cb89f08), but this side-message may be an independent
-  bug — a SELECT that expected one row returned multiple, or a
-  cursor was iterated past its intended single fetch. Worth a
-  read of `pdb_mentions.index_pdb_mentions_for_paper` and its
-  inner queries to see whether the offending SELECT can return
-  duplicate rows post-backfill. May simply have been a downstream
-  artefact of the lock-induced retry — re-check by triggering a
-  cold import storm under the new busy_timeout and grep'ing for
-  the message.
+- **PDB indexer: "another row available" failure.** *(Root cause
+  found and fixed — commit ab347ba; live-storm reproduction still
+  pending.)* Not an independent bug after all: it was the same
+  cross-thread `sqlite3.Connection` sharing that `7bd858d` set out
+  to eliminate, but one instance was missed.
+  `importer._schedule_pdb_indexing` spawned a worker thread that
+  closed over the *caller's* connection — for watcher-driven
+  imports that connection is owned by `watcher._do_import`, which
+  closes it in its `finally` the instant `import_pdf` returns, while
+  the worker is still querying it. Two threads on one connection
+  corrupt cursor state (the "another row available" message) and
+  produce the `database is locked` co-symptom; on Apple's libsqlite3
+  it segfaults. Fixed by having the worker open its own connection
+  via `index.connect_existing()` (the row is already committed by
+  `index.upsert`, so a fresh WAL connection sees it). Still open:
+  the BACKLOG originally called for a cold-import-storm reproduction
+  to *confirm* the message is gone under load — the fix is by
+  inspection, not yet verified against a live storm.
 
 ## Import / ingestion
 - **Drag-and-drop / CLI imports from outside the library tree

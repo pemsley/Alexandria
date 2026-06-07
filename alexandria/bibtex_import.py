@@ -25,7 +25,7 @@ import os
 import re
 import shutil
 
-from . import bibtex, sidecar, importer, index, metrics, extract
+from . import sidecar, importer, index, metrics, extract
 
 
 def _enrich_with_openalex(rec):
@@ -396,6 +396,7 @@ def import_bib(conn, bib_path, library_root, on_progress=None):
     """Parse a `.bib` file and import every entry. Returns a counts
     dict: `{imported, ghost, duplicate, error}`. `on_progress(i, n,
     key, status)` is called once per entry if supplied."""
+    from . import bibtex
     records = bibtex.parse(bib_path)
     n = len(records)
     counts = {"imported": 0, "ghost": 0, "duplicate": 0, "error": 0}

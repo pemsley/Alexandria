@@ -67,6 +67,29 @@ display_auto_keywords = False
 from .markup import safe_pango_markup  # noqa: E402,F401  (re-export)
 
 
+def _wlog(tag, msg):
+    """Timestamped stderr line for worker threads. Many of these run
+    concurrently (citations / author-score / PDB / CrossRef / feed
+    / watcher reconcile), and untagged `print()` lines from each are
+    indistinguishable in the terminal. Format: HH:MM:SS.mmm with the
+    short tag and current-thread name so we can tell who's doing
+    what and when."""
+    ts = time.strftime("%H:%M:%S") + "." + "{:03d}".format(
+        int((time.time() % 1) * 1000))
+    th = threading.current_thread().name
+    print("[{} {} {}] {}".format(ts, tag, th, msg), flush=True)
+
+
+def _sqlite_err_info(e):
+    """Pull SQLite error name out of an OperationalError if the runtime
+    exposes it (Python 3.11+). Returns "" for unrelated exceptions."""
+    name = getattr(e, "sqlite_errorname", None)
+    code = getattr(e, "sqlite_errorcode", None)
+    if name:
+        return " [{}={}]".format(name, code)
+    return ""
+
+
 _PREPRINT_DOI_PREFIXES = (
     "10.1101/",       # bioRxiv / medRxiv
     "10.48550/",      # arXiv (assigned DOIs)
@@ -505,6 +528,8 @@ def _pdf_comment_count(sidecar_path):
     """Number of highlights in this sidecar that carry a non-empty
     comment. Returns 0 on a missing or unreadable sidecar — surfacing
     a "no comments" state is the same as not having an indicator."""
+    if not sidecar_path:
+        return 0
     try:
         record = sidecar.read(sidecar_path)
     except (OSError, ValueError):
@@ -1300,6 +1325,11 @@ def _do_copy_citation(style, row, parent_window, pop):
 
 
 class BrowserWindow(Adw.ApplicationWindow):
+    # Set when the pdftoppm-missing toast has been shown for this
+    # process. Class-level so opening a second catalogue window doesn't
+    # re-toast — the warning is about PATH, which is process-wide.
+    _pdftoppm_warned = False
+
     def __init__(self, app, catalogue):
         """`catalogue` is a `{name, library_root}` dict (see
         `prefs.get_catalogues`). The window opens its own DB
@@ -1312,8 +1342,8 @@ class BrowserWindow(Adw.ApplicationWindow):
         # Per-catalogue DB. Migrations run once per open — both
         # are idempotent so this is cheap even for catalogues
         # that have already been brought up to date.
-        self.conn = index.open_db(
-            index.db_path_for_catalogue(catalogue["name"]))
+        self._db_path = index.db_path_for_catalogue(catalogue["name"])
+        self.conn = index.open_db(self._db_path)
         sidecar.migrate_library_sidecars(self.library_root)
         index.migrate_sidecar_paths(self.conn)
         # Title: bare "Alexandria" for the default catalogue (to
@@ -1606,7 +1636,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         self._import_window_timer_id = None
         self._import_count_toast = None
         self.library_watcher = watcher_mod.LibraryWatcher(
-            self.conn, self.library_root,
+            self._db_path, self.library_root,
             on_change_cb=self._on_watcher_change,
             on_import_start_cb=self._on_import_start,
             skip_roots=self._other_catalogue_roots())
@@ -1618,6 +1648,16 @@ class BrowserWindow(Adw.ApplicationWindow):
         # weaker without it.
         if not extract._have_pdfx():
             GLib.idle_add(self._warn_no_pdfx)
+
+        # Warn (once per process) if pdftoppm isn't on PATH — without
+        # it `thumbnail.make_thumbnail` silently produces no PNG, so
+        # imported PDFs end up with the generic application-pdf icon
+        # instead of a page render. Toast not dialog: the app still
+        # works, the user just gets no thumbnails.
+        if (not BrowserWindow._pdftoppm_warned
+                and shutil.which("pdftoppm") is None):
+            BrowserWindow._pdftoppm_warned = True
+            GLib.idle_add(self._warn_no_pdftoppm)
 
     def _warn_no_pdfx(self):
         dlg = Gtk.AlertDialog()
@@ -1634,6 +1674,17 @@ class BrowserWindow(Adw.ApplicationWindow):
         dlg.set_buttons(["OK"])
         dlg.set_default_button(0)
         dlg.show(self)
+        return False
+
+    def _warn_no_pdftoppm(self):
+        """Toast (not dialog) when poppler's pdftoppm isn't on PATH —
+        thumbnails won't render but everything else still works, so
+        the user shouldn't be blocked by a modal."""
+        self._toast(
+            "pdftoppm not found on PATH — PDF thumbnails will not be "
+            "generated. Install poppler (e.g. `brew install poppler`) "
+            "and relaunch.",
+            timeout=10)
         return False
 
     def _focus_search(self, *_args):
@@ -1658,21 +1709,43 @@ class BrowserWindow(Adw.ApplicationWindow):
         looking at, raise our own window instead of duplicating.
         Persists the choice so the next launch opens this
         catalogue by default."""
+        print("[open-catalogue] requested name={!r} current={!r}".format(
+            name, self.catalogue.get("name")), flush=True)
         if name == self.catalogue["name"]:
+            print("[open-catalogue] same catalogue, presenting self",
+                  flush=True)
             self.present()
             return
         cat = prefs.get_catalogue(name)
+        print("[open-catalogue] prefs.get_catalogue({!r}) -> {!r}".format(
+            name, cat), flush=True)
         if cat is None:
             self._toast("Unknown catalogue: {}".format(name))
             return
         try:
+            print("[open-catalogue] constructing BrowserWindow", flush=True)
             win = BrowserWindow(self.get_application(), cat)
+            print("[open-catalogue] constructed {!r}".format(win),
+                  flush=True)
         except Exception as e:
+            import traceback
+            print("[open-catalogue] construction raised:", flush=True)
+            traceback.print_exc()
             self._toast("Open catalogue failed: {}".format(e),
                         timeout=6)
             return
-        prefs.set_current_catalogue(name)
-        win.present()
+        try:
+            prefs.set_current_catalogue(name)
+            print("[open-catalogue] prefs.set_current_catalogue ok",
+                  flush=True)
+            win.present()
+            print("[open-catalogue] win.present() returned", flush=True)
+        except Exception as e:
+            import traceback
+            print("[open-catalogue] present/persist raised:", flush=True)
+            traceback.print_exc()
+            self._toast("Open catalogue failed (present): {}".format(e),
+                        timeout=6)
 
     def _on_new_catalogue(self, _btn):
         """Prompt for a name + library folder; on confirm, register
@@ -2092,9 +2165,14 @@ class BrowserWindow(Adw.ApplicationWindow):
         # type, so it lives outside the parameterless loop above.
         open_cat_action = Gio.SimpleAction.new(
             "open-catalogue", GLib.VariantType.new("s"))
-        open_cat_action.connect(
-            "activate",
-            lambda a, p: self._on_open_catalogue(p.get_string()))
+
+        def _open_cat_activate(_action, param):
+            print("[open-catalogue] action activated, param={!r}".format(
+                param.get_string() if param is not None else None),
+                flush=True)
+            self._on_open_catalogue(param.get_string())
+
+        open_cat_action.connect("activate", _open_cat_activate)
         self.add_action(open_cat_action)
 
     # --- Import (file dialog + background thread) -----------------------
@@ -2614,10 +2692,20 @@ class BrowserWindow(Adw.ApplicationWindow):
         On a successful fetch, citations_fetched is bumped to today.
         On failure, the date is left unchanged so we'll retry next
         session, but we record the path in a per-session set so we
-        don't pummel a failing endpoint within one run."""
+        don't pummel a failing endpoint within one run.
+
+        Owns its own sqlite3 connection — see `_pdb_mentions_backfill`
+        for why."""
         if self._cit_stop.wait(2.0):
             return
-        rows = index.stale_citation_rows(self.conn, max_age_days=max_age_days)
+        conn = index.connect_existing(self._db_path)
+        try:
+            self._citation_refresher_loop(conn, max_age_days, pause_seconds)
+        finally:
+            conn.close()
+
+    def _citation_refresher_loop(self, conn, max_age_days, pause_seconds):
+        rows = index.stale_citation_rows(conn, max_age_days=max_age_days)
         if not rows:
             return
         for row in rows:
@@ -2627,7 +2715,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             # exhausted), bail — the rest of this run would just
             # log "OpenAlex rate-limited" per row.
             if metrics.openalex_paused_until() > 0:
-                print("[citations] OpenAlex paused, stopping refresher")
+                _wlog("citations", "OpenAlex paused, stopping refresher")
                 return
             if row["pdf_path"] in self._cit_failed_session:
                 continue
@@ -2647,10 +2735,10 @@ class BrowserWindow(Adw.ApplicationWindow):
                             rec.get("title"), rec.get("year"),
                             oa_title, oa_year):
                         if oa_title or oa_year:
-                            print(
-                                "[citations] OpenAlex record for {} "
-                                "looks corrupted — skipping refresh"
-                                .format(doi))
+                            _wlog("citations",
+                                  "OpenAlex record for {} looks "
+                                  "corrupted — skipping refresh"
+                                  .format(doi))
                         continue
                     rec["citations"] = n
                     rec["citations_source"] = src
@@ -2693,18 +2781,21 @@ class BrowserWindow(Adw.ApplicationWindow):
                                 if extras.get("crossmark"):
                                     rec["crossmark"] = extras["crossmark"]
                         except Exception as e:
-                            print("[citations] CrossRef-extras "
-                                  "fetch failed for {}: {}".format(doi, e))
+                            _wlog("citations",
+                                  "CrossRef-extras fetch failed for {}: {}"
+                                  .format(doi, e))
                     sidecar.write(row["sidecar_path"], rec)
                     # Push the updated record into the index too so the
                     # next reload picks up the new keywords.
                     th = row.get("thumb_path")
                     mtime = os.path.getmtime(row["sidecar_path"])
-                    index.upsert(self.conn, row["pdf_path"],
+                    index.upsert(conn, row["pdf_path"],
                                  row["sidecar_path"], th, rec, mtime)
                 except Exception as e:
-                    print("citation sidecar write failed:", e)
-                    index.update_citations(self.conn, row["pdf_path"],
+                    _wlog("citations",
+                          "sidecar write failed for {}: {}{}".format(
+                              row.get("pdf_path"), e, _sqlite_err_info(e)))
+                    index.update_citations(conn, row["pdf_path"],
                                            n, src, today)
                 GLib.idle_add(self._refresh_visible_row,
                               row["pdf_path"], n)
@@ -2721,56 +2812,68 @@ class BrowserWindow(Adw.ApplicationWindow):
         """One-shot pass that fills `license_*` and `crossmark_*` for
         every paper with a DOI but no cached license. One CrossRef
         call per row covers both, so it doesn't compete with the
-        OpenAlex budget. Stops cleanly via `_lic_stop`."""
+        OpenAlex budget. Stops cleanly via `_lic_stop`.
+
+        Owns its own sqlite3 connection — see `_pdb_mentions_backfill`
+        for why."""
         if self._lic_stop.wait(initial_delay_seconds):
             return
+        conn = index.connect_existing(self._db_path)
         try:
-            rows = index.rows_missing_crossref_extras(self.conn)
-        except Exception as e:
-            print("[crossref] index lookup failed:", e)
-            return
-        if not rows:
-            return
-        filled = 0
-        for row in rows:
-            if self._lic_stop.is_set():
-                return
-            doi = row.get("doi")
-            if not doi:
-                continue
             try:
-                extras = metrics.fetch_crossref_extras(doi)
+                rows = index.rows_missing_crossref_extras(conn)
             except Exception as e:
-                print("[crossref] fetch failed for {}: {}".format(doi, e))
-                extras = None
-            if not extras or not (extras.get("license")
-                                  or extras.get("crossmark")):
+                _wlog("crossref",
+                      "index lookup failed: {}{}".format(
+                          e, _sqlite_err_info(e)))
+                return
+            if not rows:
+                return
+            filled = 0
+            for row in rows:
+                if self._lic_stop.is_set():
+                    return
+                doi = row.get("doi")
+                if not doi:
+                    continue
+                try:
+                    extras = metrics.fetch_crossref_extras(doi)
+                except Exception as e:
+                    _wlog("crossref",
+                          "fetch failed for {}: {}".format(doi, e))
+                    extras = None
+                if not extras or not (extras.get("license")
+                                      or extras.get("crossmark")):
+                    if self._lic_stop.wait(pause_seconds):
+                        return
+                    continue
+                try:
+                    rec = sidecar.read(row["sidecar_path"])
+                    if extras.get("license"):
+                        rec["license"] = extras["license"]
+                    if extras.get("crossmark"):
+                        rec["crossmark"] = extras["crossmark"]
+                    sidecar.write(row["sidecar_path"], rec)
+                    th = row.get("thumb_path")
+                    mtime = os.path.getmtime(row["sidecar_path"])
+                    index.upsert(conn, row["pdf_path"],
+                                 row["sidecar_path"], th, rec, mtime)
+                    filled += 1
+                except Exception as e:
+                    _wlog("crossref",
+                          "sidecar write failed for {}: {}{}".format(
+                              row.get("pdf_path"), e, _sqlite_err_info(e)))
                 if self._lic_stop.wait(pause_seconds):
                     return
-                continue
-            try:
-                rec = sidecar.read(row["sidecar_path"])
-                if extras.get("license"):
-                    rec["license"] = extras["license"]
-                if extras.get("crossmark"):
-                    rec["crossmark"] = extras["crossmark"]
-                sidecar.write(row["sidecar_path"], rec)
-                th = row.get("thumb_path")
-                mtime = os.path.getmtime(row["sidecar_path"])
-                index.upsert(self.conn, row["pdf_path"],
-                             row["sidecar_path"], th, rec, mtime)
-                filled += 1
-            except Exception as e:
-                print("[crossref] sidecar write failed for {}: {}"
-                      .format(row.get("pdf_path"), e))
-            if self._lic_stop.wait(pause_seconds):
-                return
-        if filled:
-            print("[crossref] backfilled {} row(s)".format(filled))
-            # Repaint cards so newly-filled chips appear without
-            # the user having to scroll or reload.
-            GLib.idle_add(lambda: (self._reload(self.search.get_text() or None),
-                                    False)[1])
+            if filled:
+                _wlog("crossref", "backfilled {} row(s)".format(filled))
+                # Repaint cards so newly-filled chips appear without
+                # the user having to scroll or reload.
+                GLib.idle_add(
+                    lambda: (self._reload(self.search.get_text() or None),
+                             False)[1])
+        finally:
+            conn.close()
 
     def _pdb_mentions_backfill(self, initial_delay_seconds=15.0,
                                 pause_seconds=2.0):
@@ -2779,34 +2882,48 @@ class BrowserWindow(Adw.ApplicationWindow):
         every paper imported before that wiring landed in the
         importer. The indexer stamps the column on every exit path
         (hits, no hits, no text), so a paper is touched at most once
-        per library."""
+        per library.
+
+        Owns its own sqlite3 connection — the GUI's `self.conn` is
+        not safe to use from a background thread on Apple's
+        libsqlite3 (segfaults inside VdbeExec when two threads share
+        one connection)."""
         if self._pdb_stop.wait(initial_delay_seconds):
             return
+        conn = index.connect_existing(self._db_path)
         try:
-            rows = index.rows_missing_pdb_indexing(self.conn)
-        except Exception as e:
-            print("[pdb] index lookup failed:", e)
-            return
-        if not rows:
-            return
-        filled = 0
-        for row in rows:
-            if self._pdb_stop.is_set():
-                return
             try:
-                n = pdb_mentions.index_pdb_mentions_for_paper(
-                    self.conn, row["id"])
-                if n:
-                    filled += 1
+                rows = index.rows_missing_pdb_indexing(conn)
             except Exception as e:
-                print("[pdb] indexing failed for {}: {}".format(
-                    row.get("pdf_path"), e))
-            if self._pdb_stop.wait(pause_seconds):
+                _wlog("pdb",
+                      "index lookup failed: {}{}".format(
+                          e, _sqlite_err_info(e)))
                 return
-        if filled:
-            print("[pdb] backfilled mentions for {} row(s)".format(filled))
-            GLib.idle_add(lambda: (self._reload(self.search.get_text() or None),
-                                    False)[1])
+            if not rows:
+                return
+            filled = 0
+            for row in rows:
+                if self._pdb_stop.is_set():
+                    return
+                try:
+                    n = pdb_mentions.index_pdb_mentions_for_paper(
+                        conn, row["id"])
+                    if n:
+                        filled += 1
+                except Exception as e:
+                    _wlog("pdb",
+                          "indexing failed for {}: {}{}".format(
+                              row.get("pdf_path"), e, _sqlite_err_info(e)))
+                if self._pdb_stop.wait(pause_seconds):
+                    return
+            if filled:
+                _wlog("pdb",
+                      "backfilled mentions for {} row(s)".format(filled))
+                GLib.idle_add(
+                    lambda: (self._reload(self.search.get_text() or None),
+                             False)[1])
+        finally:
+            conn.close()
 
     def _feed_refresher(self, initial_delay_seconds=20.0,
                         check_interval_seconds=900.0,
@@ -2823,44 +2940,58 @@ class BrowserWindow(Adw.ApplicationWindow):
         Every fourth pass we also prune the `discovered` table so
         old entries don't pile up indefinitely. Daemon thread +
         `_feed_stop` event for shutdown; consistent with the
-        citation / author-score refreshers above."""
+        citation / author-score refreshers above.
+
+        Owns its own sqlite3 connection — see `_pdb_mentions_backfill`
+        for why."""
         if self._feed_stop.wait(initial_delay_seconds):
             return
-        pass_n = 0
-        while True:
-            try:
-                stale = index.stale_subscriptions(self.conn)
-            except Exception as e:
-                print("feed refresher: stale lookup failed:", e)
-                stale = []
-            for sub in stale:
-                if self._feed_stop.is_set():
-                    return
-                if metrics.openalex_paused_until() > 0:
-                    print("[feed] OpenAlex paused, skipping pass")
-                    break
+        conn = index.connect_existing(self._db_path)
+        try:
+            pass_n = 0
+            while True:
                 try:
-                    fetched, new = feed.refresh_subscription(
-                        self.conn, sub)
-                    index.mark_subscription_fetched(self.conn, sub["id"])
-                    if new:
-                        print("[feed] {}: {} new article(s)"
-                              .format(sub["name"], new))
-                        GLib.idle_add(self._on_feed_updated,
-                                      sub["id"], new)
+                    stale = index.stale_subscriptions(conn)
                 except Exception as e:
-                    print("feed refresher: {} failed: {}"
-                          .format(sub.get("name"), e))
-                if self._feed_stop.wait(per_sub_pause_seconds):
+                    _wlog("feed",
+                          "stale lookup failed: {}{}".format(
+                              e, _sqlite_err_info(e)))
+                    stale = []
+                for sub in stale:
+                    if self._feed_stop.is_set():
+                        return
+                    if metrics.openalex_paused_until() > 0:
+                        _wlog("feed", "OpenAlex paused, skipping pass")
+                        break
+                    try:
+                        fetched, new = feed.refresh_subscription(
+                            conn, sub)
+                        index.mark_subscription_fetched(conn, sub["id"])
+                        if new:
+                            _wlog("feed",
+                                  "{}: {} new article(s)".format(
+                                      sub["name"], new))
+                            GLib.idle_add(self._on_feed_updated,
+                                          sub["id"], new)
+                    except Exception as e:
+                        _wlog("feed",
+                              "{} failed: {}{}".format(
+                                  sub.get("name"), e,
+                                  _sqlite_err_info(e)))
+                    if self._feed_stop.wait(per_sub_pause_seconds):
+                        return
+                pass_n += 1
+                if pass_n % prune_every_n_passes == 0:
+                    try:
+                        index.prune_old_discovered(conn)
+                    except Exception as e:
+                        _wlog("feed",
+                              "prune failed: {}{}".format(
+                                  e, _sqlite_err_info(e)))
+                if self._feed_stop.wait(check_interval_seconds):
                     return
-            pass_n += 1
-            if pass_n % prune_every_n_passes == 0:
-                try:
-                    index.prune_old_discovered(self.conn)
-                except Exception as e:
-                    print("feed refresher: prune failed:", e)
-            if self._feed_stop.wait(check_interval_seconds):
-                return
+        finally:
+            conn.close()
 
     def _on_feed_updated(self, subscription_id, n_new):
         """Idle callback fired from the refresher thread when a
@@ -2899,13 +3030,26 @@ class BrowserWindow(Adw.ApplicationWindow):
         a cleaner shutdown path between iterations). Longer
         initial delay than the citation refresher because the
         per-author compute is heavier and we'd rather let
-        citation counts settle first."""
+        citation counts settle first.
+
+        Owns its own sqlite3 connection — see `_pdb_mentions_backfill`
+        for why."""
         if self._asc_stop.wait(initial_delay_seconds):
             return
+        conn = index.connect_existing(self._db_path)
         try:
-            ids = index.stale_author_score_ids(self.conn)
+            self._author_score_refresher_loop(
+                conn, pause_seconds, per_call_delay_seconds)
+        finally:
+            conn.close()
+
+    def _author_score_refresher_loop(self, conn, pause_seconds,
+                                     per_call_delay_seconds):
+        try:
+            ids = index.stale_author_score_ids(conn)
         except Exception as e:
-            print("author-score refresher: index lookup failed:", e)
+            _wlog("author-score",
+                  "index lookup failed: {}{}".format(e, _sqlite_err_info(e)))
             return
         if not ids:
             return
@@ -2922,12 +3066,13 @@ class BrowserWindow(Adw.ApplicationWindow):
             #    Stop walking so we leave headroom for foreground
             #    actions and the lighter refreshers.
             if metrics.openalex_paused_until() > 0:
-                print("[author-score] OpenAlex paused, stopping refresher")
+                _wlog("author-score", "OpenAlex paused, stopping refresher")
                 return
             if metrics.openalex_credits_below(_AUTHOR_SCORE_CREDIT_BUFFER):
                 remaining = metrics.openalex_credits_remaining()
-                print("[author-score] OpenAlex credits at {}, below buffer "
-                      "{} — stopping refresher".format(
+                _wlog("author-score",
+                      "OpenAlex credits at {}, below buffer {} — "
+                      "stopping refresher".format(
                           remaining, _AUTHOR_SCORE_CREDIT_BUFFER))
                 return
             if aid in self._asc_failed_session:
@@ -2945,8 +3090,8 @@ class BrowserWindow(Adw.ApplicationWindow):
                     aid, exclude_self_cites=True,
                     polite_delay=per_call_delay_seconds)
             except Exception as e:
-                print("author-score refresher: compute failed for {}: {}"
-                      .format(aid, e))
+                _wlog("author-score",
+                      "compute failed for {}: {}".format(aid, e))
                 self._asc_failed_session.add(aid)
                 if self._asc_stop.wait(pause_seconds):
                     return
@@ -2955,11 +3100,14 @@ class BrowserWindow(Adw.ApplicationWindow):
                 self._asc_failed_session.add(aid)
             else:
                 try:
-                    index.set_author_score(self.conn, aid, result,
+                    t0 = time.monotonic()
+                    index.set_author_score(conn, aid, result,
                                            self_excluded=True)
                 except Exception as e:
-                    print("author-score refresher: cache write failed for "
-                          "{}: {}".format(aid, e))
+                    waited_ms = int((time.monotonic() - t0) * 1000)
+                    _wlog("author-score",
+                          "cache write failed for {} after {} ms: {}{}".format(
+                              aid, waited_ms, e, _sqlite_err_info(e)))
             if self._asc_stop.wait(pause_seconds):
                 return
 
@@ -4768,7 +4916,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
             self.library_watcher = watcher_mod.LibraryWatcher(
-                self.conn, self.library_root,
+                self._db_path, self.library_root,
                 on_change_cb=self._on_watcher_change,
                 on_import_start_cb=self._on_import_start,
                 skip_roots=self._other_catalogue_roots())

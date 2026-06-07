@@ -332,6 +332,55 @@ def _migrate(conn):
     conn.commit()
     _reencode_unicode_columns(conn)
     _backfill_highlight_text(conn)
+    _coerce_blob_paths_to_text(conn)
+
+
+def _coerce_blob_paths_to_text(conn):
+    """One-time fix-up: a few rows in older DBs had pdf_path / sidecar_path
+    / thumb_path bound as bytes, so SQLite stored them as BLOB and
+    sqlite3.Row returns them as `bytes`. Downstream code assumes `str`;
+    a single bad row aborts the whole catalogue load.
+
+    SQL-side `CAST(... AS TEXT)` doesn't reliably convert when the BLOB
+    isn't valid UTF-8 (SQLite keeps the raw bytes), so do it in Python:
+    decode with errors='replace' and bind back as a real `str`. The
+    resulting path may not open the original file if the original name
+    was non-UTF-8 — but the row loads, and the user can rename or
+    remove it from the UI rather than the whole catalogue refusing
+    to open."""
+    cols = ("pdf_path", "sidecar_path", "thumb_path")
+    saved_factory = conn.text_factory
+    conn.text_factory = bytes
+    try:
+        rows = conn.execute(
+            "SELECT rowid, {} FROM papers WHERE {}".format(
+                ", ".join(cols),
+                " OR ".join("typeof({}) = 'blob'".format(c) for c in cols))
+        ).fetchall()
+    finally:
+        conn.text_factory = saved_factory
+
+    if not rows:
+        return
+
+    def to_text(v):
+        if v is None:
+            return None
+        if isinstance(v, (bytes, bytearray)):
+            return bytes(v).decode("utf-8", errors="replace")
+        return v
+
+    fixed = 0
+    for r in rows:
+        rowid = r[0]
+        vals = tuple(to_text(v) for v in r[1:])
+        conn.execute(
+            "UPDATE papers SET pdf_path=?, sidecar_path=?, thumb_path=? "
+            "WHERE rowid=?", (*vals, rowid))
+        fixed += 1
+    conn.commit()
+    print("[migrate] rewrote {} row(s) with BLOB path columns "
+          "as TEXT".format(fixed), flush=True)
 
 
 def _reencode_unicode_columns(conn):
@@ -721,6 +770,28 @@ FEED_FETCH_INTERVAL_HOURS = 6
 DISCOVERED_RETENTION_DAYS = 60
 
 
+_BUSY_TIMEOUT_MS = 30000
+
+
+def connect_existing(path):
+    """Open a fresh sqlite3 connection on an already-migrated DB.
+    Background workers use this so each thread owns its own connection
+    instead of sharing the GUI's. SQLite is happy with concurrent
+    connections (WAL); Apple's libsqlite3 segfaults inside the VM on
+    concurrent access to a single connection from multiple threads,
+    which is exactly what the workers used to do via the shared
+    BrowserWindow.conn. No `check_same_thread=False` here — these
+    connections are single-threaded by construction. Migrations are
+    skipped; they have already run via the GUI's `open_db`."""
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout = {}".format(_BUSY_TIMEOUT_MS))
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def open_db(path=DEFAULT_DB_PATH):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     _migrate_legacy_db(path)
@@ -733,10 +804,12 @@ def open_db(path=DEFAULT_DB_PATH):
     # Concurrent background writers (PDB indexer, author-score
     # refresher, watcher import, GUI delete) used to fail
     # immediately with `database is locked` because busy_timeout
-    # defaults to 0. Five seconds is comfortably longer than any
-    # single UPSERT in this codebase, so contenders queue politely
-    # instead of failing.
-    conn.execute("PRAGMA busy_timeout = 5000")
+    # defaults to 0. 30 s leaves room for a heavy reconcile pass
+    # holding the writer while a background worker tries to write
+    # its own row; long enough that real contention queues
+    # politely, short enough that a stuck writer surfaces as an
+    # error rather than hanging forever.
+    conn.execute("PRAGMA busy_timeout = {}".format(_BUSY_TIMEOUT_MS))
     # ON DELETE CASCADE on `discovered.subscription_id` only fires
     # when foreign-key enforcement is enabled — SQLite leaves this
     # off by default for backwards compatibility. Without this,

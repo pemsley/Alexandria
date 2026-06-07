@@ -44,9 +44,16 @@ class LibraryWatcher:
     in sync. on_change(status_str) is called on the GLib main thread
     after each successful change."""
 
-    def __init__(self, conn, library_root, on_change_cb=None,
+    def __init__(self, db_path, library_root, on_change_cb=None,
                  on_import_start_cb=None, skip_roots=None):
-        self.conn = conn
+        # We take a db_path rather than a sqlite3.Connection because
+        # every code path that touches the index runs in its own
+        # daemon thread (`_spawn`'d event handlers and the reconcile
+        # thread). Sharing one connection across threads segfaults
+        # inside Apple's libsqlite3; opening a per-thread connection
+        # via index.connect_existing(db_path) keeps each handler
+        # single-threaded.
+        self.db_path = db_path
         self.root = library_root
         self.on_change = on_change_cb
         self.on_import_start = on_import_start_cb
@@ -129,12 +136,15 @@ class LibraryWatcher:
         self._reconcile_thread.start()
 
     def _do_reconcile(self):
+        conn = index.connect_existing(self.db_path)
         try:
             importer.import_tree(
-                self.conn, self.root, skip_roots=self.skip_roots)
+                conn, self.root, skip_roots=self.skip_roots)
         except Exception as e:
             print("LibraryWatcher: reconcile failed:", e)
             return
+        finally:
+            conn.close()
         if self.on_change:
             GLib.idle_add(self.on_change, "reconcile")
 
@@ -189,8 +199,15 @@ class LibraryWatcher:
         print("[watcher] import start: {}".format(path))
         if self.on_import_start:
             GLib.idle_add(self.on_import_start, os.path.basename(path))
+        conn = index.connect_existing(self.db_path)
         try:
-            rec, status = importer.import_pdf(self.conn, path)
+            self._do_import_with_conn(conn, path)
+        finally:
+            conn.close()
+
+    def _do_import_with_conn(self, conn, path):
+        try:
+            rec, status = importer.import_pdf(conn, path)
         except Exception as e:
             print("[watcher] import failed for {}: {}".format(path, e))
             return
@@ -222,7 +239,7 @@ class LibraryWatcher:
                       .format(predicted))
             try:
                 new_path, gstatus, gmsg = bibtex_import.attach_pdf_to_ghost(
-                    self.conn, dict(rec), path, self.root)
+                    conn, dict(rec), path, self.root)
             except Exception as e:
                 print("[watcher] ghost-merge failed for {}: {}".format(path, e))
                 return
@@ -261,11 +278,14 @@ class LibraryWatcher:
             GLib.idle_add(self.on_change, status)
 
     def _do_delete(self, path):
+        conn = index.connect_existing(self.db_path)
         try:
-            importer.delete_pdf(self.conn, path)
+            importer.delete_pdf(conn, path)
         except Exception as e:
             print("watcher: delete failed for {}: {}".format(path, e))
             return
+        finally:
+            conn.close()
         if self.on_change:
             GLib.idle_add(self.on_change, "deleted")
 
@@ -286,13 +306,16 @@ class LibraryWatcher:
             print("watcher: sidecar read failed for {}: {}".format(sc_path, e))
             return
         th_path = sidecar.thumb_path_for(pdf_path)
+        conn = index.connect_existing(self.db_path)
         try:
             mtime = os.path.getmtime(sc_path)
-            index.upsert(self.conn, pdf_path, sc_path,
+            index.upsert(conn, pdf_path, sc_path,
                          th_path if os.path.isfile(th_path) else None,
                          rec, mtime)
         except Exception as e:
             print("watcher: index upsert failed for {}: {}".format(sc_path, e))
             return
+        finally:
+            conn.close()
         if self.on_change:
             GLib.idle_add(self.on_change, "sidecar")

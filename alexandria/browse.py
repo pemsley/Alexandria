@@ -1639,6 +1639,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             self._db_path, self.library_root,
             on_change_cb=self._on_watcher_change,
             on_import_start_cb=self._on_import_start,
+            on_sidecar_rejected_cb=self._on_sidecar_rejected,
             skip_roots=self._other_catalogue_roots())
         self.library_watcher.start()
         self.library_watcher.reconcile_startup()
@@ -3773,6 +3774,21 @@ class BrowserWindow(Adw.ApplicationWindow):
 
     # --- File-system watcher callbacks --------------------------------
 
+    def _on_sidecar_rejected(self, basename):
+        """A sidecar was created/changed in the library from outside
+        Alexandria — most likely a shared sidecar saved in by the
+        recipient. Importing other people's notes isn't supported yet
+        (it needs a merge / import-preview flow — see BACKLOG
+        "Sharing"), and a blind import could overwrite the user's own
+        notes, so we make no change and just tell them. Runs on the
+        GLib main thread (the watcher marshals via idle_add)."""
+        self._toast(
+            "Ignored an external sidecar change ({}). Editing or "
+            "importing sidecars outside Alexandria isn't supported "
+            "yet.".format(basename),
+            timeout=5)
+        return False
+
     def notify_sidecar_changed(self, status="annotation saved"):
         """Public hook for child windows (the PDF viewer) to request a
         library refresh after they have written a sidecar themselves.
@@ -4919,6 +4935,7 @@ class BrowserWindow(Adw.ApplicationWindow):
                 self._db_path, self.library_root,
                 on_change_cb=self._on_watcher_change,
                 on_import_start_cb=self._on_import_start,
+                on_sidecar_rejected_cb=self._on_sidecar_rejected,
                 skip_roots=self._other_catalogue_roots())
             self.library_watcher.start()
             self._reload(self.search.get_text() or None)

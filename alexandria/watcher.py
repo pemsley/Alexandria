@@ -45,7 +45,8 @@ class LibraryWatcher:
     after each successful change."""
 
     def __init__(self, db_path, library_root, on_change_cb=None,
-                 on_import_start_cb=None, skip_roots=None):
+                 on_import_start_cb=None, skip_roots=None,
+                 on_sidecar_rejected_cb=None):
         # We take a db_path rather than a sqlite3.Connection because
         # every code path that touches the index runs in its own
         # daemon thread (`_spawn`'d event handlers and the reconcile
@@ -57,6 +58,13 @@ class LibraryWatcher:
         self.root = library_root
         self.on_change = on_change_cb
         self.on_import_start = on_import_start_cb
+        # Called (on the GLib main thread, with the sidecar basename)
+        # when a *.alexandria file appears in the library with no
+        # matching PDF — e.g. someone emailed a shared sidecar and it
+        # was saved into the library. Importing other people's notes
+        # isn't supported yet (see BACKLOG "Sharing"), so the watcher
+        # rejects it with a toast rather than silently doing nothing.
+        self.on_sidecar_rejected = on_sidecar_rejected_cb
         # Other catalogue roots — passed through to import_tree so
         # the cold reconcile doesn't slurp PDFs that live inside a
         # nested sibling catalogue's folder.
@@ -290,32 +298,31 @@ class LibraryWatcher:
             GLib.idle_add(self.on_change, "deleted")
 
     def _do_resync_sidecar(self, sc_path):
-        """A sidecar was written externally (e.g. by `--refresh`).
-        Re-read it and update the index row from the new contents."""
+        """A `*.alexandria` sidecar appeared or changed in the library
+        from outside the app — reject it rather than import it.
+
+        Alexandria's own sidecar writes are atomic (`sidecar.write`
+        does write-tmp + `os.replace`), which the kernel/GIO surface as
+        a RENAMED event — and the RENAMED branch in `_on_changed`
+        ignores sidecars. So a CREATED / CHANGED / CHANGES_DONE_HINT
+        event on a sidecar means an *external* writer: most likely a
+        shared sidecar that someone emailed and the recipient saved
+        into the library (possibly overwriting their own notes on the
+        matching PDF).
+
+        Importing other people's sidecars safely needs a merge / import-
+        preview flow that doesn't yet exist (see BACKLOG "Sharing"), and
+        a blind upsert here would clobber the recipient's own notes. So
+        we make no change to the index and surface a toast. The user's
+        on-disk file is left as-is; nothing in Alexandria has acted on
+        it."""
         if not os.path.isfile(sc_path):
             return
-        suffix = sidecar.SIDECAR_SUFFIX
-        if not sc_path.endswith(suffix):
+        if not sc_path.endswith(sidecar.SIDECAR_SUFFIX):
             return
-        pdf_path = sc_path[:-len(suffix)]
-        if not os.path.isfile(pdf_path):
+        if self.on_sidecar_rejected:
+            GLib.idle_add(self.on_sidecar_rejected,
+                          os.path.basename(sc_path))
             return
-        try:
-            rec = sidecar.read(sc_path)
-        except Exception as e:
-            print("watcher: sidecar read failed for {}: {}".format(sc_path, e))
-            return
-        th_path = sidecar.thumb_path_for(pdf_path)
-        conn = index.connect_existing(self.db_path)
-        try:
-            mtime = os.path.getmtime(sc_path)
-            index.upsert(conn, pdf_path, sc_path,
-                         th_path if os.path.isfile(th_path) else None,
-                         rec, mtime)
-        except Exception as e:
-            print("watcher: index upsert failed for {}: {}".format(sc_path, e))
-            return
-        finally:
-            conn.close()
         if self.on_change:
             GLib.idle_add(self.on_change, "sidecar")

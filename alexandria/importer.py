@@ -12,15 +12,45 @@ import time
 from . import sidecar, thumbnail, extract, index, metrics
 
 
+def _db_path_of(conn):
+    """Filesystem path of a connection's main database, or '' when it is
+    in-memory / unknown (e.g. tests using :memory:)."""
+    try:
+        for _seq, name, file in conn.execute("PRAGMA database_list"):
+            if name == "main":
+                return file or ""
+    except Exception:
+        pass
+    return ""
+
+
 def _schedule_pdb_indexing(conn, pdf_path):
     """Background, best-effort PDB-mention indexing. Failures are
-    swallowed — must never block or break import."""
+    swallowed — must never block or break import.
+
+    The worker opens its *own* sqlite3 connection rather than reusing
+    the caller's. import_pdf's connection belongs to the calling thread,
+    which (for watcher-driven imports) closes it the instant import_pdf
+    returns — long before this fire-and-forget pass finishes. Sharing one
+    sqlite3.Connection across threads also corrupts cursor state and
+    segfaults on Apple's libsqlite3; see index.connect_existing. The row
+    was committed by index.upsert before we got here, so a fresh WAL
+    connection sees it."""
+    db_path = _db_path_of(conn)
+    if not db_path:
+        return
+
     def _run():
         try:
             from . import pdb_mentions
-            pid = index.id_for_pdf_path(conn, pdf_path)
-            if pid is not None:
-                pdb_mentions.index_pdb_mentions_for_paper(conn, pid)
+            worker_conn = index.connect_existing(db_path)
+            try:
+                pid = index.id_for_pdf_path(worker_conn, pdf_path)
+                if pid is not None:
+                    pdb_mentions.index_pdb_mentions_for_paper(
+                        worker_conn, pid)
+            finally:
+                worker_conn.close()
         except Exception as e:
             print("[importer] pdb indexing failed for {}: {}".format(
                 pdf_path, e))

@@ -22,6 +22,7 @@ def _mem_db():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(index.CREATE_TABLE)      # papers table
+    index._migrate(conn)                         # adds pdb_indexed_at etc.
     index.create_pdb_tables(conn)               # new
     return conn
 

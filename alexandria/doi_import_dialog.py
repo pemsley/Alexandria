@@ -74,6 +74,12 @@ def open_doi_import(parent):
 
     win.set_child(outer)
 
+    # add_reference_from_viewer's on_done may fire more than once when a
+    # PDF fetch is involved (interim "fetching…" then a terminal state).
+    # Guard so we close / touch widgets exactly once — a second
+    # win.close() on an already-destroyed GTK4 window is a hard error.
+    closed = {"done": False}
+
     def _set_busy(busy, msg=None):
         entry.set_sensitive(not busy)
         pdf_check.set_sensitive(not busy)
@@ -95,11 +101,14 @@ def open_doi_import(parent):
         status.set_text("Adding…")
 
         def _on_done(success, message, label=None):
+            if closed["done"]:
+                return False
             if success:
                 try:
                     parent._toast(message)
                 except Exception:
                     pass
+                closed["done"] = True
                 win.close()
             else:
                 _set_busy(False, message)

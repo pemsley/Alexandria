@@ -46,7 +46,7 @@ from . import (index, edit_dialog, importer, metrics, sidecar, extract,
                author_works, bibtex_import, bibtex_export, ris_export,
                csl_export, opener, references_pdf, discover, csl_format,
                feed, feed_window, import_toast, pdb_mentions,
-               funding_links)
+               funding_links, doi_import_dialog)
 
 LIBRARY_ROOT = prefs.get_library_root()
 
@@ -1414,6 +1414,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         import_section.append("Import Files…",   "win.import-files")
         import_section.append("Import Folder…",  "win.import-folder")
         import_section.append("Import BibTeX…",  "win.import-bibtex")
+        import_section.append("Import from DOI…", "win.import-doi")
         import_menu.append_section(None, import_section)
         export_section = Gio.Menu()
         export_section.append("Export BibTeX…",  "win.export-bibtex")
@@ -2144,6 +2145,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             ("import-files",  self._on_import_files),
             ("import-folder", self._on_import_folder),
             ("import-bibtex", self._on_import_bibtex),
+            ("import-doi",    self._on_import_doi),
             ("export-bibtex", self._on_export_bibtex),
             ("export-ris",    self._on_export_ris),
             ("export-csl-json", self._on_export_csl_json),
@@ -2225,6 +2227,11 @@ class BrowserWindow(Adw.ApplicationWindow):
         if not path:
             return
         self._start_import_tree(path)
+
+    # --- DOI import ---------------------------------------------------
+
+    def _on_import_doi(self, _btn):
+        doi_import_dialog.open_doi_import(self)
 
     # --- BibTeX import ------------------------------------------------
 

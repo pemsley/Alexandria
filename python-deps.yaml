@@ -1,4 +1,4 @@
-# Generated with flatpak-pip-generator --requirements-file requirements-flatpak.txt --output python-deps --yaml --prefer-wheels lxml --runtime org.gnome.Sdk//50
+# Generated with flatpak-pip-generator --requirements-file requirements.txt --prefer-wheels=cryptography --ignore-installed=lxml --runtime org.gnome.Sdk//50 --output python-deps --yaml
 name: python-deps
 buildsystem: simple
 build-commands: []
@@ -12,81 +12,156 @@ modules:
       - type: file
         url: https://files.pythonhosted.org/packages/60/8e/5a3726bd421d4977262cee94a3660da4b9ca94397f951499c7d31ec0e863/bibtexparser-2.0.0b9-py3-none-any.whl
         sha256: c30c73a9b4e2e8a4669c8c4d726e2d285990553f60612d8c952786af3cf766ca
-      - type: file
+      - &id010
+        type: file
         url: https://files.pythonhosted.org/packages/5d/ab/34ec41718af73c00119d0351b7a2531d2ebddb51833a36448fc7b862be60/pylatexenc-2.10.tar.gz
         sha256: 3dd8fd84eb46dc30bee1e23eaab8d8fb5a7f507347b23e5f38ad9675c84f40d3
-  - name: python3-pypdf
+  - name: python3-cffi
     buildsystem: simple
     build-commands:
       - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
-        --prefix=${FLATPAK_DEST} "pypdf>=4.0" --no-build-isolation
+        --prefix=${FLATPAK_DEST} "cffi==2.1.0" --no-build-isolation
     sources:
-      - type: file
-        url: https://files.pythonhosted.org/packages/07/b1/68feb7eb3b99f0c020b414234825f4a5d70e0126c18d933770e8c93a35fc/pypdf-6.11.0-py3-none-any.whl
-        sha256: 769394d5756d5b304c9b6bef88b54b1816b328e7e6fc9254e625529a15ed4ab8
+      - &id001
+        type: file
+        url: https://files.pythonhosted.org/packages/57/5f/ff100cae70ebe9d8df1c01a00e510e45d9adb5c1fdda84791b199141de97/cffi-2.1.0.tar.gz
+        sha256: efc1cdd798b1aaf39b4610bba7aad28c9bea9b910f25c784ccf9ec1fa719d1f9
+      - &id002
+        type: file
+        url: https://files.pythonhosted.org/packages/0c/c3/44f3fbbfa403ea2a7c779186dc20772604442dde72947e7d01069cbe98e3/pycparser-3.0-py3-none-any.whl
+        sha256: b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
+  - name: python3-chardet
+    buildsystem: simple
+    build-commands:
+      - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
+        --prefix=${FLATPAK_DEST} "chardet==4.0.0" --no-build-isolation
+    sources:
+      - &id004
+        type: file
+        url: https://files.pythonhosted.org/packages/19/c7/fa589626997dd07bd87d9269342ccb74b1720384a4d739a1872bd84fbe68/chardet-4.0.0-py2.py3-none-any.whl
+        sha256: f864054d66fd9118f2e67044ac8981a54775ec5b67aed0441892edb553d21da5
   - name: python3-citeproc-py
     buildsystem: simple
     build-commands:
       - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
-        --prefix=${FLATPAK_DEST} "citeproc-py>=0.9" --no-build-isolation
+        --prefix=${FLATPAK_DEST} "citeproc-py==0.10.1" --no-build-isolation
     sources:
       - type: file
-        url: https://files.pythonhosted.org/packages/52/c1/c5243f5520685e4dbfc8062ee02b24ce5a30dc5aab2c38d2dc5f1474bfd3/citeproc_py-0.9.3-py3-none-any.whl
-        sha256: 963c3ef62ecee022899d5760667753b3321ec2b34e872027a2a2fc0a603356c2
-      - type: file
-        url: https://files.pythonhosted.org/packages/15/3b/a20aecfab42bdf4f9b390590d345857ad3ffd7c51988d1c89c53a0c73faf/lxml-6.1.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-        sha256: 37fabd1452852636cf38ecdcc9dd5ca4bba7a35d6c53fa09725deeb894a87491
+        url: https://files.pythonhosted.org/packages/ae/80/bacafa527858774f53271224ca83e5fc22e4b116c1bfe7e4d4f9dfb3e305/citeproc_py-0.10.1-py3-none-any.whl
+        sha256: 9058b231603fdd71566c85cb5b9d30c507d0bbdbca833acfcdbd972d1030f889
+      - &id003
+        type: file
+        url: https://files.pythonhosted.org/packages/05/3b/aab6728cae887456f409b4d75e8a01856e4f04bd510de38052a47768b680/lxml-6.1.1.tar.gz
+        sha256: ba96ae44888e0185281e937633a743ea90d5a196c6000f82565ebb0580012d40
+  - name: python3-cryptography
+    buildsystem: simple
+    build-commands:
+      - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
+        --prefix=${FLATPAK_DEST} "cryptography==49.0.0" --no-build-isolation
+    sources:
+      - *id001
+      - &id005
+        type: file
+        url: https://files.pythonhosted.org/packages/e6/8b/43011f7ebe515a8aa20d61f290a326cd890c2e738e16e59eaff8d9c3a412/cryptography-49.0.0-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+        sha256: 0e959b578856a3924bc0cbb710fc12c387b9412a951389f3ca61704a9e25f325
         only-arches:
           - x86_64
-      - type: file
-        url: https://files.pythonhosted.org/packages/f5/54/92ad98a94ac318dc4f97aaac22ff8d1b94212b2ae8af5b6e9b354bf825f7/lxml-6.1.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl
-        sha256: 419c58fc92cc3a2c3fa5f78c63dbf5da70c1fa9c1b25f25727ecee89a96c7de2
+      - &id006
+        type: file
+        url: https://files.pythonhosted.org/packages/09/41/3797cfaf69cae04a13ee78ebd83f0678d9c02b4779d21ce24445326f1a69/cryptography-49.0.0-cp311-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl
+        sha256: 36d1709f992593689b45bda411498d62c6e365f2ca00b84657d4dadd24de16db
         only-arches:
           - aarch64
-  # pdfx (and its dependency closure) — primary metadata extractor.
-  # pdfx pins pdfminer.six==20201018 and chardet==4.0.0 exactly; that
-  # old pdfminer.six in turn pulls cryptography + sortedcontainers.
-  # cryptography/cffi are taken as prebuilt manylinux wheels (like
-  # lxml above) so no Rust toolchain is needed in the build. All deps
-  # are bundled as sources here and resolved offline via --find-links.
+      - *id002
+  - name: python3-lxml
+    buildsystem: simple
+    build-commands:
+      - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
+        --prefix=${FLATPAK_DEST} "lxml==6.1.1" --ignore-installed --no-build-isolation
+    sources:
+      - *id003
+  - name: python3-pdfminer-six
+    buildsystem: simple
+    build-commands:
+      - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
+        --prefix=${FLATPAK_DEST} "pdfminer-six==20201018" --no-build-isolation
+    sources:
+      - *id001
+      - *id004
+      - *id005
+      - *id006
+      - &id007
+        type: file
+        url: https://files.pythonhosted.org/packages/93/f3/4fec7dabe8802ebec46141345bf714cd1fc7d93cb74ddde917e4b6d97d88/pdfminer.six-20201018-py3-none-any.whl
+        sha256: d78877ba8d8bf957f3bb636c4f73f4f6f30f56c461993877ac22c39c20837509
+      - *id002
+      - &id008
+        type: file
+        url: https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl
+        sha256: a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0
   - name: python3-pdfx
     buildsystem: simple
     build-commands:
       - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
         --prefix=${FLATPAK_DEST} "pdfx==1.4.1" --no-build-isolation
     sources:
-      - type: file
-        url: https://files.pythonhosted.org/packages/0c/c3/44f3fbbfa403ea2a7c779186dc20772604442dde72947e7d01069cbe98e3/pycparser-3.0-py3-none-any.whl
-        sha256: b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
-      - type: file
-        url: https://files.pythonhosted.org/packages/98/df/0a1755e750013a2081e863e7cd37e0cdd02664372c754e5560099eb7aa44/cffi-2.0.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-        sha256: c8d3b5532fc71b7a77c09192b4a5a200ea992702734a2e9279a37f2478236f26
-        only-arches:
-          - x86_64
-      - type: file
-        url: https://files.pythonhosted.org/packages/a9/f5/a2c23eb03b61a0b8747f211eb716446c826ad66818ddc7810cc2cc19b3f2/cffi-2.0.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl
-        sha256: d48a880098c96020b02d5a1f7d9251308510ce8858940e6fa99ece33f610838b
-        only-arches:
-          - aarch64
-      - type: file
-        url: https://files.pythonhosted.org/packages/90/04/673510ed51ddff56575f306cf1617d80411ee76831ccd3097599140efdfe/cryptography-48.0.0-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-        sha256: 7995ef305d7165c3f11ae07f2517e5a4f1d5c18da1376a0a9ed496336b69e5f3
-        only-arches:
-          - x86_64
-      - type: file
-        url: https://files.pythonhosted.org/packages/b2/6e/e90527eef33f309beb811cf7c982c3aeffcce8e3edb178baa4ca3ae4a6fa/cryptography-48.0.0-cp311-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl
-        sha256: f5333311663ea94f75dd408665686aaf426563556bb5283554a3539177e03b8c
-        only-arches:
-          - aarch64
-      - type: file
-        url: https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl
-        sha256: a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0
-      - type: file
-        url: https://files.pythonhosted.org/packages/19/c7/fa589626997dd07bd87d9269342ccb74b1720384a4d739a1872bd84fbe68/chardet-4.0.0-py2.py3-none-any.whl
-        sha256: f864054d66fd9118f2e67044ac8981a54775ec5b67aed0441892edb553d21da5
-      - type: file
-        url: https://files.pythonhosted.org/packages/93/f3/4fec7dabe8802ebec46141345bf714cd1fc7d93cb74ddde917e4b6d97d88/pdfminer.six-20201018-py3-none-any.whl
-        sha256: d78877ba8d8bf957f3bb636c4f73f4f6f30f56c461993877ac22c39c20837509
+      - *id001
+      - *id004
+      - *id005
+      - *id006
+      - *id007
       - type: file
         url: https://files.pythonhosted.org/packages/4b/40/dad6848bf9886be5b3a297a57401f5e0ab04e0b81e158bbe74db62f1d377/pdfx-1.4.1-py2.py3-none-any.whl
         sha256: f4a1cd631a105150f4938428b836d9e5102fbf77504e349f05404ad9cbb26e38
+      - *id002
+      - *id008
+  - name: python3-pycairo
+    buildsystem: simple
+    build-commands:
+      - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
+        --prefix=${FLATPAK_DEST} "pycairo==1.29.0" --no-build-isolation
+    sources:
+      - &id009
+        type: file
+        url: https://files.pythonhosted.org/packages/22/d9/1728840a22a4ef8a8f479b9156aa2943cd98c3907accd3849fb0d5f82bfd/pycairo-1.29.0.tar.gz
+        sha256: f3f7fde97325cae80224c09f12564ef58d0d0f655da0e3b040f5807bd5bd3142
+  - name: python3-pycparser
+    buildsystem: simple
+    build-commands:
+      - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
+        --prefix=${FLATPAK_DEST} "pycparser==3.0" --no-build-isolation
+    sources:
+      - *id002
+  - name: python3-pygobject
+    buildsystem: simple
+    build-commands:
+      - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
+        --prefix=${FLATPAK_DEST} "pygobject==3.56.3" --no-build-isolation
+    sources:
+      - *id009
+      - type: file
+        url: https://files.pythonhosted.org/packages/da/61/978c5fbca34f10a90df362502fbb5a005637909e7b5a0e9212349ea9d010/pygobject-3.56.3.tar.gz
+        sha256: 12760e4a0e3d04b6eb95e06f7a27e362c826d567ea613373a92c003b6c70d2d6
+  - name: python3-pylatexenc
+    buildsystem: simple
+    build-commands:
+      - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
+        --prefix=${FLATPAK_DEST} "pylatexenc==2.10" --no-build-isolation
+    sources:
+      - *id010
+  - name: python3-pypdf
+    buildsystem: simple
+    build-commands:
+      - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
+        --prefix=${FLATPAK_DEST} "pypdf==6.14.2" --no-build-isolation
+    sources:
+      - type: file
+        url: https://files.pythonhosted.org/packages/49/e6/136aa8993a2ae7214e0b0ef2edaa0d2e08d1d4e4982635b08a835ff31ec8/pypdf-6.14.2-py3-none-any.whl
+        sha256: 3f07891af76dc002657e04993ab9b4de81de29f9013b9761d0b7968bff12e946
+  - name: python3-sortedcontainers
+    buildsystem: simple
+    build-commands:
+      - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}"
+        --prefix=${FLATPAK_DEST} "sortedcontainers==2.4.0" --no-build-isolation
+    sources:
+      - *id008

@@ -37,6 +37,11 @@ classifiers = [
 keywords = ["pdf", "bibliography", "reference-manager", "gtk4", "openalex",
             "crossref", "alexandria", "research", "library"]
 
+[project.optional-dependencies]
+dev = [
+    "pip-tools>=7.5,<8",
+]
+
 [project.urls]
 Homepage    = "https://github.com/pemsley/Alexandria"
 Repository  = "https://github.com/pemsley/Alexandria"

@@ -72,7 +72,10 @@ def _fmt_rec(rec):
     return "  ".join(bits)
 
 
-def main(argv):
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv
+
     if len(argv) != 2:
         print("usage: {} <directory>".format(argv[0]), file=sys.stderr)
         return 1

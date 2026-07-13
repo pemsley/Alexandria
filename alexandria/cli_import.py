@@ -18,7 +18,10 @@ import sys
 from . import importer, index
 
 
-def main(argv):
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv
+
     args = argv[1:]
     refresh = False
     if args and args[0] in ("--refresh", "-r"):

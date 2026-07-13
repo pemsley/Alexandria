@@ -5068,7 +5068,10 @@ def _show_db_error_and_quit(app, err):
     dlg.choose(None, None, _on_response)
 
 
-def main(argv):
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv
+
     # Adw.Application initialises libadwaita (theme + dark/light follow
     # the system) and gives us native HeaderBar / Toast support.
     app = Adw.Application(application_id="io.github.pemsley.Alexandria")

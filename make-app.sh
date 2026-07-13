@@ -40,8 +40,8 @@ cat > "${CONTENTS}/Info.plist" <<EOF
     <key>CFBundleName</key>             <string>${APP_NAME}</string>
     <key>CFBundleDisplayName</key>      <string>${APP_NAME}</string>
     <key>CFBundleIdentifier</key>       <string>${APP_ID}</string>
-    <key>CFBundleVersion</key>          <string>0.0.1</string>
-    <key>CFBundleShortVersionString</key><string>0.0.1</string>
+    <key>CFBundleVersion</key>          <string>0.2.0</string>
+    <key>CFBundleShortVersionString</key><string>0.2.0</string>
     <key>CFBundlePackageType</key>      <string>APPL</string>
     <key>CFBundleSignature</key>        <string>????</string>
     <key>CFBundleExecutable</key>       <string>${APP_NAME}</string>

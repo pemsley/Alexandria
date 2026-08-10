@@ -512,6 +512,7 @@ def _openalex_metrics(doi):
             "orcid": _strip_orcid(auth.get("orcid")),
             "openalex_id": _strip_openalex_id(auth.get("id")),
             "institution": (insts[0].get("display_name") if insts else None),
+            "is_corresponding": bool(a.get("is_corresponding")),
         })
     cby = []
     for r in (data.get("counts_by_year") or []):
@@ -631,6 +632,7 @@ def fetch_works_by_author(orcid=None, openalex_id=None, since=None,
                 "orcid": _strip_orcid(auth.get("orcid")),
                 "openalex_id": _strip_openalex_id(auth.get("id")),
                 "institution": (insts[0].get("display_name") if insts else None),
+                "is_corresponding": bool(a.get("is_corresponding")),
             }
             authorships.append(ash)
             if ash["name"]:
@@ -850,13 +852,21 @@ def infer_collaborator_roles(target_id, works_lists):
 
     A work votes for a (target, coauthor) pair only when both appear
     in its authorships, their first-listed institutions match
-    (case-insensitive), and exactly one of the two is the last
-    author: coauthor last -> a "pi" vote (they likely led the work),
-    target last -> a "group" vote (the coauthor was likely in the
-    target's group). Author lists of four or more in alphabetical
-    surname order convey no seniority, so those works are skipped —
-    shorter alphabetical lists are too often chance orderings to
-    discard (1/2 for two authors, 1/6 for three).
+    (case-insensitive), and exactly one of the two is the work's
+    senior author: coauthor senior -> a "pi" vote (they likely led
+    the work), target senior -> a "group" vote (the coauthor was
+    likely in the target's group).
+
+    "Senior" is decided per work: when any authorship carries a
+    truthy `is_corresponding` flag, that flag is the signal — it is
+    explicit, so even alphabetically-ordered author lists count.
+    Otherwise (older cache entries without the field, and works
+    where OpenAlex marked nobody corresponding — patchy data, not
+    evidence of no seniority) fall back to last-author position, and
+    skip author lists of four or more in alphabetical surname order,
+    which convey no seniority; shorter alphabetical lists are too
+    often chance orderings to discard (1/2 for two authors, 1/6 for
+    three).
 
     `works_lists` is an iterable of works lists (e.g. the two sort
     caches); works are de-duplicated by DOI, else by (title, year).
@@ -884,10 +894,17 @@ def infer_collaborator_roles(target_id, works_lists):
                     break
             if target is None or not target.get("institution"):
                 continue
-            if len(auths) >= 4 and _authorship_list_is_alphabetical(auths):
-                continue
+            use_corresponding = any(
+                a.get("is_corresponding") for a in auths)
+            if not use_corresponding:
+                if (len(auths) >= 4
+                        and _authorship_list_is_alphabetical(auths)):
+                    continue
             t_inst = target["institution"].strip().lower()
-            t_last = target.get("position") == "last"
+            if use_corresponding:
+                t_senior = bool(target.get("is_corresponding"))
+            else:
+                t_senior = target.get("position") == "last"
             for a in auths:
                 oid = a.get("openalex_id")
                 if not oid or oid == tid:
@@ -895,10 +912,13 @@ def infer_collaborator_roles(target_id, works_lists):
                 inst = a.get("institution")
                 if not inst or inst.strip().lower() != t_inst:
                     continue
-                a_last = a.get("position") == "last"
-                if a_last == t_last:
-                    continue   # both middle (or both "last": impossible)
-                side = "pi" if a_last else "group"
+                if use_corresponding:
+                    a_senior = bool(a.get("is_corresponding"))
+                else:
+                    a_senior = a.get("position") == "last"
+                if a_senior == t_senior:
+                    continue   # both senior, or neither — no signal
+                side = "pi" if a_senior else "group"
                 tally = tallies.setdefault(
                     oid, {"pi": 0, "group": 0,
                           "insts": {"pi": {}, "group": {}}})

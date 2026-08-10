@@ -162,3 +162,75 @@ def test_alphabetical_helper():
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --- Corresponding-author rule (used when a work carries flags) -----
+
+def _ac(name, position, oid, inst, corr):
+    a = _a(name, position, oid, inst)
+    a["is_corresponding"] = corr
+    return a
+
+
+def test_corresponding_coauthor_is_pi():
+    # Coauthor is corresponding (middle position!) -> PI vote.
+    w = _work([_a_corr := _ac("Bob J", "first", TARGET, "Scripps", False),
+               _ac("Pat C", "middle", "A2", "Scripps", True),
+               _ac("Zed L", "last", "A9", "Elsewhere", False)])
+    roles = metrics.infer_collaborator_roles(TARGET, [[w]])
+    assert roles["A2"]["role"] == "pi"
+
+
+def test_corresponding_target_gives_group():
+    w = _work([_ac("Pat J", "first", "A2", "Scripps", False),
+               _ac("Bob C", "last", TARGET, "Scripps", True)])
+    roles = metrics.infer_collaborator_roles(TARGET, [[w]])
+    assert roles["A2"]["role"] == "group"
+
+
+def test_both_corresponding_no_vote():
+    w = _work([_ac("Pat C", "first", "A2", "Scripps", True),
+               _ac("Bob C", "last", TARGET, "Scripps", True)])
+    assert metrics.infer_collaborator_roles(TARGET, [[w]]) == {}
+
+
+def test_corresponding_rule_ignores_alphabetical():
+    # 4 authors, ascending surnames — the position rule would discard
+    # this work, but a corresponding flag restores its value.
+    w = _work([_ac("Ann Alpha", "first", TARGET, "Scripps", False),
+               _ac("Bob Beta", "middle", "A9", "Scripps", False),
+               _ac("Cid Gamma", "middle", "A8", "Scripps", False),
+               _ac("Pat Zulu", "last", "A2", "Scripps", True)])
+    roles = metrics.infer_collaborator_roles(TARGET, [[w]])
+    assert roles["A2"]["role"] == "pi"
+
+
+def test_corresponding_rule_beats_position_within_work():
+    # Coauthor is corresponding but NOT last; someone else is last.
+    # The corresponding rule governs the whole work: A2 gets the PI
+    # vote, the (non-corresponding) last author A9 gets nothing.
+    w = _work([_ac("Bob J", "first", TARGET, "Scripps", False),
+               _ac("Pat C", "middle", "A2", "Scripps", True),
+               _ac("Zed L", "last", "A9", "Scripps", False)])
+    roles = metrics.infer_collaborator_roles(TARGET, [[w]])
+    assert roles["A2"]["role"] == "pi"
+    assert "A9" not in roles
+
+
+def test_no_flags_falls_back_to_position_rule():
+    # Old cache entries (no is_corresponding keys anywhere) keep the
+    # last-author rule — existing caches must not go dark.
+    w = _work([_a("Bob J", "first", TARGET, "Scripps"),
+               _a("Pat L", "last", "A2", "Scripps")])
+    roles = metrics.infer_collaborator_roles(TARGET, [[w]])
+    assert roles["A2"]["role"] == "pi"
+
+
+def test_all_flags_false_falls_back_to_position_rule():
+    # New-schema work where OpenAlex marked nobody corresponding —
+    # position rule applies (flags-all-False is patchy data, not
+    # evidence of no seniority).
+    w = _work([_ac("Bob J", "first", TARGET, "Scripps", False),
+               _ac("Pat L", "last", "A2", "Scripps", False)])
+    roles = metrics.infer_collaborator_roles(TARGET, [[w]])
+    assert roles["A2"]["role"] == "pi"

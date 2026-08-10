@@ -437,10 +437,16 @@ def _existing_dois(conn):
 
 
 class AuthorPage(Gtk.Box):
-    def __init__(self, conn, authorship):
+    def __init__(self, conn, authorship, on_institution=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.conn = conn
         self.authorship = authorship or {}
+        # Called (on the main thread) with the profile's current
+        # affiliation once it arrives. Authors opened via collaborator
+        # chips carry institution=None, so this is how the hosting
+        # AuthorsWindow learns the affiliation the page fetched and
+        # can backfill its sidebar row and the author_trail table.
+        self._on_institution = on_institution
         name = self.authorship.get("name") or "Unknown author"
 
         self.set_margin_start(12)
@@ -921,6 +927,8 @@ class AuthorPage(Gtk.Box):
         # Most-recent first comes from metrics.fetch_author_profile;
         # row[0] is "where they are now" with the usual asterisk.
         current = rows[0]
+        if self._on_institution is not None and current.get("display_name"):
+            self._on_institution(current["display_name"])
         if not self._sub_inst_lbl.get_visible():
             self._sub_inst_lbl.set_markup(
                 "<span size='small' alpha='75%'>·  {}</span>".format(
@@ -1394,13 +1402,19 @@ class AuthorsWindow(Gtk.Window):
         name_lbl.set_markup(GLib.markup_escape_text(
             entry.get("name") or "Unknown author"))
         vbox.append(name_lbl)
+        # Always build the institution label (hidden when unknown) so
+        # a profile-fetch backfill can fill it in without rebuilding
+        # the row — see _on_page_institution.
+        inst_lbl = Gtk.Label(xalign=0.0)
+        inst_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        inst_lbl.set_visible(False)
         if entry.get("institution"):
-            inst_lbl = Gtk.Label(xalign=0.0)
-            inst_lbl.set_ellipsize(Pango.EllipsizeMode.END)
             inst_lbl.set_markup(
                 "<span size='small' alpha='65%'>{}</span>".format(
                     GLib.markup_escape_text(entry["institution"])))
-            vbox.append(inst_lbl)
+            inst_lbl.set_visible(True)
+        vbox.append(inst_lbl)
+        row.inst_lbl = inst_lbl
         hbox.append(vbox)
 
         close_btn = Gtk.Button.new_from_icon_name(
@@ -1435,12 +1449,36 @@ class AuthorsWindow(Gtk.Window):
             scroll = Gtk.ScrolledWindow()
             scroll.set_policy(Gtk.PolicyType.NEVER,
                               Gtk.PolicyType.AUTOMATIC)
-            page = AuthorPage(self.conn, authorship)
+            page = AuthorPage(
+                self.conn, authorship,
+                on_institution=lambda inst, k=key:
+                    self._on_page_institution(k, inst))
             scroll.set_child(page)
             self._pages[key] = page
             self.stack.add_named(scroll, key)
         self.stack.set_visible_child_name(key)
         index.touch_author_trail(self.conn, key)
+
+    def _on_page_institution(self, key, institution):
+        """A page's profile fetch learned the author's current
+        affiliation (collaborator-chip opens start without one).
+        Persist it on the trail row and fill in the sidebar label.
+        Runs on the main thread (the page calls this from an
+        idle_add handler). The `_rows` guard matters: if the user
+        removed the author while the fetch was in flight, writing
+        the trail row back would resurrect it."""
+        row = self._rows.get(key)
+        if row is None or not institution:
+            return
+        entry = index.add_author_trail(
+            self.conn, dict(row.trail_entry, institution=institution))
+        if entry is None:
+            return
+        row.trail_entry = entry
+        row.inst_lbl.set_markup(
+            "<span size='small' alpha='65%'>{}</span>".format(
+                GLib.markup_escape_text(institution)))
+        row.inst_lbl.set_visible(True)
 
     def _remove_author(self, key):
         """The sidebar ×: forget the author (trail row, sidebar row,
@@ -1480,8 +1518,9 @@ class AuthorsWindow(Gtk.Window):
             row = self._append_row(entry)
         else:
             # Keep row.trail_entry current so restored sessions and later
-            # lookups see backfilled fields (e.g. institution). The visible
-            # label will refresh on the next restart when the row is rebuilt.
+            # lookups see backfilled fields. The institution label also
+            # updates live when the page's profile fetch reports one —
+            # see _on_page_institution.
             if row.trail_entry != entry:
                 row.trail_entry = entry
         self.sidebar.select_row(row)

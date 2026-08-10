@@ -118,3 +118,16 @@ def test_touch_sets_last_viewed(tmp_path):
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_upsert_replaces_stale_institution(tmp_path):
+    # The AuthorsWindow backfill path feeds the OpenAlex profile's
+    # current affiliation through add_author_trail: a fresh non-null
+    # institution must replace a stale one (COALESCE puts the new
+    # value first), while None still leaves it alone.
+    conn = _conn(tmp_path)
+    index.add_author_trail(conn, {
+        "name": "A", "openalex_id": "A1", "institution": "Old Place"})
+    index.add_author_trail(conn, {
+        "name": "A", "openalex_id": "A1", "institution": "New Place"})
+    assert index.list_author_trail(conn)[0]["institution"] == "New Place"

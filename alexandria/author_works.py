@@ -555,6 +555,7 @@ class AuthorPage(Gtk.Box):
 
         # --- Sort toggle: most-recent vs most-cited -------------------
         self._works_sort = "recent"
+        self._coauths = None
         sort_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         sort_row.set_halign(Gtk.Align.START)
         self._sort_recent_btn = Gtk.ToggleButton(label="Most recent")
@@ -823,6 +824,78 @@ class AuthorPage(Gtk.Box):
         for w in works:
             self.list_box.append(self._make_work_row(w))
 
+    def _collaborator_roles(self, works):
+        """PI/Group verdicts for the frequent-collaborator chips.
+        Evidence: the works just fetched for the current sort plus
+        whatever the cache holds for both sorts — a previous
+        session's "most cited" fetch can carry decades-old shared
+        papers the recent-50 misses. Any failure means no
+        cartouches, never a broken page."""
+        try:
+            target = self.authorship.get("openalex_id")
+            if not target:
+                return {}
+            lists = [works or []]
+            for sort_key in ("recent", "cited"):
+                try:
+                    cached = index.get_author_works_cache(
+                        self.conn, target, sort_key)
+                except Exception:
+                    cached = None
+                if cached:
+                    lists.append(cached.get("works") or [])
+            return metrics.infer_collaborator_roles(target, lists)
+        except Exception as e:
+            print("[author_works] role inference failed:", e)
+            return {}
+
+    def _rebuild_coauth_chips(self, works):
+        """(Re)populate the collaborator FlowBox, attaching a PI /
+        Group cartouche where the shared-works evidence supports
+        one. Called from _apply_results and again on sort toggles,
+        when fresh works may deepen the evidence."""
+        if not self._coauths:
+            return
+        roles = self._collaborator_roles(works)
+        while (child := self.coauth_box.get_first_child()) is not None:
+            self.coauth_box.remove(child)
+        me = self.authorship.get("name") or "this author"
+        for c in self._coauths:
+            btn = Gtk.Button()
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                          spacing=6)
+            lbl = Gtk.Label()
+            lbl.set_label("{}  ({})".format(c["name"], c["count"]))
+            row.append(lbl)
+            info = roles.get(c.get("openalex_id"))
+            if info:
+                chip = Gtk.Label()
+                if info["role"] == "pi":
+                    color, text = "#1c71d8", "PI"
+                    tip = ("Last author on {} shared paper(s) while "
+                           "both at {} — likely the PI.").format(
+                               info["votes"], info["institution"])
+                else:
+                    color, text = "#26a269", "Group"
+                    tip = ("{} was last author on {} shared paper(s) "
+                           "while both at {} — {} likely worked in "
+                           "their group.").format(
+                               me, info["votes"], info["institution"],
+                               c["name"])
+                chip.set_markup(
+                    "<span size='x-small' weight='bold' "
+                    "foreground='{}'>{}</span>".format(color, text))
+                chip.set_tooltip_text(tip)
+                row.append(chip)
+            btn.set_child(row)
+            btn.add_css_class("flat")
+            btn.set_tooltip_text(
+                "Open papers by {}".format(c["name"]))
+            btn.connect(
+                "clicked",
+                lambda _b, c=c: self._open_coauthor(c))
+            self.coauth_box.append(btn)
+
     def _apply_works_only(self, works):
         if not works:
             self.status.set_markup(self._empty_status_markup())
@@ -830,6 +903,9 @@ class AuthorPage(Gtk.Box):
         self.status.set_markup(self._works_status_markup(len(works)))
         for w in works:
             self.list_box.append(self._make_work_row(w))
+        # Fresh works may add evidence (e.g. first "most cited"
+        # fetch) — refresh the collaborator cartouches.
+        self._rebuild_coauth_chips(works)
         return False
 
     def _empty_status_markup(self):
@@ -893,18 +969,10 @@ class AuthorPage(Gtk.Box):
             self._populate_affiliations(profile.get("affiliations") or [])
 
         if coauths:
+            self._coauths = coauths
             self.coauth_label.set_visible(True)
             self.coauth_box.set_visible(True)
-            for c in coauths:
-                btn = Gtk.Button()
-                btn.set_label("{}  ({})".format(c["name"], c["count"]))
-                btn.add_css_class("flat")
-                btn.set_tooltip_text(
-                    "Open papers by {}".format(c["name"]))
-                btn.connect(
-                    "clicked",
-                    lambda _b, c=c: self._open_coauthor(c))
-                self.coauth_box.append(btn)
+            self._rebuild_coauth_chips(works)
 
         if not works:
             self.status.set_markup(self._empty_status_markup())

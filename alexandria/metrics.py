@@ -829,6 +829,99 @@ def fetch_coauthors(orcid=None, openalex_id=None, limit=15):
     return out[:limit]
 
 
+def _authorship_list_is_alphabetical(authorships):
+    """True when every author's surname (last whitespace-separated
+    token, case-insensitive) is in ascending order. Non-strict, so
+    adjacent equal surnames (family members) still count as ordered.
+    Any missing name disqualifies the list — we can't judge order we
+    can't see, so the caller treats the work as not-alphabetical."""
+    surnames = []
+    for a in authorships:
+        name = (a.get("name") or "").strip()
+        if not name:
+            return False
+        surnames.append(name.split()[-1].lower())
+    return all(s1 <= s2 for s1, s2 in zip(surnames, surnames[1:]))
+
+
+def infer_collaborator_roles(target_id, works_lists):
+    """Guess PI/group relationships between `target_id` (the viewed
+    author) and their co-authors from shared publications.
+
+    A work votes for a (target, coauthor) pair only when both appear
+    in its authorships, their first-listed institutions match
+    (case-insensitive), and exactly one of the two is the last
+    author: coauthor last -> a "pi" vote (they likely led the work),
+    target last -> a "group" vote (the coauthor was likely in the
+    target's group). Author lists of four or more in alphabetical
+    surname order convey no seniority, so those works are skipped —
+    shorter alphabetical lists are too often chance orderings to
+    discard (1/2 for two authors, 1/6 for three).
+
+    `works_lists` is an iterable of works lists (e.g. the two sort
+    caches); works are de-duplicated by DOI, else by (title, year).
+    Returns {coauthor_id: {"role", "votes", "against",
+    "institution"}} keeping only majority verdicts — ties and
+    zero-evidence pairs get no entry.
+    """
+    tid = _normalize_author_id(target_id)
+    if not tid:
+        return {}
+    seen = set()
+    # coauthor_id -> {"pi": n, "group": n, "insts": {name: n}}
+    tallies = {}
+    for works in works_lists or []:
+        for w in works or []:
+            key = w.get("doi") or (w.get("title"), w.get("year"))
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            auths = w.get("authorships") or []
+            target = None
+            for a in auths:
+                if a.get("openalex_id") == tid:
+                    target = a
+                    break
+            if target is None or not target.get("institution"):
+                continue
+            if len(auths) >= 4 and _authorship_list_is_alphabetical(auths):
+                continue
+            t_inst = target["institution"].strip().lower()
+            t_last = target.get("position") == "last"
+            for a in auths:
+                oid = a.get("openalex_id")
+                if not oid or oid == tid:
+                    continue
+                inst = a.get("institution")
+                if not inst or inst.strip().lower() != t_inst:
+                    continue
+                a_last = a.get("position") == "last"
+                if a_last == t_last:
+                    continue   # both middle (or both "last": impossible)
+                side = "pi" if a_last else "group"
+                tally = tallies.setdefault(
+                    oid, {"pi": 0, "group": 0,
+                          "insts": {"pi": {}, "group": {}}})
+                tally[side] += 1
+                insts = tally["insts"][side]
+                insts[a["institution"]] = (
+                    insts.get(a["institution"], 0) + 1)
+    out = {}
+    for oid, t in tallies.items():
+        if t["pi"] == t["group"]:
+            continue
+        role = "pi" if t["pi"] > t["group"] else "group"
+        # Institution shown = most frequent among the winning side's
+        # votes (spec) — the losing side's affiliations don't label.
+        winning = t["insts"][role]
+        inst = max(winning, key=winning.get)
+        out[oid] = {"role": role,
+                    "votes": max(t["pi"], t["group"]),
+                    "against": min(t["pi"], t["group"]),
+                    "institution": inst}
+    return out
+
+
 def _normalize_author_id(openalex_id):
     """Strip URL prefix from an OpenAlex author ID — accepts both
     `https://openalex.org/A5018808577` and `A5018808577`. Returns

@@ -470,10 +470,22 @@ class AuthorPage(Gtk.Box):
         self.avatar = Adw.Avatar.new(64, name or None, True)
         self._avatar_menu = self._build_avatar_menu()
         self._avatar_menu.set_parent(self.avatar)
+        # Either mouse button opens the menu: it is semantically a
+        # context menu (operations on the photo), and an image-like
+        # widget invites right-click; left-click stays for
+        # discoverability. Button 0 = listen to all, filter below.
         click = Gtk.GestureClick.new()
-        click.connect("released",
-                      lambda *_a: self._avatar_menu.popup())
+        click.set_button(0)
+        click.connect(
+            "released",
+            lambda g, *_a: self._avatar_menu.popup()
+            if g.get_current_button() in (Gdk.BUTTON_PRIMARY,
+                                          Gdk.BUTTON_SECONDARY)
+            else None)
         self.avatar.add_controller(click)
+        self.avatar.set_tooltip_text(
+            "Author photo — click to add or change")
+        self.avatar.set_cursor(Gdk.Cursor.new_from_name("pointer"))
         drop = Gtk.DropTarget.new(GObject.TYPE_NONE,
                                   Gdk.DragAction.COPY)
         drop.set_gtypes([Gdk.FileList, str])

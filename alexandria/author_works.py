@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import gi
@@ -1028,6 +1029,10 @@ class AuthorPage(Gtk.Box):
         # Most-recent first comes from metrics.fetch_author_profile;
         # row[0] is "where they are now" with the usual asterisk.
         current = rows[0]
+        # Remember the profile's current affiliation — the web-photo
+        # search uses it to disambiguate common names even when the
+        # opening authorship carried no institution.
+        self._current_institution = current.get("display_name")
         if self._on_institution is not None and current.get("display_name"):
             self._on_institution(current["display_name"])
         if not self._sub_inst_lbl.get_visible():
@@ -1103,6 +1108,11 @@ class AuthorPage(Gtk.Box):
         fetch_btn.connect("clicked", self._on_fetch_wikidata)
         box.append(fetch_btn)
 
+        search_btn = Gtk.Button(label="Search the web for a photo…")
+        search_btn.add_css_class("flat")
+        search_btn.connect("clicked", self._on_search_photo)
+        box.append(search_btn)
+
         choose_btn = Gtk.Button(label="Choose image file…")
         choose_btn.add_css_class("flat")
         choose_btn.connect("clicked", self._on_choose_image)
@@ -1114,7 +1124,8 @@ class AuthorPage(Gtk.Box):
         box.append(self._remove_img_btn)
 
         if not has_key:
-            for b in (fetch_btn, choose_btn, self._remove_img_btn):
+            for b in (fetch_btn, search_btn, choose_btn,
+                      self._remove_img_btn):
                 b.set_sensitive(False)
                 b.set_tooltip_text(
                     "No ORCID or OpenAlex ID — photos need a stable "
@@ -1124,6 +1135,22 @@ class AuthorPage(Gtk.Box):
             (author_image.image_path(self.authorship) or "") != ""
             and os.path.isfile(author_image.image_path(self.authorship))))
         return pop
+
+    def _on_search_photo(self, _btn):
+        """Open a DuckDuckGo image search for this author in the
+        preferred browser. The user drags their pick back onto the
+        avatar — the drop target's URL path downloads and stores it,
+        so the human does the face-recognition instead of a
+        classifier."""
+        self._avatar_menu.popdown()
+        name = self.authorship.get("name") or ""
+        inst = (self.authorship.get("institution")
+                or getattr(self, "_current_institution", None))
+        query = "{}, {}".format(name, inst) if inst else name
+        _open_url("https://duckduckgo.com/?q={}&iax=images&ia=images"
+                  .format(urllib.parse.quote_plus(query)))
+        self._avatar_status(
+            "Browser opened — drag your chosen image onto the avatar.")
 
     def _avatar_status(self, text):
         self.status.set_markup(

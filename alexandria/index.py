@@ -690,6 +690,92 @@ def clear_author_works_cache(conn, openalex_id):
     conn.commit()
 
 
+CREATE_AUTHOR_TRAIL = """
+CREATE TABLE IF NOT EXISTS author_trail (
+    key          TEXT PRIMARY KEY,
+    openalex_id  TEXT,
+    orcid        TEXT,
+    name         TEXT NOT NULL,
+    institution  TEXT,
+    position     INTEGER NOT NULL,
+    added_at     TEXT NOT NULL,
+    last_viewed  TEXT
+);
+"""
+
+
+def author_trail_key(authorship):
+    """Stable identity for a trail row: OpenAlex ID first (coauthor
+    chips always have one), ORCID otherwise. Callers that have
+    neither (name-only authors) can't be put on the trail — the
+    same rule `author_works.open_window` already enforces."""
+    if not authorship:
+        return None
+    return authorship.get("openalex_id") or authorship.get("orcid") or None
+
+
+def add_author_trail(conn, authorship):
+    """Upsert `authorship` onto the trail. New authors append at the
+    end (max position + 1). Existing rows keep their position and
+    only gain fields — a coauthor-chip open (orcid=None,
+    institution=None) must not blank what a richer caller saved.
+    Returns the stored row as a dict, or None without an identifier."""
+    key = author_trail_key(authorship)
+    if not key:
+        return None
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    row = conn.execute(
+        "SELECT * FROM author_trail WHERE key = ?", (key,)).fetchone()
+    if row is None:
+        pos = conn.execute(
+            "SELECT COALESCE(MAX(position), 0) + 1 FROM author_trail"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO author_trail (key, openalex_id, orcid, name,"
+            " institution, position, added_at, last_viewed)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (key, authorship.get("openalex_id"), authorship.get("orcid"),
+             authorship.get("name") or "Unknown author",
+             authorship.get("institution"), pos, now, now))
+    else:
+        conn.execute(
+            "UPDATE author_trail SET"
+            " openalex_id = COALESCE(?, openalex_id),"
+            " orcid       = COALESCE(?, orcid),"
+            " institution = COALESCE(?, institution),"
+            " last_viewed = ?"
+            " WHERE key = ?",
+            (authorship.get("openalex_id"), authorship.get("orcid"),
+             authorship.get("institution"), now, key))
+    conn.commit()
+    return dict(conn.execute(
+        "SELECT * FROM author_trail WHERE key = ?", (key,)).fetchone())
+
+
+def list_author_trail(conn):
+    """Trail rows in user order (position ascending)."""
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM author_trail ORDER BY position").fetchall()]
+
+
+def touch_author_trail(conn, key):
+    """Stamp `last_viewed` when a trail row is selected."""
+    if not key:
+        return
+    conn.execute(
+        "UPDATE author_trail SET last_viewed = ? WHERE key = ?",
+        (datetime.datetime.now().isoformat(timespec="seconds"), key))
+    conn.commit()
+
+
+def remove_author_trail(conn, key):
+    """Drop a row from the trail (the sidebar ×)."""
+    if not key:
+        return
+    conn.execute("DELETE FROM author_trail WHERE key = ?", (key,))
+    conn.commit()
+
+
 CREATE_SUBSCRIPTIONS = """
 CREATE TABLE IF NOT EXISTS subscriptions (
     id INTEGER PRIMARY KEY,
@@ -821,6 +907,7 @@ def open_db(path=DEFAULT_DB_PATH):
     conn.executescript(CREATE_INDEXES)
     conn.executescript(CREATE_AUTHOR_SCORES)
     conn.executescript(CREATE_AUTHOR_WORKS_CACHE)
+    conn.executescript(CREATE_AUTHOR_TRAIL)
     conn.executescript(CREATE_SUBSCRIPTIONS)
     create_pdb_tables(conn)
     _migrate_discovered(conn)

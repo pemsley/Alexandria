@@ -48,6 +48,19 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.3.0" date="2026-08-10">
+      <description>
+        <p>
+          New Authors window: a persistent, reorderable trail of
+          authors with one page per author, replacing per-author
+          windows. Collaborator relationship cartouches (likely PI /
+          group member) inferred from shared publications. Author
+          photos: Wikidata portrait fetch, web search, and
+          drag-and-drop, shown in the header and sidebar. Reference
+          lookup fixes and OpenAlex API-key support.
+        </p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-07-13">
       <description>
         <p>Initial release.</p>

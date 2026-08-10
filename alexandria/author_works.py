@@ -1190,14 +1190,46 @@ class AuthorPage(Gtk.Box):
         author_image.remove_image(self.authorship)
         self._apply_new_image(None)
 
+    def _save_avatar_from_url(self, url):
+        # Downloads happen off the UI thread; the download-worker
+        # results are applied back on the main loop via idle_add,
+        # matching this file's other background-fetch patterns.
+        def work():
+            try:
+                data = author_image._http_get_bytes(
+                    url, {"User-Agent": author_image._UA}, 30)
+                path = author_image.save_image(
+                    self.authorship, data)
+            except Exception as e:
+                GLib.idle_add(self._avatar_status,
+                              "Couldn't fetch that image: {}"
+                              .format(e))
+                return
+            GLib.idle_add(self._apply_new_image, path)
+        threading.Thread(target=work, daemon=True).start()
+
     def _on_avatar_drop(self, _target, value, _x, _y):
         if isinstance(value, Gdk.FileList):
             files = value.get_files()
             if not files:
                 return False
+            path = files[0].get_path()
+            if path is None:
+                # Browsers advertise dragged images/links as
+                # text/uri-list, which GDK deserializes to
+                # Gdk.FileList (the preferred gtype ahead of str
+                # in set_gtypes) rather than a plain string. The
+                # resulting GFile wraps a remote https: URI with
+                # no local path, so it needs the same download
+                # path as the str branch below.
+                uri = files[0].get_uri()
+                if uri and uri.lower().startswith(("http://", "https://")):
+                    self._save_avatar_from_url(uri)
+                    return True
+                self._avatar_status("Couldn't read that drop")
+                return False
             try:
-                path = author_image.save_image(
-                    self.authorship, files[0].get_path())
+                path = author_image.save_image(self.authorship, path)
             except Exception as e:
                 self._avatar_status("Couldn't use that image: {}"
                                     .format(e))
@@ -1208,20 +1240,7 @@ class AuthorPage(Gtk.Box):
             url = value.strip()
             if not url.lower().startswith(("http://", "https://")):
                 return False
-
-            def work():
-                try:
-                    data = author_image._http_get_bytes(
-                        url, {"User-Agent": author_image._UA}, 30)
-                    path = author_image.save_image(
-                        self.authorship, data)
-                except Exception as e:
-                    GLib.idle_add(self._avatar_status,
-                                  "Couldn't fetch that image: {}"
-                                  .format(e))
-                    return
-                GLib.idle_add(self._apply_new_image, path)
-            threading.Thread(target=work, daemon=True).start()
+            self._save_avatar_from_url(url)
             return True
         return False
 

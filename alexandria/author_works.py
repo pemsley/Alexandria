@@ -13,11 +13,12 @@ import urllib.request
 
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, GLib, Gdk, Gio, Pango
+gi.require_version("Adw", "1")
+from gi.repository import Gtk, GLib, Gdk, Gio, Pango, Adw, GObject
 
 import datetime
 
-from . import metrics, index, importer, opener
+from . import metrics, index, importer, opener, author_image
 from .identity import maintainer_email
 from .markup import safe_pango_markup
 
@@ -437,7 +438,8 @@ def _existing_dois(conn):
 
 
 class AuthorPage(Gtk.Box):
-    def __init__(self, conn, authorship, on_institution=None):
+    def __init__(self, conn, authorship, on_institution=None,
+                 on_image_changed=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.conn = conn
         self.authorship = authorship or {}
@@ -447,6 +449,10 @@ class AuthorPage(Gtk.Box):
         # AuthorsWindow learns the affiliation the page fetched and
         # can backfill its sidebar row and the author_trail table.
         self._on_institution = on_institution
+        # Called (on the main thread) with the new photo path (or
+        # None) after every successful set/fetch/remove, so the
+        # hosting window can refresh a sidebar row's avatar too.
+        self._on_image_changed = on_image_changed
         name = self.authorship.get("name") or "Unknown author"
 
         self.set_margin_start(12)
@@ -456,6 +462,24 @@ class AuthorPage(Gtk.Box):
 
         # --- Header (name, ORCID, headline numbers) -------------------
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+
+        # Author photo — silhouette/initials disc until an image is
+        # set. Click for fetch/choose/remove; also a drop target for
+        # files and browser-dragged images.
+        self.avatar = Adw.Avatar.new(64, name or None, True)
+        self._avatar_menu = self._build_avatar_menu()
+        self._avatar_menu.set_parent(self.avatar)
+        click = Gtk.GestureClick.new()
+        click.connect("released",
+                      lambda *_a: self._avatar_menu.popup())
+        self.avatar.add_controller(click)
+        drop = Gtk.DropTarget.new(GObject.TYPE_NONE,
+                                  Gdk.DragAction.COPY)
+        drop.set_gtypes([Gdk.FileList, str])
+        drop.connect("drop", self._on_avatar_drop)
+        self.avatar.add_controller(drop)
+        header.append(self.avatar)
+        self._set_avatar_from_disk()
 
         hleft = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         hleft.set_hexpand(True)
@@ -1052,6 +1076,154 @@ class AuthorPage(Gtk.Box):
             "</span>".format(
                 years, GLib.markup_escape_text(r["display_name"])))
         return lbl
+
+    # --- Author photo -------------------------------------------------
+
+    def _set_avatar_from_disk(self):
+        """Show the stored photo, or the initials/silhouette disc
+        when there is none (or the file is unreadable — corrupt
+        files degrade to the placeholder, never an error)."""
+        path = author_image.image_path(self.authorship)
+        texture = None
+        if path and os.path.isfile(path):
+            try:
+                texture = Gdk.Texture.new_from_file(
+                    Gio.File.new_for_path(path))
+            except Exception:
+                texture = None
+        self.avatar.set_custom_image(texture)
+
+    def _build_avatar_menu(self):
+        pop = Gtk.Popover()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        has_key = author_image.image_path(self.authorship) is not None
+
+        fetch_btn = Gtk.Button(label="Fetch from Wikidata")
+        fetch_btn.add_css_class("flat")
+        fetch_btn.connect("clicked", self._on_fetch_wikidata)
+        box.append(fetch_btn)
+
+        choose_btn = Gtk.Button(label="Choose image file…")
+        choose_btn.add_css_class("flat")
+        choose_btn.connect("clicked", self._on_choose_image)
+        box.append(choose_btn)
+
+        self._remove_img_btn = Gtk.Button(label="Remove photo")
+        self._remove_img_btn.add_css_class("flat")
+        self._remove_img_btn.connect("clicked", self._on_remove_image)
+        box.append(self._remove_img_btn)
+
+        if not has_key:
+            for b in (fetch_btn, choose_btn, self._remove_img_btn):
+                b.set_sensitive(False)
+                b.set_tooltip_text(
+                    "No ORCID or OpenAlex ID — photos need a stable "
+                    "author identity to be stored under.")
+        pop.set_child(box)
+        pop.connect("show", lambda _p: self._remove_img_btn.set_visible(
+            (author_image.image_path(self.authorship) or "") != ""
+            and os.path.isfile(author_image.image_path(self.authorship))))
+        return pop
+
+    def _avatar_status(self, text):
+        self.status.set_markup(
+            "<span size='small' alpha='75%'>{}</span>".format(
+                GLib.markup_escape_text(text)))
+
+    def _apply_new_image(self, path):
+        """Main-thread: refresh the header avatar and tell the
+        hosting window (sidebar row) about the change."""
+        self._set_avatar_from_disk()
+        if self._on_image_changed is not None:
+            self._on_image_changed(path)
+        return False
+
+    def _on_fetch_wikidata(self, _btn):
+        self._avatar_menu.popdown()
+        self._avatar_status("Looking up Wikidata portrait…")
+
+        def work():
+            try:
+                path = author_image.fetch_wikidata_portrait(
+                    self.authorship)
+            except Exception as e:
+                GLib.idle_add(self._avatar_status,
+                              "Wikidata lookup failed: {}".format(e))
+                return
+            if path:
+                GLib.idle_add(self._apply_new_image, path)
+                GLib.idle_add(self._avatar_status, "Portrait fetched.")
+            else:
+                GLib.idle_add(
+                    self._avatar_status,
+                    "No Wikidata portrait for this author — drop an "
+                    "image on the avatar or choose a file.")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_choose_image(self, _btn):
+        self._avatar_menu.popdown()
+        dlg = Gtk.FileDialog()
+        f = Gtk.FileFilter()
+        f.set_name("Images")
+        f.add_mime_type("image/*")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(f)
+        dlg.set_filters(filters)
+
+        def done(d, result):
+            try:
+                gfile = d.open_finish(result)
+            except GLib.Error:
+                return   # cancelled
+            try:
+                path = author_image.save_image(
+                    self.authorship, gfile.get_path())
+            except Exception as e:
+                self._avatar_status("Couldn't use that image: {}"
+                                    .format(e))
+                return
+            self._apply_new_image(path)
+        dlg.open(self.get_root(), None, done)
+
+    def _on_remove_image(self, _btn):
+        self._avatar_menu.popdown()
+        author_image.remove_image(self.authorship)
+        self._apply_new_image(None)
+
+    def _on_avatar_drop(self, _target, value, _x, _y):
+        if isinstance(value, Gdk.FileList):
+            files = value.get_files()
+            if not files:
+                return False
+            try:
+                path = author_image.save_image(
+                    self.authorship, files[0].get_path())
+            except Exception as e:
+                self._avatar_status("Couldn't use that image: {}"
+                                    .format(e))
+                return False
+            self._apply_new_image(path)
+            return True
+        if isinstance(value, str):
+            url = value.strip()
+            if not url.lower().startswith(("http://", "https://")):
+                return False
+
+            def work():
+                try:
+                    data = author_image._http_get_bytes(
+                        url, {"User-Agent": author_image._UA}, 30)
+                    path = author_image.save_image(
+                        self.authorship, data)
+                except Exception as e:
+                    GLib.idle_add(self._avatar_status,
+                                  "Couldn't fetch that image: {}"
+                                  .format(e))
+                    return
+                GLib.idle_add(self._apply_new_image, path)
+            threading.Thread(target=work, daemon=True).start()
+            return True
+        return False
 
     def _open_coauthor(self, c):
         authorship = {

@@ -907,6 +907,22 @@ via `extract.CROSSREF_USER_AGENT`.
 
 ## UI
 
+- **Author photo on the author page.** Show a small blank-silhouette
+  placeholder next to the author's name (Authors window /
+  `AuthorPage` header); clicking it lets the user either pick an
+  image file from disk or fetch one automatically. Best automatic
+  source is probably **Wikidata**, not a raw web search: many
+  researchers with ORCIDs have Wikidata items (lookup by ORCID via
+  SPARQL or the wbsearch API), and the item's P18 property is a
+  vetted portrait from Commons — no is-this-a-person classification
+  needed. If a web-search fallback is still wanted, face detection
+  to filter results is easy locally: `opencv-python`'s Haar-cascade
+  face detector (no extra model downloads) answers "does this image
+  contain exactly one reasonably-sized face"; `mediapipe` or
+  dlib-based `face_recognition` are heavier but more accurate.
+  Storage: cache the image under the library root keyed by
+  OpenAlex ID / ORCID; show the silhouette when absent.
+
 - **Click-through on award IDs in the card "Funded by" line.** The
   award_id is shown today only in the tooltip; it would be far
   more useful if clicking it opened (somehow) the funded

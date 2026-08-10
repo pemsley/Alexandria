@@ -102,38 +102,82 @@ def _http_get_bytes(url, headers, timeout):
         return r.read()
 
 
-def wikidata_portrait_url(orcid, openalex_id, http_get_json):
-    """Commons image URL (sized to 512 px) for the researcher's
-    Wikidata P18 portrait, or None when there is no item or no
-    portrait. One SPARQL query carries both identifier properties —
-    P496 (ORCID) and P10283 (OpenAlex author ID) — as a UNION, so
-    whichever the author has can match."""
-    clauses = []
-    if orcid:
-        clauses.append('{{ ?item wdt:P496 "{}" }}'.format(orcid))
-    if openalex_id:
-        clauses.append('{{ ?item wdt:P10283 "{}" }}'.format(openalex_id))
-    if not clauses:
-        return None
-    query = ("SELECT ?img WHERE {{ {} ?item wdt:P18 ?img }} LIMIT 1"
-             .format(" UNION ".join(clauses) + " . "))
+def _run_sparql(query, http_get_json):
+    """Execute a SPARQL query, return the bindings list ([] on any
+    empty/failed response)."""
     url = _WIKIDATA_SPARQL + "?" + urllib.parse.urlencode(
         [("query", query), ("format", "json")])
     data = http_get_json(
         url, {"User-Agent": _UA, "Accept": "application/sparql-results+json"},
         20)
     if not data:
-        return None
-    bindings = (data.get("results") or {}).get("bindings") or []
-    if not bindings:
-        return None
-    img = (bindings[0].get("img") or {}).get("value")
-    if not img:
-        return None
+        return []
+    return (data.get("results") or {}).get("bindings") or []
+
+
+def _sized(img_url):
     # SPARQL returns a Special:FilePath URL; a width parameter makes
     # Commons serve a reasonable thumbnail instead of the original
     # (which can be tens of MB).
-    return img + "?width={}".format(MAX_SIDE)
+    return img_url + "?width={}".format(MAX_SIDE)
+
+
+def _identifier_lookup(orcid, openalex_id, http_get_json):
+    """(item_found, image_url|None) for the identifier search. The
+    distinction matters: an item that exists but has no P18 must NOT
+    fall through to the name search — a same-name impostor with a
+    portrait would win it."""
+    clauses = []
+    if orcid:
+        clauses.append('{{ ?item wdt:P496 "{}" }}'.format(orcid))
+    if openalex_id:
+        clauses.append('{{ ?item wdt:P10283 "{}" }}'.format(openalex_id))
+    if not clauses:
+        return (False, None)
+    query = ("SELECT ?item ?img WHERE {{ {} "
+             "OPTIONAL {{ ?item wdt:P18 ?img }} }} LIMIT 1"
+             .format(" UNION ".join(clauses) + " . "))
+    bindings = _run_sparql(query, http_get_json)
+    if not bindings:
+        return (False, None)
+    img = (bindings[0].get("img") or {}).get("value")
+    return (True, _sized(img) if img else None)
+
+
+def wikidata_portrait_url(orcid, openalex_id, http_get_json):
+    """Commons image URL (sized to 512 px) for the researcher's
+    Wikidata P18 portrait, or None when there is no item or no
+    portrait. One SPARQL query carries both identifier properties —
+    P496 (ORCID) and P10283 (OpenAlex author ID) — as a UNION, so
+    whichever the author has can match."""
+    return _identifier_lookup(orcid, openalex_id, http_get_json)[1]
+
+
+def wikidata_portrait_url_by_name(name, http_get_json):
+    """Last-resort lookup for authors whose Wikidata item carries
+    neither identifier (common for pre-ORCID-era figures): exact
+    English label/alias match, restricted to humans (P31 Q5) that
+    have a portrait. Only an unambiguous hit — exactly one distinct
+    item — is trusted; anything else returns None, because the
+    failure mode of guessing is a confident wrong face."""
+    if not name:
+        return None
+    safe = name.replace('"', "")
+    query = (
+        'SELECT ?item ?img WHERE {{ '
+        '?item wdt:P31 wd:Q5 ; wdt:P18 ?img . '
+        '{{ ?item rdfs:label "{0}"@en }} UNION '
+        '{{ ?item skos:altLabel "{0}"@en }} }} LIMIT 5'.format(safe))
+    bindings = _run_sparql(query, http_get_json)
+    items = {}
+    for b in bindings:
+        item = (b.get("item") or {}).get("value")
+        img = (b.get("img") or {}).get("value")
+        if item and img:
+            items.setdefault(item, img)
+    if len(items) != 1:
+        return None
+    return _sized(next(iter(items.values())))
 
 
 def fetch_wikidata_portrait(authorship, root=None,
@@ -141,11 +185,20 @@ def fetch_wikidata_portrait(authorship, root=None,
     """Look up and store the author's Wikidata portrait. Returns the
     saved path, or None when Wikidata has no item / no portrait.
     Network errors propagate — interactive callers catch and show
-    the message."""
+    the message.
+
+    Identifier search first (ORCID / OpenAlex ID). Only when that
+    finds NO item at all does the exact-name fallback run — an item
+    that exists without a portrait is a definitive answer, and
+    letting a same-name item override it would hang the wrong face
+    on the author."""
     get_json = http_get_json or _http_get_json
     get_bytes = http_get_bytes or _http_get_bytes
-    url = wikidata_portrait_url(
+    item_found, url = _identifier_lookup(
         authorship.get("orcid"), authorship.get("openalex_id"), get_json)
+    if url is None and not item_found:
+        url = wikidata_portrait_url_by_name(
+            authorship.get("name"), get_json)
     if not url:
         return None
     data = get_bytes(url, {"User-Agent": _UA}, 30)

@@ -144,3 +144,85 @@ def test_fetch_portrait_none_when_missing(tmp_path):
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --- Name fallback (only when identifiers find no item at all) ------
+
+def _sparql_items(*pairs):
+    """pairs of (item_uri, img_url) -> SPARQL bindings with both vars."""
+    return {"results": {"bindings": [
+        {"item": {"value": it}, "img": {"value": im}}
+        for it, im in pairs]}}
+
+
+def _fake_router(identifier_resp, name_resp):
+    """Route identifier-lookup vs name-lookup queries by content."""
+    def get(url, headers, timeout):
+        if "P496" in url or "P10283" in url:
+            return identifier_resp
+        assert "P31" in url and "P18" in url
+        return name_resp
+    return get
+
+
+def test_name_fallback_when_no_item(tmp_path):
+    # Hoffbrand case: identifiers match nothing, but an exact-name
+    # search finds exactly one human with a portrait.
+    get = _fake_router(
+        _sparql_response(),   # no item via identifiers
+        _sparql_items(("http://www.wikidata.org/entity/Q1",
+                       "http://commons.wikimedia.org/wiki/"
+                       "Special:FilePath/AVH.jpg")))
+    p = author_image.fetch_wikidata_portrait(
+        dict(AUTH, name="Allan Victor Hoffbrand"), root=str(tmp_path),
+        http_get_json=get,
+        http_get_bytes=lambda u, headers, timeout: _png_bytes(64, 64))
+    assert p and os.path.isfile(p)
+
+
+def test_no_name_fallback_when_item_lacks_portrait(tmp_path):
+    # Identifier search FOUND the author's item (no P18 on it). A
+    # same-name impostor with a portrait must not be consulted.
+    def get(url, headers, timeout):
+        if "P496" in url or "P10283" in url:
+            return {"results": {"bindings": [
+                {"item": {"value": "http://www.wikidata.org/entity/Q9"}}]}}
+        raise AssertionError("name fallback must not run")
+    p = author_image.fetch_wikidata_portrait(
+        dict(AUTH, name="Jane K"), root=str(tmp_path),
+        http_get_json=get,
+        http_get_bytes=lambda u, headers, timeout: _png_bytes(8, 8))
+    assert p is None
+
+
+def test_name_fallback_ambiguous_declines(tmp_path):
+    get = _fake_router(
+        _sparql_response(),
+        _sparql_items(("http://www.wikidata.org/entity/Q1", "http://c/1.jpg"),
+                      ("http://www.wikidata.org/entity/Q2", "http://c/2.jpg")))
+    p = author_image.fetch_wikidata_portrait(
+        dict(AUTH, name="John Smith"), root=str(tmp_path),
+        http_get_json=get,
+        http_get_bytes=lambda u, headers, timeout: _png_bytes(8, 8))
+    assert p is None
+
+
+def test_name_fallback_same_item_two_images_is_unique(tmp_path):
+    get = _fake_router(
+        _sparql_response(),
+        _sparql_items(("http://www.wikidata.org/entity/Q1", "http://c/a.jpg"),
+                      ("http://www.wikidata.org/entity/Q1", "http://c/b.jpg")))
+    p = author_image.fetch_wikidata_portrait(
+        dict(AUTH, name="Unique Person"), root=str(tmp_path),
+        http_get_json=get,
+        http_get_bytes=lambda u, headers, timeout: _png_bytes(8, 8))
+    assert p and os.path.isfile(p)
+
+
+def test_name_fallback_skipped_without_name(tmp_path):
+    get = _fake_router(_sparql_response(), _sparql_items())
+    p = author_image.fetch_wikidata_portrait(
+        {"openalex_id": "A123"}, root=str(tmp_path),
+        http_get_json=get,
+        http_get_bytes=lambda u, headers, timeout: _png_bytes(8, 8))
+    assert p is None

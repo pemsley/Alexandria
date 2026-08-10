@@ -542,7 +542,10 @@ def _pdf_comment_count(sidecar_path):
 def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
     box.set_margin_start(8)
-    box.set_margin_end(8)
+    # 8 px sat under the results list's overlay scrollbar (which is
+    # wider than that when hovered) — same overlap 4af9a98 fixed for
+    # the author-popover button. 10 px extra keeps the card clear.
+    box.set_margin_end(18)
     box.set_margin_top(6)
     box.set_margin_bottom(6)
 

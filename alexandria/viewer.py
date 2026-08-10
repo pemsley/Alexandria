@@ -49,13 +49,69 @@ def _now_iso():
 _YEAR_PAREN_RE = re.compile(r"\((\d{4})\)\s*")
 _TITLE_END_RE = re.compile(r"\.\s+(?=[A-Z])")
 
+# Nature style: "Authors. Title. Journal Abbrev. Vol, pages (Year)." —
+# the year sits at the very end and the journal is abbreviated (with
+# internal periods), so the generic parse below (which anchors on a
+# "(YYYY)" that precedes the title) recovers an empty title.
+_YEAR_END_RE = re.compile(r"\((\d{4})\)\.?\s*$")
+_VOL_PAGES_TAIL_RE = re.compile(r"\s+\d{1,4},\s*[A-Za-z]?\d[\w–—\-]*\s*$")
+_SENTENCE_SPLIT_RE = re.compile(r"\.\s+(?=[A-Z0-9])")
+# A personal author list carries the "Surname, I." shape; an
+# organisational author ("wwPDB Consortium", "RCSB PDB") does not — used
+# to decide whether find_doi should author-gate (group names never match
+# the paper's real author list, so gating on them drops good matches).
+_PERSONAL_AUTHOR_RE = re.compile(r"[A-Za-z]{2,},\s*[A-Z]\.")
+
+
+def _looks_personal(authors_str):
+    return bool(_PERSONAL_AUTHOR_RE.search(authors_str or ""))
+
+
+def _split_nature_style(text):
+    """Parse a Nature-style entry whose year sits at the end:
+    "Authors. Title. Journal Abbrev. Vol, pages (Year).". Returns
+    (authors, year, title, journal), or None when the shape doesn't fit.
+
+    The title is the ". "-delimited segment with the most lowercase-
+    initial words: titles carry articles/prepositions/verbs ("the",
+    "of", "is") that author names and journal abbreviations don't. That
+    separates it from author initials (which split into tiny "H"/"W"
+    segments) and from short journal abbreviations even when a long
+    author list would otherwise be the longest chunk."""
+    ym = _YEAR_END_RE.search(text)
+    if not ym:
+        return None
+    vm = _VOL_PAGES_TAIL_RE.search(text[:ym.start()].rstrip())
+    if not vm:
+        return None
+    before_vol = text[:ym.start()][:vm.start()].strip()
+    segs = [s.strip() for s in _SENTENCE_SPLIT_RE.split(before_vol) if s.strip()]
+    if len(segs) < 2:
+        return None
+
+    def lower_words(seg):
+        return sum(1 for w in seg.split() if w[:1].islower())
+
+    ti = max(range(len(segs)),
+             key=lambda i: (lower_words(segs[i]), len(segs[i])))
+    title = segs[ti].rstrip(".").strip()
+    if len(title) < 8:
+        return None
+    authors_str = ". ".join(segs[:ti]).strip()
+    journal = ". ".join(segs[ti + 1:]).strip().rstrip(".")
+    return authors_str, int(ym.group(1)), title, journal
+
 
 def _split_entry_text(text):
     """Best-effort (authors_str, year, title, journal) for a Vancouver-
     style bibliography entry. Returns (None, None, None, None) when
     the year pattern is missing — that's our anchor and without it
     the rest is too unreliable to guess at."""
-    m = _YEAR_PAREN_RE.search(text or "")
+    text = text or ""
+    nat = _split_nature_style(text)
+    if nat is not None:
+        return nat
+    m = _YEAR_PAREN_RE.search(text)
     if not m:
         return None, None, None, None
     year = int(m.group(1))
@@ -1152,6 +1208,9 @@ class PdfViewerWindow(Gtk.Window):
         outer.append(entry_lbl)
 
         status = Gtk.Label(xalign=0.0)
+        status.set_wrap(True)
+        status.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        status.set_max_width_chars(58)
         status.set_markup(
             "<small><i>Looking up on OpenAlex…</i></small>")
         outer.append(status)
@@ -1207,16 +1266,33 @@ class PdfViewerWindow(Gtk.Window):
                 entry["surname"], entry["year"],
                 journal=entry.get("journal"))
         if not doi:
+            # Crossref's bibliographic matcher handles most numbered /
+            # Vancouver / Nature styles and is surname-gated, so it's our
+            # first, most reliable pass.
+            doi = metrics.find_doi_by_citation(entry.get("text") or "")
+        if not doi:
+            # Title-search fallback for what Crossref misses — notably
+            # organisation-authored papers ("wwPDB Consortium …"), where
+            # Crossref returns a wrong same-topic paper. When the author
+            # is an organisation we drop find_doi's author gate (a group
+            # name never matches the real author list) and lean on
+            # title + journal + year instead.
             authors_str, year, title, journal = _split_entry_text(
                 entry.get("text") or "")
             if title:
+                surnames = (_author_surnames(authors_str)
+                            if _looks_personal(authors_str) else [])
                 doi = metrics.find_doi(
-                    title, year=year,
-                    author_names=_author_surnames(authors_str),
+                    title, year=year, author_names=surnames,
                     journal=journal or None)
         if not doi:
             return None
-        return metrics.fetch_work_by_doi(doi)
+        # OpenAlex first, Crossref fallback: when OpenAlex is rate-limited
+        # (easy to hit — it powers the rest of the app too) a bare
+        # fetch_work_by_doi returns None and the popover would wrongly say
+        # "couldn't find this paper". resolve_doi still returns the
+        # Crossref metadata so the reference resolves regardless.
+        return metrics.resolve_doi(doi)
 
     def _render_resolved_reference(self, popover, status, content,
                                    entry, resolved):
@@ -1225,8 +1301,8 @@ class PdfViewerWindow(Gtk.Window):
             return False
         if resolved is None:
             status.set_markup(
-                "<small><i>Couldn't find this paper on OpenAlex."
-                "</i></small>")
+                "<small><i>Couldn't find this paper on OpenAlex or "
+                "Crossref.</i></small>")
             actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
                               spacing=6)
             actions.set_halign(Gtk.Align.END)
@@ -1255,14 +1331,29 @@ class PdfViewerWindow(Gtk.Window):
             except Exception:
                 existing = None
 
+        # When OpenAlex is rate-limited its own metadata is unavailable
+        # and resolve_doi fell back to Crossref (openalex_id is None).
+        # That's a good moment to (gently) let the user know they've spent
+        # today's free OpenAlex allowance and can get their own free key —
+        # rather than silently showing Crossref data or, worse, implying
+        # the paper couldn't be found.
+        from_crossref = resolved.get("openalex_id") is None
         if existing:
             status.set_markup(
                 "<small><span foreground='#2a7a2a'>"
                 "✓ Already in your library</span></small>")
+            status.set_use_markup(True)
+        elif from_crossref and metrics.openalex_rate_limited():
+            status.set_markup(
+                "<small><span alpha='75%'>Today's free OpenAlex allowance "
+                "is used up — showing Crossref data. OpenAlex gives everyone "
+                "a free daily budget; get your own key at "
+                "<a href='https://openalex.org/settings/api'>openalex.org</a> "
+                "to keep going.</span></small>")
+            status.set_use_markup(True)
         else:
             status.set_markup(
-                "<small><span alpha='75%'>Found on OpenAlex:"
-                "</span></small>")
+                "<small><span alpha='75%'>Found:</span></small>")
         title_lbl = Gtk.Label(xalign=0.0)
         title_lbl.set_wrap(True)
         title_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)

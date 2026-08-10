@@ -205,3 +205,26 @@ def get_coot_path():
     if env:
         return env
     return None
+
+
+def get_openalex_api_key():
+    """The stored OpenAlex API key, or '' if none.
+
+    A free key from openalex.org/settings/api gives each user their own
+    daily budget so browsing references doesn't exhaust a shared quota.
+    Set in ~/.config/Alexandria/config.json as e.g.
+        "openalex_api_key": "your-key-here"
+    (The ALEXANDRIA_OPENALEX_API_KEY env var overrides this.)"""
+    stored = load().get("openalex_api_key")
+    return stored.strip() if isinstance(stored, str) else ""
+
+
+def set_openalex_api_key(key):
+    """Persist the OpenAlex API key to config.json (or clear it when
+    given a falsy value)."""
+    data = load()
+    if key and key.strip():
+        data["openalex_api_key"] = key.strip()
+    else:
+        data.pop("openalex_api_key", None)
+    save(data)

@@ -569,6 +569,16 @@ def _scrape_doi(text):
     the publisher DOI."""
     if not text:
         return None
+    # DOIs wrap across lines in narrow columns ("…111622-\n091155"). A
+    # DOI never ends in a hyphen, so when a DOI-shaped run ends a line
+    # with '-' and the next line continues with DOI-body characters,
+    # stitch them — dropping the newline and any alignment whitespace —
+    # before matching. Without this, `pdftotext -layout` text yields a
+    # DOI truncated at the wrap ("10.1146/annurev-biophys-111622-").
+    text = re.sub(
+        r"(10\.\d{4,9}/[-._;()/:A-Z0-9]*-)[ \t]*\r?\n[ \t]*"
+        r"(?=[-._;()/:A-Z0-9])",
+        r"\1", text, flags=re.IGNORECASE)
     matches = re.findall(
         r"(?:doi(?:\.org)?[:/]\s*)?(10\.\d{4,9}/[-._;()/:A-Z0-9]+)",
         text, re.IGNORECASE)

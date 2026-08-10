@@ -5072,6 +5072,16 @@ def main(argv=None):
     if argv is None:
         argv = sys.argv
 
+    # --light pins the app to light mode (e.g. for screen recording)
+    # regardless of the desktop colour-scheme preference.
+    force_light = "--light" in argv[1:]
+
+    # Authenticate OpenAlex with the user's free API key (from prefs;
+    # the env var, if set, wins inside metrics). Without a key OpenAlex
+    # throttles hard against the shared common quota — the source of the
+    # "used up your OpenAlex allowance" reference-popover message.
+    metrics.set_openalex_api_key(prefs.get_openalex_api_key())
+
     # Adw.Application initialises libadwaita (theme + dark/light follow
     # the system) and gives us native HeaderBar / Toast support.
     app = Adw.Application(application_id="io.github.pemsley.Alexandria")
@@ -5086,11 +5096,13 @@ def main(argv=None):
     # the belt-and-braces fallback for windows that bypassed it.
 
     def on_activate(app):
-        # Follow the system light/dark preference — no explicit
-        # set_color_scheme call. The card/title colours adapt at
-        # render time via Adw.StyleManager.get_dark() (see
-        # _title_color / _is_dark), so a dark system theme is honoured
-        # rather than overridden.
+        # Follow the system light/dark preference unless --light was
+        # given. The card/title colours adapt at render time via
+        # Adw.StyleManager.get_dark() (see _title_color / _is_dark),
+        # so whichever scheme wins here is honoured throughout.
+        if force_light:
+            Adw.StyleManager.get_default().set_color_scheme(
+                Adw.ColorScheme.FORCE_LIGHT)
 
         # Register the in-tree `icons/` directory so windows can
         # `set_icon_name("io.github.pemsley.Alexandria")` and pick

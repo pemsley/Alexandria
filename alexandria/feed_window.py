@@ -731,9 +731,12 @@ class FeedWindow(Adw.Window):
         }
         also_get_pdf = bool(art.get("is_oa") and art.get("oa_url"))
 
-        def on_done(success, message):
+        def on_done(success, message, label=None):
             # No toast surface in this window; let the message
-            # land on the parent's status if available.
+            # land on the parent's status if available. `label` is
+            # the optional button caption from
+            # add_reference_from_viewer — unused here because the
+            # feed re-render below swaps the button state itself.
             try:
                 self.parent_window._toast(message, timeout=5)
             except Exception:

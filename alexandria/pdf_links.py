@@ -37,6 +37,31 @@ except ImportError:
 # keeps random `…CR12…` substrings from matching a regular word.
 _CR_RE = re.compile(r"(?:^|[^A-Za-z0-9])CR(\d+)\b")
 
+# 2025-era springernature InDesign exports drop the CR convention and
+# embed the whole reference text in the dest name instead, entry
+# marker first: "springernature_nature_9761.indd:<BOM>1.<BOM><BOM>\t
+# <BOM>Kirsch, L., …:246". A variable number of BOMs precedes the
+# marker — one, two and three are all observed within a single
+# document — so match any run of them. Three digits at most: entry
+# numbers don't reach 1000, and the cap keeps a leading year in the
+# embedded text ("…indd:2019.…") from posing as a marker.
+# U+FEFF spelled as an escape (not a literal BOM) so the invisible
+# character can't be silently stripped by an editor.
+_INDD_ENTRY_RE = re.compile("\\.indd:\\ufeff*(\\d{1,3})\\.")
+
+
+def _ref_n_from_dest_name(name):
+    """Reference number carried by a named destination, or None when
+    the name doesn't follow a recognised citation-dest convention
+    (figure/section cross-references, opaque anchors, …)."""
+    m = _CR_RE.search(name)
+    if m:
+        return int(m.group(1))
+    m = _INDD_ENTRY_RE.search(name)
+    if m:
+        return int(m.group(1))
+    return None
+
 
 def _deref(x):
     if _HAVE_PYPDF and isinstance(x, IndirectObject):
@@ -169,8 +194,7 @@ def read_citation_links(pdf_path):
 
             if isinstance(d, str):
                 resolved = dests.get(d)
-                m = _CR_RE.search(d)
-                ref_n = int(m.group(1)) if m else None
+                ref_n = _ref_n_from_dest_name(d)
             else:
                 resolved = d
                 ref_n = None

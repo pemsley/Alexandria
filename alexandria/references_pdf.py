@@ -248,11 +248,41 @@ def _column_index(x, edges):
     return min(range(len(edges)), key=lambda i: abs(x - edges[i]))
 
 
-def _sort_reading_order(lines, edges):
-    return sorted(
+def _sort_reading_order(lines, edges, row_tol=3.0):
+    """Reading order: per page, per column, top-to-bottom then
+    left-to-right.
+
+    Lines are grouped into visual rows (y within `row_tol` points of the
+    row's first line) and ordered left-to-right *within* a row. This
+    keeps a hanging-indent marker ("16.") ahead of the first body line of
+    its entry even when the marker's baseline is a fraction of a point off
+    from the text it labels — as happens in tight two-column reference
+    lists. A plain sort by y alone lets a 0.1pt jitter place the body
+    line before its own marker, which splits the entry: the body attaches
+    to the previous reference and the marker opens an entry holding only
+    the wrapped tail."""
+    keyed = sorted(
         lines,
-        key=lambda rec: (rec[0], _column_index(rec[2], edges), rec[3]),
+        key=lambda rec: (rec[0], _column_index(rec[2], edges), rec[3], rec[2]),
     )
+    out = []
+    row = []
+    row_key = None      # (page, col, anchor_y)
+    for rec in keyed:
+        pg, col, y = rec[0], _column_index(rec[2], edges), rec[3]
+        if (row_key is not None and row_key[0] == pg and row_key[1] == col
+                and abs(y - row_key[2]) <= row_tol):
+            row.append(rec)
+        else:
+            if row:
+                row.sort(key=lambda r: r[2])   # left-to-right within row
+                out.extend(row)
+            row = [rec]
+            row_key = (pg, col, y)
+    if row:
+        row.sort(key=lambda r: r[2])
+        out.extend(row)
+    return out
 
 
 def _stitch_wrapped(text):
@@ -270,30 +300,54 @@ def _stitch_wrapped(text):
 def _normalize_doi(doi):
     if not doi:
         return None
-    return doi.rstrip(".,;)]>").lower()
+    doi = doi.strip().rstrip(".,;]>")
+    # A trailing parenthetical is a citation year glued onto the DOI by
+    # whitespace-collapse ("…prot.26171 (2021)." → "…prot.26171(2021)").
+    # Real DOIs carry parens only mid-body ("…S0022-2836(05)80269-4",
+    # always followed by more characters), so a paren group at the very
+    # end is never part of the DOI — drop it, whether the ')' is still
+    # there or was already trimmed away ("…(2021").
+    doi = re.sub(r"\s*\([^()]*\)?$", "", doi)
+    return doi.rstrip(".,;)]>").lower() or None
 
 
 def _find_bibliography_fallback(lines, min_run=5):
     """Locate the bibliography in PDFs that have no "References"
-    heading (older PNAS, some Cell Press, …) by finding the longest
-    *strictly-contiguous* run of sequentially-numbered entry markers
-    in document order: candidates[i].n == 1, candidates[i+1].n == 2,
-    candidates[i+2].n == 3, ... with no intervening markers.
+    heading (older PNAS, some Cell Press, 2025-era Nature Articles,
+    …) by finding the longest *strictly-contiguous* run of
+    sequentially-numbered entry markers: candidates[i].n == 1,
+    candidates[i+1].n == 2, candidates[i+2].n == 3, ... with no
+    intervening markers.
+
+    The scan runs in column-aware reading order, not raw document
+    order. Poppler can emit two-column pages y-sorted *across*
+    columns, and a bibliography that starts at the bottom of column
+    1 and continues from the top of column 2 (the 2025 Nature
+    layout) then interleaves its markers in the raw stream — the
+    run 1,2,3,… only survives when column 1 is read out before
+    column 2.
 
     Strict contiguity is what disambiguates real bibliographies from
     stray body-text markers like an in-paragraph "1)". A spurious
-    "1)" is followed in document order by other body markers (Eq.
+    "1)" is followed in reading order by other body markers (Eq.
     refs, footnotes, citation tokens) before the real bib's "2."
     arrives, so its contiguous run length is 1, while the real bib's
-    is the entry count.
+    is the entry count. Candidates with n == 0 — figure axis ticks
+    like "0.7", which _ENTRY_RE reads as entry 0 with body "7" —
+    are not markers and are skipped rather than allowed to break a
+    run.
 
     Returns `(page, x, y)` of the marker for entry 1 of that run,
     or `None` if no run of at least `min_run` entries was found."""
+    edges = _column_edges(lines)
+    ordered = _sort_reading_order(lines, edges)
     candidates = []  # (n, page, x, y)
-    for rec in lines:
+    for rec in ordered:
         m = _ENTRY_RE.match(rec[1])
         if m:
             n = int(m.group(1) or m.group(2))
+            if n < 1:
+                continue
             candidates.append((n, rec[0], rec[2], rec[3]))
     if not candidates:
         return None

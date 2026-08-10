@@ -27,6 +27,47 @@ EUROPEPMC_UA = os.environ.get(
     "ALEXANDRIA_EUROPEPMC_UA",
     "alexandria/0.1 (mailto:{})".format(OPENALEX_MAILTO))
 
+# OpenAlex API key. Since Feb 2026 OpenAlex authenticates by key (the
+# old mailto "polite pool" is gone); a free key at
+# openalex.org/settings/api grants each user their own daily budget, so
+# clicking through references no longer burns a shared allowance.
+#
+# Resolved once at import: the ALEXANDRIA_OPENALEX_API_KEY env var wins,
+# else the key persisted in prefs (config.json). Reading prefs here — not
+# just in browse.main() — means every entry point (the app, the MCP
+# server, the standalone diagnostics) authenticates automatically, rather
+# than each having to remember to wire the key in. Empty means
+# "unauthenticated" — calls still work, just against the tight common
+# quota.
+def _default_openalex_api_key():
+    env = os.environ.get("ALEXANDRIA_OPENALEX_API_KEY", "").strip()
+    if env:
+        return env
+    try:
+        from alexandria import prefs
+        return prefs.get_openalex_api_key()
+    except Exception:
+        return ""
+
+
+_OPENALEX_API_KEY = _default_openalex_api_key()
+
+
+def set_openalex_api_key(key):
+    """Set the OpenAlex API key at runtime (e.g. reloaded from prefs
+    after the user pastes one in). A key supplied via the
+    ALEXANDRIA_OPENALEX_API_KEY env var takes precedence and is never
+    overwritten here."""
+    global _OPENALEX_API_KEY
+    if os.environ.get("ALEXANDRIA_OPENALEX_API_KEY"):
+        return
+    _OPENALEX_API_KEY = (key or "").strip()
+
+
+def openalex_api_key():
+    """The active OpenAlex API key, or '' if none is configured."""
+    return _OPENALEX_API_KEY
+
 
 def today_iso():
     return date.today().isoformat()
@@ -73,6 +114,15 @@ def openalex_paused_until():
     Foreground callers can still try (the next 429 will fail fast
     via the same gate inside _http_get_json)."""
     return _openalex_paused_until
+
+
+def openalex_rate_limited():
+    """True when the OpenAlex circuit breaker is currently open — i.e.
+    a recent hard 429 (the free daily budget is spent) has paused
+    OpenAlex calls. While this holds, resolve_doi transparently falls
+    back to Crossref; callers can use this to tell the user their
+    OpenAlex allowance is exhausted rather than that a paper is missing."""
+    return _openalex_paused_until > time.monotonic()
 
 
 def openalex_credits_remaining():
@@ -206,6 +256,20 @@ def _is_openalex_url(url):
     return "openalex.org" in (url or "")
 
 
+def _apply_openalex_key(url):
+    """Append the OpenAlex `api_key` query param to an OpenAlex URL when
+    a key is configured. No-op for non-OpenAlex URLs, when no key is set,
+    or when the URL already carries one. Centralised here so every
+    OpenAlex request is authenticated without threading the key through
+    each URL builder."""
+    if not _OPENALEX_API_KEY or not _is_openalex_url(url):
+        return url
+    if "api_key=" in url:
+        return url
+    sep = "&" if "?" in url else "?"
+    return url + sep + "api_key=" + urllib.parse.quote(_OPENALEX_API_KEY)
+
+
 def _is_crossref_url(url):
     return "api.crossref.org" in (url or "")
 
@@ -234,6 +298,9 @@ def _http_get_json(url, headers, timeout, raise_on_quota=False):
     `OpenAlexQuotaExhausted` instead of returning None, so
     interactive callers can distinguish quota exhaustion from
     "no data"."""
+    # Authenticate OpenAlex requests centrally (adds api_key= when a key
+    # is configured; no-op otherwise).
+    url = _apply_openalex_key(url)
     # Circuit-breaker gate: bail before opening a socket.
     if _is_openalex_url(url) and _openalex_paused_until > time.monotonic():
         if raise_on_quota:
@@ -2202,6 +2269,57 @@ def find_doi(title, year=None, author_names=None, journal=None):
                 continue
         return cand_doi
     return None
+
+
+def find_doi_by_citation(text):
+    """Resolve a raw bibliography-entry string to a DOI via Crossref's
+    `query.bibliographic` matcher, or None.
+
+    This is the catch-all for numbered/Vancouver/Nature-style references
+    that `viewer._split_entry_text` can't reliably decompose — the year
+    sits at the end (`… 9, 667 (2020).`), a colon separates authors from
+    title (`Bohacek RS, McMartin C: …`), or there's no parenthesised year
+    at all. Rather than parse those apart, we hand Crossref the whole
+    citation; its bibliographic index is built for exactly this.
+
+    Crossref returns *a* top hit for almost any query, and its relevance
+    `score` isn't comparable across queries (it scales with query length),
+    so a score threshold is unreliable. Instead we accept the top hit only
+    when its first-author surname appears as a whole word in the entry
+    text — a cheap, query-independent guard that rejects confident-but-
+    wrong matches (e.g. a DBSCAN citation matching a different clustering
+    paper) while keeping correct low-score matches."""
+    text = (text or "").strip()
+    if len(text) < 12:
+        return None
+    params = [("query.bibliographic", text[:500]), ("rows", "1")]
+    if OPENALEX_MAILTO:
+        params.append(("mailto", OPENALEX_MAILTO))
+    url = "https://api.crossref.org/works?" + urllib.parse.urlencode(params)
+    data = _http_get_json(
+        url,
+        headers={"User-Agent": CROSSREF_UA, "Accept": "application/json"},
+        timeout=20)
+    if not data:
+        return None
+    items = ((data.get("message") or {}).get("items")) or []
+    if not items:
+        return None
+    top = items[0]
+    doi = _normalize_doi(top.get("DOI"))
+    if not doi:
+        return None
+    # First-author-surname verification gate.
+    family = ""
+    for a in (top.get("author") or []):
+        family = (a.get("family") or "").strip()
+        if family:
+            break
+    if not family:
+        return None
+    if not re.search(r"\b" + re.escape(family) + r"\b", text, re.IGNORECASE):
+        return None
+    return doi
 
 
 # Cache for `_resolve_journal_source_ids` — a session of citation

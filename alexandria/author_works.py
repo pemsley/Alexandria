@@ -1479,9 +1479,9 @@ class AuthorsWindow(Gtk.Window):
         if row is None:
             row = self._append_row(entry)
         else:
-            # Refresh what the upsert may have backfilled (e.g. an
-            # institution we didn't know before), keeping it cheap:
-            # rebuild the row child only when the entry changed.
+            # Keep row.trail_entry current so restored sessions and later
+            # lookups see backfilled fields (e.g. institution). The visible
+            # label will refresh on the next restart when the row is rebuilt.
             if row.trail_entry != entry:
                 row.trail_entry = entry
         self.sidebar.select_row(row)

@@ -743,7 +743,7 @@ def add_author_trail(conn, authorship):
             " openalex_id = COALESCE(?, openalex_id),"
             " orcid       = COALESCE(?, orcid),"
             " institution = COALESCE(?, institution),"
-            " last_viewed = ?"
+            " last_viewed = ?"  # Load-bearing: re-selecting same author (GTK row-selected suppression)
             " WHERE key = ?",
             (authorship.get("openalex_id"), authorship.get("orcid"),
              authorship.get("institution"), now, key))

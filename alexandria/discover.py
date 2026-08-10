@@ -4,7 +4,7 @@ Two modes:
 
 * **By author**: name + optional institution + optional ORCID. Returns
   candidate authors with affiliation and top-topic chips. Click an
-  author → opens the existing AuthorWorksWindow (works list with
+  author → opens the Authors window (works list with
   per-paper "Add to library" buttons).
 
 * **By topic**: free-text query, optional year-min filter, sort by
@@ -280,8 +280,9 @@ class DiscoverWindow(Adw.Window):
         return btn
 
     def _open_author_works(self, r):
-        """Hand off to the existing AuthorWorksWindow. We synthesise the
-        authorship dict shape that author_works.open_window expects."""
+        """Hand off to the Authors window via author_works.open_window. We
+        synthesise the authorship dict shape that author_works.open_window
+        expects."""
         authorship = {
             "name": r.get("display_name"),
             "orcid": r.get("orcid"),

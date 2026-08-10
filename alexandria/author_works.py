@@ -1325,25 +1325,185 @@ class AuthorPage(Gtk.Box):
         return False
 
 
-class AuthorWorksWindow(Gtk.Window):
-    """Interim wrapper keeping the one-window-per-author behaviour
-    while AuthorPage is extracted. Replaced by AuthorsWindow in the
-    next commit."""
+class AuthorsWindow(Gtk.Window):
+    """The one Authors window: a persistent trail of authors down the
+    left, the selected author's page on the right. Pages are built
+    lazily on first selection and kept alive so switching back is
+    instant. The trail itself lives in the `author_trail` table and
+    survives restarts; works/impact data comes from the existing
+    author_works_cache / author_scores tables."""
 
-    def __init__(self, parent, conn, authorship):
-        super().__init__(transient_for=parent, modal=False)
-        name = (authorship or {}).get("name") or "Unknown author"
-        self.set_title("Papers by " + name)
-        self.set_default_size(720, 720)
-        self.page = AuthorPage(conn, authorship)
-        self.set_child(self.page)
+    def __init__(self, conn):
+        super().__init__()
+        self.conn = conn
+        self.set_title("Authors")
+        self.set_default_size(1000, 720)
+        self._pages = {}   # trail key -> AuthorPage
+        self._rows = {}    # trail key -> Gtk.ListBoxRow
+
+        root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+
+        self.sidebar = Gtk.ListBox()
+        self.sidebar.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.sidebar.add_css_class("navigation-sidebar")
+        self.sidebar.connect("row-selected", self._on_row_selected)
+        side_scroll = Gtk.ScrolledWindow()
+        side_scroll.set_policy(Gtk.PolicyType.NEVER,
+                               Gtk.PolicyType.AUTOMATIC)
+        side_scroll.set_child(self.sidebar)
+        side_scroll.set_size_request(240, -1)
+        root.append(side_scroll)
+
+        root.append(Gtk.Separator(
+            orientation=Gtk.Orientation.VERTICAL))
+
+        self.stack = Gtk.Stack()
+        self.stack.set_hexpand(True)
+        self.stack.set_vexpand(True)
+        empty = Gtk.Label()
+        empty.set_markup(
+            "<span alpha='60%'>Select an author</span>")
+        self.stack.add_named(empty, "empty")
+        root.append(self.stack)
+
+        self.set_child(root)
+
+        # Rebuild the sidebar from the persisted trail. No pages are
+        # created (and nothing is fetched) until a row is selected.
+        for entry in index.list_author_trail(self.conn):
+            self._append_row(entry)
+
+    # --- Sidebar rows -------------------------------------------------
+
+    def _append_row(self, entry):
+        """Add one sidebar row for a trail entry (dict with at least
+        `key` and `name`). Does not select it."""
+        row = Gtk.ListBoxRow()
+        row.trail_entry = entry
+
+        hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        hbox.set_margin_top(4)
+        hbox.set_margin_bottom(4)
+        hbox.set_margin_start(6)
+        hbox.set_margin_end(2)
+
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        vbox.set_hexpand(True)
+        name_lbl = Gtk.Label(xalign=0.0)
+        name_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        name_lbl.set_markup(GLib.markup_escape_text(
+            entry.get("name") or "Unknown author"))
+        vbox.append(name_lbl)
+        if entry.get("institution"):
+            inst_lbl = Gtk.Label(xalign=0.0)
+            inst_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+            inst_lbl.set_markup(
+                "<span size='small' alpha='65%'>{}</span>".format(
+                    GLib.markup_escape_text(entry["institution"])))
+            vbox.append(inst_lbl)
+        hbox.append(vbox)
+
+        close_btn = Gtk.Button.new_from_icon_name(
+            "window-close-symbolic")
+        close_btn.add_css_class("flat")
+        close_btn.set_valign(Gtk.Align.CENTER)
+        close_btn.set_tooltip_text("Remove from the list")
+        close_btn.connect(
+            "clicked",
+            lambda _b, k=entry["key"]: self._remove_author(k))
+        hbox.append(close_btn)
+
+        row.set_child(hbox)
+        self.sidebar.append(row)
+        self._rows[entry["key"]] = row
+        return row
+
+    def _on_row_selected(self, _listbox, row):
+        if row is None:
+            self.stack.set_visible_child_name("empty")
+            return
+        entry = row.trail_entry
+        key = entry["key"]
+        page = self._pages.get(key)
+        if page is None:
+            authorship = {
+                "name": entry.get("name"),
+                "orcid": entry.get("orcid"),
+                "openalex_id": entry.get("openalex_id"),
+                "institution": entry.get("institution"),
+            }
+            scroll = Gtk.ScrolledWindow()
+            scroll.set_policy(Gtk.PolicyType.NEVER,
+                              Gtk.PolicyType.AUTOMATIC)
+            page = AuthorPage(self.conn, authorship)
+            scroll.set_child(page)
+            self._pages[key] = page
+            self.stack.add_named(scroll, key)
+        self.stack.set_visible_child_name(key)
+        index.touch_author_trail(self.conn, key)
+
+    def _remove_author(self, key):
+        """The sidebar ×: forget the author (trail row, sidebar row,
+        page). Selection falls to a neighbouring row when the removed
+        one was selected."""
+        index.remove_author_trail(self.conn, key)
+        row = self._rows.pop(key, None)
+        was_selected = (row is not None
+                        and self.sidebar.get_selected_row() is row)
+        if row is not None:
+            idx = row.get_index()
+            self.sidebar.remove(row)
+        page = self._pages.pop(key, None)
+        if page is not None:
+            child = self.stack.get_child_by_name(key)
+            if child is not None:
+                self.stack.remove(child)
+        if was_selected:
+            nxt = (self.sidebar.get_row_at_index(idx)
+                   or self.sidebar.get_row_at_index(idx - 1))
+            if nxt is not None:
+                self.sidebar.select_row(nxt)
+            else:
+                self.stack.set_visible_child_name("empty")
+
+    # --- Public API ---------------------------------------------------
+
+    def show_author(self, authorship):
+        """Route an author into the window: upsert onto the trail,
+        create the sidebar row if new, select it (which lazily builds
+        the page)."""
+        entry = index.add_author_trail(self.conn, authorship)
+        if entry is None:
+            return
+        row = self._rows.get(entry["key"])
+        if row is None:
+            row = self._append_row(entry)
+        else:
+            # Refresh what the upsert may have backfilled (e.g. an
+            # institution we didn't know before), keeping it cheap:
+            # rebuild the row child only when the entry changed.
+            if row.trail_entry != entry:
+                row.trail_entry = entry
+        self.sidebar.select_row(row)
 
     def refresh_in_library(self):
-        self.page.refresh_in_library()
+        """Fan the in-library badge refresh out to every live page.
+        Called by BrowserWindow._do_debounced_reload after imports."""
+        for page in self._pages.values():
+            page.refresh_in_library()
+
+
+# The one Authors window (per process). Recreated on demand after
+# the user closes it; the trail table repopulates the sidebar.
+_authors_window = None
 
 
 def open_window(parent, conn, authorship):
-    """Create and present an AuthorWorksWindow for the given authorship dict."""
+    """Route `authorship` into the singleton AuthorsWindow, creating
+    it on first use. Same signature as the historical
+    one-window-per-author implementation, so the browse popover,
+    Discover, and collaborator chips all work unchanged."""
+    global _authors_window
     if not (authorship.get("orcid") or authorship.get("openalex_id")):
         # No usable identifier — caller should have checked, but be safe.
         dlg = Gtk.AlertDialog()
@@ -1352,13 +1512,20 @@ def open_window(parent, conn, authorship):
                 authorship.get("name") or "this author"))
         dlg.show(parent)
         return None
-    win = AuthorWorksWindow(parent, conn, authorship)
-    # Register with the parent BrowserWindow (when it supports it) so
-    # an import landing elsewhere can live-refresh this window's
-    # in-library badges. Guarded: any parent lacking the hook (or a
-    # different caller) simply won't get live updates.
-    reg = getattr(parent, "_register_author_window", None)
-    if reg is not None:
-        reg(win)
-    win.present()
-    return win
+    if _authors_window is None:
+        win = AuthorsWindow(conn)
+        # Register with the BrowserWindow (when it supports it) so an
+        # import landing elsewhere can live-refresh in-library badges.
+        reg = getattr(parent, "_register_author_window", None)
+        if reg is not None:
+            reg(win)
+
+        def _on_close(_w):
+            global _authors_window
+            _authors_window = None
+            return False
+        win.connect("close-request", _on_close)
+        _authors_window = win
+    _authors_window.show_author(authorship)
+    _authors_window.present()
+    return _authors_window

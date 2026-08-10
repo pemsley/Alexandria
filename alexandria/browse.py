@@ -3826,11 +3826,13 @@ class BrowserWindow(Adw.ApplicationWindow):
         return False
 
     def _register_author_window(self, win):
-        """Track an open AuthorWorksWindow so it can be told to refresh
-        its in-library badges when an import lands (e.g. via the browser
+        """Track the Authors window so it can be told to refresh its
+        in-library badges when an import lands (e.g. via the browser
         extension) while it's open. Deregisters itself on close."""
         if not hasattr(self, "_author_windows"):
             self._author_windows = []
+        if win in self._author_windows:
+            return
         self._author_windows.append(win)
 
         def _on_close(_w):

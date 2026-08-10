@@ -1644,6 +1644,17 @@ class AuthorsWindow(Gtk.Window):
         hbox.set_margin_start(6)
         hbox.set_margin_end(2)
 
+        avatar = Adw.Avatar.new(32, entry.get("name") or None, True)
+        img_path = author_image.image_path(entry)
+        if img_path and os.path.isfile(img_path):
+            try:
+                avatar.set_custom_image(Gdk.Texture.new_from_file(
+                    Gio.File.new_for_path(img_path)))
+            except Exception:
+                pass
+        hbox.append(avatar)
+        row.avatar = avatar
+
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
         vbox.set_hexpand(True)
         name_lbl = Gtk.Label(xalign=0.0)
@@ -1701,7 +1712,9 @@ class AuthorsWindow(Gtk.Window):
             page = AuthorPage(
                 self.conn, authorship,
                 on_institution=lambda inst, k=key:
-                    self._on_page_institution(k, inst))
+                    self._on_page_institution(k, inst),
+                on_image_changed=lambda path, k=key:
+                    self._on_page_image(k, path))
             scroll.set_child(page)
             self._pages[key] = page
             self.stack.add_named(scroll, key)
@@ -1728,6 +1741,22 @@ class AuthorsWindow(Gtk.Window):
             "<span size='small' alpha='65%'>{}</span>".format(
                 GLib.markup_escape_text(institution)))
         row.inst_lbl.set_visible(True)
+
+    def _on_page_image(self, key, path):
+        """A page's photo changed (fetched, chosen, dropped, or
+        removed) — mirror it on the sidebar row. Runs on the main
+        thread (pages invoke the callback from idle handlers)."""
+        row = self._rows.get(key)
+        if row is None or not hasattr(row, "avatar"):
+            return
+        texture = None
+        if path and os.path.isfile(path):
+            try:
+                texture = Gdk.Texture.new_from_file(
+                    Gio.File.new_for_path(path))
+            except Exception:
+                texture = None
+        row.avatar.set_custom_image(texture)
 
     def _remove_author(self, key):
         """The sidebar ×: forget the author (trail row, sidebar row,

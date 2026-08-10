@@ -436,20 +436,17 @@ def _existing_dois(conn):
     return out
 
 
-class AuthorWorksWindow(Gtk.Window):
-    def __init__(self, parent, conn, authorship):
-        super().__init__(transient_for=parent, modal=False)
+class AuthorPage(Gtk.Box):
+    def __init__(self, conn, authorship):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.conn = conn
         self.authorship = authorship or {}
         name = self.authorship.get("name") or "Unknown author"
-        self.set_title("Papers by " + name)
-        self.set_default_size(720, 720)
 
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        outer.set_margin_start(12)
-        outer.set_margin_end(12)
-        outer.set_margin_top(12)
-        outer.set_margin_bottom(12)
+        self.set_margin_start(12)
+        self.set_margin_end(12)
+        self.set_margin_top(12)
+        self.set_margin_bottom(12)
 
         # --- Header (name, ORCID, headline numbers) -------------------
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
@@ -531,14 +528,14 @@ class AuthorWorksWindow(Gtk.Window):
         self.hist_area.set_draw_func(self._on_draw_hist)
         header.append(self.hist_area)
 
-        outer.append(header)
+        self.append(header)
 
         # Frequent collaborators row (populated async).
         self.coauth_label = Gtk.Label(xalign=0.0)
         self.coauth_label.set_markup(
             "<span size='small' alpha='65%'>Frequent collaborators</span>")
         self.coauth_label.set_visible(False)
-        outer.append(self.coauth_label)
+        self.append(self.coauth_label)
 
         self.coauth_box = Gtk.FlowBox()
         self.coauth_box.set_selection_mode(Gtk.SelectionMode.NONE)
@@ -546,9 +543,9 @@ class AuthorWorksWindow(Gtk.Window):
         self.coauth_box.set_row_spacing(4)
         self.coauth_box.set_column_spacing(4)
         self.coauth_box.set_visible(False)
-        outer.append(self.coauth_box)
+        self.append(self.coauth_box)
 
-        outer.append(Gtk.Separator())
+        self.append(Gtk.Separator())
 
         # --- Sort toggle: most-recent vs most-cited -------------------
         self._works_sort = "recent"
@@ -579,13 +576,13 @@ class AuthorWorksWindow(Gtk.Window):
         refresh_btn.connect("clicked", self._on_refresh_works)
         sort_row.append(refresh_btn)
 
-        outer.append(sort_row)
+        self.append(sort_row)
 
         # --- Status + results list ------------------------------------
         self.status = Gtk.Label(xalign=0.0)
         self.status.set_markup(
             "<span alpha='75%'>Loading from OpenAlex…</span>")
-        outer.append(self.status)
+        self.append(self.status)
 
         self.list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
                                 spacing=10)
@@ -593,16 +590,8 @@ class AuthorWorksWindow(Gtk.Window):
         scrolled.set_vexpand(True)
         scrolled.set_hexpand(True)
         scrolled.set_child(self.list_box)
-        outer.append(scrolled)
+        self.append(scrolled)
 
-        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        btn_row.set_halign(Gtk.Align.END)
-        close_btn = Gtk.Button(label="Close")
-        close_btn.connect("clicked", lambda _b: self.close())
-        btn_row.append(close_btn)
-        outer.append(btn_row)
-
-        self.set_child(outer)
         self._existing = _existing_dois(self.conn)
         self._spawn_fetch()
 
@@ -986,7 +975,7 @@ class AuthorWorksWindow(Gtk.Window):
             "orcid": None,
             "institution": None,
         }
-        open_window(self.get_transient_for() or self, self.conn, authorship)
+        open_window(self.get_root(), self.conn, authorship)
 
     # --- Drawing -------------------------------------------------------
 
@@ -1334,6 +1323,23 @@ class AuthorWorksWindow(Gtk.Window):
             btn.set_tooltip_text("Last error: " + str(status_or_msg))
             btn.set_sensitive(True)
         return False
+
+
+class AuthorWorksWindow(Gtk.Window):
+    """Interim wrapper keeping the one-window-per-author behaviour
+    while AuthorPage is extracted. Replaced by AuthorsWindow in the
+    next commit."""
+
+    def __init__(self, parent, conn, authorship):
+        super().__init__(transient_for=parent, modal=False)
+        name = (authorship or {}).get("name") or "Unknown author"
+        self.set_title("Papers by " + name)
+        self.set_default_size(720, 720)
+        self.page = AuthorPage(conn, authorship)
+        self.set_child(self.page)
+
+    def refresh_in_library(self):
+        self.page.refresh_in_library()
 
 
 def open_window(parent, conn, authorship):

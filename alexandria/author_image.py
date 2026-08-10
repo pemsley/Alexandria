@@ -15,6 +15,7 @@ logic testable without network.
 
 import json
 import os
+import re
 import tempfile
 import urllib.parse
 import urllib.request
@@ -142,6 +143,42 @@ def _identifier_lookup(orcid, openalex_id, http_get_json):
         return (False, None)
     img = (bindings[0].get("img") or {}).get("value")
     return (True, _sized(img) if img else None)
+
+
+_META_IMAGE_RE = re.compile(
+    br'<meta\s+[^>]*?(?:property=["\']og:image["\']|'
+    br'name=["\']twitter:image["\'])[^>]*?>', re.IGNORECASE)
+_META_CONTENT_RE = re.compile(
+    br'content=["\']([^"\']+)["\']', re.IGNORECASE)
+
+
+def _looks_like_html(data):
+    head = bytes(data[:512]).lstrip().lower()
+    return head.startswith(b"<!doctype") or head.startswith(b"<html") \
+        or b"<html" in head
+
+
+def download_image(url, http_get_bytes=None):
+    """GET `url` expecting image bytes. When the response is an HTML
+    page instead — the common case for browser drags, where the
+    dragged <img> is wrapped in a link (Wikipedia's infobox portrait
+    delivers the File: description page, not the file) — resolve the
+    page's og:image / twitter:image metadata and fetch that. Raises
+    ValueError when the page names no image; other network errors
+    propagate."""
+    get_bytes = http_get_bytes or _http_get_bytes
+    data = get_bytes(url, {"User-Agent": _UA}, 30)
+    if not _looks_like_html(data):
+        return data
+    m = _META_IMAGE_RE.search(data)
+    if m:
+        c = _META_CONTENT_RE.search(m.group(0))
+        if c:
+            img_url = urllib.parse.urljoin(
+                url, c.group(1).decode("utf-8", "replace"))
+            return get_bytes(img_url, {"User-Agent": _UA}, 30)
+    raise ValueError(
+        "that address is a web page with no main image (og:image)")
 
 
 def wikidata_portrait_url(orcid, openalex_id, http_get_json):

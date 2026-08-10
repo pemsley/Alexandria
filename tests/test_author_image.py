@@ -226,3 +226,72 @@ def test_name_fallback_skipped_without_name(tmp_path):
         http_get_json=get,
         http_get_bytes=lambda u, headers, timeout: _png_bytes(8, 8))
     assert p is None
+
+
+# --- download_image: og:image resolution for HTML drops -------------
+
+def test_download_image_passes_through_image_bytes():
+    png = _png_bytes(8, 8)
+    out = author_image.download_image(
+        "https://x/img.png",
+        http_get_bytes=lambda u, headers, timeout: png)
+    assert out == png
+
+
+def test_download_image_resolves_og_image():
+    # Dragging Wikipedia's infobox portrait delivers the File: page
+    # (HTML), whose og:image points at the real file.
+    png = _png_bytes(8, 8)
+    html = (b'<!DOCTYPE html><html><head>'
+            b'<meta property="og:image" '
+            b'content="https://upload.wikimedia.org/real.jpg"/>'
+            b'</head><body></body></html>')
+
+    def get(url, headers, timeout):
+        if url.endswith("File:X.jpg"):
+            return html
+        assert url == "https://upload.wikimedia.org/real.jpg"
+        return png
+
+    out = author_image.download_image(
+        "https://en.wikipedia.org/wiki/File:X.jpg", http_get_bytes=get)
+    assert out == png
+
+
+def test_download_image_og_image_reversed_attrs_and_relative():
+    png = _png_bytes(8, 8)
+    html = (b'<html><head><meta content="/img/lead.jpg" '
+            b'property="og:image"></head></html>')
+
+    def get(url, headers, timeout):
+        if url == "https://site.example/page":
+            return html
+        assert url == "https://site.example/img/lead.jpg"
+        return png
+
+    assert author_image.download_image(
+        "https://site.example/page", http_get_bytes=get) == png
+
+
+def test_download_image_twitter_image_fallback():
+    png = _png_bytes(8, 8)
+    html = (b'<html><head><meta name="twitter:image" '
+            b'content="https://c/t.jpg"></head></html>')
+
+    def get(url, headers, timeout):
+        return html if url == "https://p/page" else png
+
+    assert author_image.download_image(
+        "https://p/page", http_get_bytes=get) == png
+
+
+def test_download_image_html_without_image_meta_raises():
+    html = b"<html><head><title>nope</title></head></html>"
+    try:
+        author_image.download_image(
+            "https://p/page",
+            http_get_bytes=lambda u, headers, timeout: html)
+    except ValueError as e:
+        assert "image" in str(e).lower()
+    else:
+        raise AssertionError("expected ValueError")

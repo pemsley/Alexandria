@@ -1223,8 +1223,11 @@ class AuthorPage(Gtk.Box):
         # matching this file's other background-fetch patterns.
         def work():
             try:
-                data = author_image._http_get_bytes(
-                    url, {"User-Agent": author_image._UA}, 30)
+                # download_image resolves og:image when the drop is a
+                # web page rather than the image itself (dragging
+                # Wikipedia's infobox portrait delivers the File:
+                # description page).
+                data = author_image.download_image(url)
                 path = author_image.save_image(
                     self.authorship, data)
             except Exception as e:

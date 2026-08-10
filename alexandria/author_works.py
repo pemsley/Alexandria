@@ -872,19 +872,28 @@ class AuthorPage(Gtk.Box):
                 chip = Gtk.Label()
                 if info["role"] == "pi":
                     color, text = "#1c71d8", "PI"
-                    tip = ("Last author on {} shared paper(s) while "
-                           "both at {} — likely the PI.").format(
+                    tip = ("Corresponding or last author on {} shared "
+                           "paper(s) while both at {} — likely the "
+                           "PI.").format(
                                info["votes"], info["institution"])
                 else:
                     color, text = "#26a269", "Group"
-                    tip = ("{} was last author on {} shared paper(s) "
-                           "while both at {} — {} likely worked in "
-                           "their group.").format(
+                    tip = ("{} was corresponding or last author on {} "
+                           "shared paper(s) while both at {} — {} "
+                           "likely worked in their group.").format(
                                me, info["votes"], info["institution"],
                                c["name"])
-                chip.set_markup(
-                    "<span size='x-small' weight='bold' "
-                    "foreground='{}'>{}</span>".format(color, text))
+                if info["votes"] <= 1:
+                    # Single-vote verdicts are thin evidence — grey
+                    # the cartouche rather than suppress it. alpha
+                    # (not a fixed grey) tracks light/dark themes.
+                    chip.set_markup(
+                        "<span size='x-small' weight='bold' "
+                        "alpha='55%'>{}</span>".format(text))
+                else:
+                    chip.set_markup(
+                        "<span size='x-small' weight='bold' "
+                        "foreground='{}'>{}</span>".format(color, text))
                 chip.set_tooltip_text(tip)
                 row.append(chip)
             btn.set_child(row)

@@ -131,3 +131,49 @@ def test_upsert_replaces_stale_institution(tmp_path):
     index.add_author_trail(conn, {
         "name": "A", "openalex_id": "A1", "institution": "New Place"})
     assert index.list_author_trail(conn)[0]["institution"] == "New Place"
+
+
+def test_move_author_trail_reorders(tmp_path):
+    conn = _conn(tmp_path)
+    for i, k in enumerate(("A1", "A2", "A3", "A4")):
+        index.add_author_trail(conn, {"name": k, "openalex_id": k})
+    index.move_author_trail(conn, "A4", 0)      # drag to top
+    assert [r["key"] for r in index.list_author_trail(conn)] == \
+        ["A4", "A1", "A2", "A3"]
+    index.move_author_trail(conn, "A1", 3)      # drag to bottom
+    assert [r["key"] for r in index.list_author_trail(conn)] == \
+        ["A4", "A2", "A3", "A1"]
+    index.move_author_trail(conn, "A2", 2)      # middle move
+    assert [r["key"] for r in index.list_author_trail(conn)] == \
+        ["A4", "A3", "A2", "A1"]
+
+
+def test_move_author_trail_noop_and_unknown(tmp_path):
+    conn = _conn(tmp_path)
+    index.add_author_trail(conn, {"name": "A", "openalex_id": "A1"})
+    index.add_author_trail(conn, {"name": "B", "openalex_id": "A2"})
+    index.move_author_trail(conn, "A1", 0)      # same place
+    index.move_author_trail(conn, "ZZ", 0)      # unknown key
+    assert [r["key"] for r in index.list_author_trail(conn)] == \
+        ["A1", "A2"]
+
+
+def test_move_author_trail_clamps_index(tmp_path):
+    conn = _conn(tmp_path)
+    index.add_author_trail(conn, {"name": "A", "openalex_id": "A1"})
+    index.add_author_trail(conn, {"name": "B", "openalex_id": "A2"})
+    index.move_author_trail(conn, "A1", 99)     # beyond end -> end
+    assert [r["key"] for r in index.list_author_trail(conn)] == \
+        ["A2", "A1"]
+    index.move_author_trail(conn, "A1", -5)     # below 0 -> top
+    assert [r["key"] for r in index.list_author_trail(conn)] == \
+        ["A1", "A2"]
+
+
+def test_positions_rewritten_contiguously_after_move(tmp_path):
+    conn = _conn(tmp_path)
+    for k in ("A1", "A2", "A3"):
+        index.add_author_trail(conn, {"name": k, "openalex_id": k})
+    index.remove_author_trail(conn, "A2")       # leaves a gap
+    index.move_author_trail(conn, "A3", 0)
+    assert [r["position"] for r in index.list_author_trail(conn)] == [1, 2]

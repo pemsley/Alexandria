@@ -776,6 +776,25 @@ def remove_author_trail(conn, key):
     conn.commit()
 
 
+def move_author_trail(conn, key, new_index):
+    """Reposition `key` to `new_index` (0-based, clamped) in the
+    trail — the drag-to-reorder backend. Rewrites every position
+    contiguously (1..n): moves are rare, trails are small, and
+    contiguous positions keep the append rule (`MAX(position)+1`)
+    and future moves simple to reason about."""
+    keys = [r["key"] for r in conn.execute(
+        "SELECT key FROM author_trail ORDER BY position").fetchall()]
+    if key not in keys:
+        return
+    keys.remove(key)
+    keys.insert(max(0, min(int(new_index), len(keys))), key)
+    for pos, k in enumerate(keys, start=1):
+        conn.execute(
+            "UPDATE author_trail SET position = ? WHERE key = ?",
+            (pos, k))
+    conn.commit()
+
+
 CREATE_SUBSCRIPTIONS = """
 CREATE TABLE IF NOT EXISTS subscriptions (
     id INTEGER PRIMARY KEY,

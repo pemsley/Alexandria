@@ -1687,6 +1687,24 @@ class AuthorsWindow(Gtk.Window):
         row = Gtk.ListBoxRow()
         row.trail_entry = entry
 
+        # Drag-to-reorder: each row is both a drag source (payload:
+        # its trail key) and a drop target. Dropping on a row's upper
+        # half inserts before it, lower half after — the standard
+        # list-reorder feel. Click-to-select is unaffected (drags
+        # only start past the movement threshold).
+        drag = Gtk.DragSource.new()
+        drag.set_actions(Gdk.DragAction.MOVE)
+        drag.connect(
+            "prepare",
+            lambda _s, _x, _y, k=entry["key"]:
+                Gdk.ContentProvider.new_for_value(k))
+        row.add_controller(drag)
+
+        drop = Gtk.DropTarget.new(GObject.TYPE_STRING,
+                                  Gdk.DragAction.MOVE)
+        drop.connect("drop", self._on_row_drop, row)
+        row.add_controller(drop)
+
         hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         hbox.set_margin_top(4)
         hbox.set_margin_bottom(4)
@@ -1833,6 +1851,50 @@ class AuthorsWindow(Gtk.Window):
 
     # --- Public API ---------------------------------------------------
 
+    def _on_row_drop(self, _target, value, _x, y, row):
+        """A trail row was dropped onto `row`. Insert before or
+        after depending on which half of the row the drop landed
+        in."""
+        key = value if isinstance(value, str) else None
+        if not key or key not in self._rows:
+            return False
+        idx = row.get_index()
+        if y > row.get_allocated_height() / 2:
+            idx += 1
+        self._reorder(key, idx)
+        return True
+
+    def _reorder(self, key, insert_idx):
+        """Move `key`'s row to `insert_idx` (an index in the current
+        row order, before removal) — widget move + persistent
+        position rewrite in one place."""
+        row = self._rows[key]
+        cur = row.get_index()
+        if cur < insert_idx:
+            insert_idx -= 1   # removal shifts everything below up
+        if insert_idx == cur:
+            return
+        was_selected = self.sidebar.get_selected_row() is row
+        self.sidebar.remove(row)
+        self.sidebar.insert(row, insert_idx)
+        index.move_author_trail(self.conn, key, insert_idx)
+        if was_selected:
+            # Removing the selected row emitted row-selected(None)
+            # (empty pane); reselecting restores the page.
+            self.sidebar.select_row(row)
+
+    def _scroll_row_into_view(self, row):
+        """Selected rows must be visible — with a long trail, a new
+        author appends (and selects) at the bottom, off-screen.
+        Gtk.Viewport.scroll_to needs GTK 4.12; fall back to focusing
+        the row, which also scrolls it in."""
+        viewport = self.sidebar.get_parent()
+        if hasattr(viewport, "scroll_to"):
+            viewport.scroll_to(row, None)
+        else:
+            row.grab_focus()
+        return False
+
     def show_author(self, authorship):
         """Route an author into the window: upsert onto the trail,
         create the sidebar row if new, select it (which lazily builds
@@ -1851,6 +1913,9 @@ class AuthorsWindow(Gtk.Window):
             if row.trail_entry != entry:
                 row.trail_entry = entry
         self.sidebar.select_row(row)
+        # idle: a freshly appended row has no allocation yet, so an
+        # immediate scroll_to lands short of the real bottom.
+        GLib.idle_add(self._scroll_row_into_view, row)
 
     def refresh_in_library(self):
         """Fan the in-library badge refresh out to every live page.

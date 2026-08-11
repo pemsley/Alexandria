@@ -4636,12 +4636,23 @@ class BrowserWindow(Adw.ApplicationWindow):
             authorships = json.loads(row["authorships_json"] or "[]")
         except (TypeError, ValueError):
             authorships = []
-        if not authorships:
-            try:
-                flat = json.loads(row["authors_json"] or "[]")
-            except (TypeError, ValueError):
-                flat = []
-            authorships = [{"name": n} for n in flat]
+        try:
+            flat = json.loads(row["authors_json"] or "[]")
+        except (TypeError, ValueError):
+            flat = []
+        # Authors present only in the flat (usually PDF-extracted)
+        # list get shown too, marked "scraped": OpenAlex records are
+        # sometimes truncated (one author on a five-author paper), and
+        # silently dropping the scraped names would hide real people.
+        # Surname matching, not full-name: "Julie Thompson" (OpenAlex)
+        # and "Julie D. Thompson" (extracted) are the same person.
+        def _surname(n):
+            parts = (n or "").strip().split()
+            return parts[-1].casefold() if parts else ""
+        known = {_surname(a.get("name")) for a in authorships}
+        for n in flat:
+            if _surname(n) and _surname(n) not in known:
+                authorships.append({"name": n, "scraped": True})
 
         pop = Gtk.Popover()
         pop.set_parent(anchor_widget)
@@ -4657,6 +4668,15 @@ class BrowserWindow(Adw.ApplicationWindow):
         title.set_markup("<b>Authors</b>  <small>({})</small>".format(len(authorships)))
         title.set_halign(Gtk.Align.START)
         outer.append(title)
+
+        if any(a.get("scraped") for a in authorships):
+            legend = Gtk.Label()
+            legend.set_markup(
+                "<small><i><span alpha='65%'>greyed: as printed in "
+                "the PDF — no OpenAlex authorship record"
+                "</span></i></small>")
+            legend.set_halign(Gtk.Align.START)
+            outer.append(legend)
 
         if not authorships:
             empty = Gtk.Label(label="(no authors)")
@@ -4704,6 +4724,16 @@ class BrowserWindow(Adw.ApplicationWindow):
         name_btn.set_halign(Gtk.Align.START)
         name_btn.set_hexpand(True)
         name_btn.set_tooltip_text("Filter library by this author")
+        if authorship.get("scraped"):
+            # Scraped-only name: greyed italic, and an honest tooltip.
+            lbl = Gtk.Label()
+            lbl.set_markup("<i><span alpha='55%'>{}</span></i>".format(
+                GLib.markup_escape_text(name)))
+            name_btn.set_child(lbl)
+            name_btn.set_tooltip_text(
+                "As printed in the PDF — not (yet) matched to an "
+                "OpenAlex authorship record.\nClick to filter the "
+                "library by this author.")
         name_btn.connect("clicked",
                          lambda _b, n=name: self._filter_by_author(n, popover))
         grid.attach(name_btn, 0, name_row, 1, 1)

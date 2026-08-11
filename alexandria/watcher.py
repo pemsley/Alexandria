@@ -110,9 +110,19 @@ class LibraryWatcher:
         if self.monitor:
             print("[watcher] start: already running")
             return
+        # A missing root is a normal state — a fresh library, or the
+        # user cleared the folder. Create it and watch it; declining
+        # to start here meant nothing ever imported until an app
+        # restart with the directory present.
         if not os.path.isdir(self.root):
-            print("[watcher] start: root is not a directory: {!r}".format(self.root))
-            return
+            try:
+                os.makedirs(self.root, exist_ok=True)
+                print("[watcher] created library root: {}".format(
+                    self.root))
+            except OSError as e:
+                print("[watcher] start: cannot create root {!r}: {}"
+                      .format(self.root, e))
+                return
         try:
             gfile = Gio.File.new_for_path(self.root)
             self.monitor = gfile.monitor_directory(

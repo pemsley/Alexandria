@@ -87,7 +87,8 @@ def _enrich_with_openalex(rec):
         rec["abstract"] = abstract
     if authorships:
         rec["authorships"] = authorships
-        oa_names = [a["name"] for a in authorships if a.get("name")]
+        oa_names = metrics.oa_author_names(
+            authorships, rec.get("authors"))
         if oa_names:
             rec["authors"] = oa_names
     if cby:
@@ -405,6 +406,16 @@ def attach_pdf_to_ghost(conn, ghost_row, source_pdf_path, library_root):
     # with it citation refresh and enrichment.
     if ghost_rec.get("doi") and not cur.get("doi"):
         cur["doi"] = ghost_rec["doi"]
+        # The import above ran DOI-less, so it skipped OpenAlex
+        # enrichment entirely — run it now that a DOI exists
+        # (authorships power the per-author search buttons;
+        # citations / abstract / keywords come along). Best-effort:
+        # a network failure leaves the merge itself intact.
+        try:
+            _enrich_with_openalex(cur)
+        except Exception as e:
+            print("[bibtex_import] post-merge enrichment failed: {}"
+                  .format(e))
 
     # hand_edited rule: if the ghost was hand_edited, the user
     # already curated its bibliographic fields — those win, and

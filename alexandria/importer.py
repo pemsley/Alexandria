@@ -294,7 +294,8 @@ def refresh_pdf(conn, pdf_path):
                 fresh["abstract"] = abstract
             if authorships:
                 fresh["authorships"] = authorships
-                oa_names = [a["name"] for a in authorships if a.get("name")]
+                oa_names = metrics.oa_author_names(
+                    authorships, fresh.get("authors"))
                 if oa_names:
                     fresh["authors"] = oa_names
             if cby:
@@ -441,7 +442,8 @@ def import_pdf(conn, pdf_path):
                 rec["authorships"] = authorships
                 # Prefer OpenAlex display names for the flat
                 # authors list.
-                oa_names = [a["name"] for a in authorships if a.get("name")]
+                oa_names = metrics.oa_author_names(
+                    authorships, rec.get("authors"))
                 if oa_names:
                     rec["authors"] = oa_names
             if cby:

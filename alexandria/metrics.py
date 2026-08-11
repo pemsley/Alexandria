@@ -942,6 +942,22 @@ def infer_collaborator_roles(target_id, works_lists):
     return out
 
 
+def oa_author_names(authorships, existing=None):
+    """The author names to store from OpenAlex `authorships`, or None
+    to keep what we already have. Never shrinks: OpenAlex work
+    records are sometimes truncated (e.g. W2097382368 lists one
+    author for a five-author 1997 paper), and replacing a longer
+    list — often PDF-extracted — with a shorter one loses real
+    information. Equal-length lists DO replace (OpenAlex names are
+    cleaner than extraction warts)."""
+    names = [a["name"] for a in (authorships or []) if a.get("name")]
+    if not names:
+        return None
+    if existing and len(names) < len(existing):
+        return None
+    return names
+
+
 def _normalize_author_id(openalex_id):
     """Strip URL prefix from an OpenAlex author ID — accepts both
     `https://openalex.org/A5018808577` and `A5018808577`. Returns

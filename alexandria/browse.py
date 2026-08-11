@@ -2760,7 +2760,8 @@ class BrowserWindow(Adw.ApplicationWindow):
                         rec["abstract"] = abstract
                     if authorships:
                         rec["authorships"] = authorships
-                        oa_names = [a["name"] for a in authorships if a.get("name")]
+                        oa_names = metrics.oa_author_names(
+                            authorships, rec.get("authors"))
                         if oa_names:
                             rec["authors"] = oa_names
                     if cby:

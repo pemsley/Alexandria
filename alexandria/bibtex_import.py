@@ -398,6 +398,14 @@ def attach_pdf_to_ghost(conn, ghost_row, source_pdf_path, library_root):
         if gv:
             cur[key] = gv
 
+    # DOI backfill: when the PDF's own import found no DOI
+    # (pre-DOI-era papers — the citation-matched merge case), adopt
+    # the ghost's. The DOI gate above already guaranteed there is no
+    # conflict, and without this the merged entry loses the DOI and
+    # with it citation refresh and enrichment.
+    if ghost_rec.get("doi") and not cur.get("doi"):
+        cur["doi"] = ghost_rec["doi"]
+
     # hand_edited rule: if the ghost was hand_edited, the user
     # already curated its bibliographic fields — those win, and
     # hand_edited stays True so future refreshes preserve them.

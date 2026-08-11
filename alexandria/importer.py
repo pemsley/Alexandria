@@ -398,6 +398,19 @@ def import_pdf(conn, pdf_path):
     if dup:
         return dup, "duplicate"
 
+    # No DOI in the PDF text (common for pre-DOI-era papers) means
+    # the DOI-keyed ghost-merge can never fire — yet old papers are
+    # exactly the ones most likely to already exist as BibTeX
+    # ghosts. Fall back to citation matching against ghosts only;
+    # the watcher / drop-handler ghost-merge path treats the result
+    # like any other ghost duplicate.
+    if not rec.get("doi"):
+        ghost = index.find_ghost_by_citation(
+            conn, rec.get("title"), rec.get("year"),
+            rec.get("authors"))
+        if ghost:
+            return ghost, "duplicate"
+
     # OpenAlex enrichment (one HTTP, six outputs). Best-effort;
     # failures leave fields untouched.
     if rec.get("doi"):

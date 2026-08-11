@@ -1112,6 +1112,66 @@ def normalize_doi(doi):
     return s.strip() or None
 
 
+def _normalize_title(title):
+    """Casefold and collapse every non-alphanumeric run to one space,
+    so 'CLUSTAL_X' / 'CLUSTAL X' / 'clustal-x' compare equal."""
+    if not title:
+        return ""
+    out = []
+    prev_space = True
+    for ch in title.casefold():
+        if ch.isalnum():
+            out.append(ch)
+            prev_space = False
+        elif not prev_space:
+            out.append(" ")
+            prev_space = True
+    return "".join(out).strip()
+
+
+def _first_author_surname(authors):
+    """Last whitespace token of the first author, casefolded — the
+    same surname heuristic browse uses for author search."""
+    if not authors:
+        return None
+    parts = (authors[0] or "").strip().split()
+    return parts[-1].casefold() if parts else None
+
+
+def find_ghost_by_citation(conn, title, year, authors):
+    """Fallback ghost matching for PDFs whose text yields no DOI —
+    pre-DOI-era papers are exactly the ones most likely to already
+    exist as BibTeX ghosts. Matches ONLY ghost rows (bibtex:*), by
+    normalized title, rejecting on a year conflict (both present,
+    different) or a first-author surname conflict (both present,
+    different). Returns the row dict only when exactly one ghost
+    matches — the failure mode of guessing is merging the PDF into
+    the wrong entry, so ambiguity declines."""
+    want = _normalize_title(title)
+    if not want:
+        return None
+    want_surname = _first_author_surname(authors)
+    matches = []
+    for row in conn.execute(
+            "SELECT * FROM papers WHERE pdf_path LIKE 'bibtex:%'"):
+        if _normalize_title(row["title"]) != want:
+            continue
+        if (year is not None and row["year"] is not None
+                and int(row["year"]) != int(year)):
+            continue
+        try:
+            g_authors = json.loads(row["authors_json"] or "[]")
+        except Exception:
+            g_authors = []
+        g_surname = _first_author_surname(g_authors)
+        if want_surname and g_surname and want_surname != g_surname:
+            continue
+        matches.append(row)
+    if len(matches) != 1:
+        return None
+    return dict(matches[0])
+
+
 def find_duplicate(conn, doi=None, sha256=None, exclude_path=None):
     """Return an existing row matching this DOI or SHA-256, or None.
     DOI matching is case-insensitive."""

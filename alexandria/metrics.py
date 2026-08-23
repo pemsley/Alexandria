@@ -3006,8 +3006,20 @@ _WORKS_SEARCH_SORTS = {
 }
 
 
+def _sanitize_filter_value(s):
+    """Make a free-text string safe to embed in an OpenAlex `filter=`
+    value. OpenAlex reads `,` as the AND separator between filters and
+    `|` as OR within one, with no escaping mechanism — so a title
+    containing a comma, or a name typed "Smith, C. A.", silently
+    truncates the filter and returns the wrong works. Both characters
+    become spaces; the search filters tokenise, so that costs nothing."""
+    if not s:
+        return ""
+    return re.sub(r"\s+", " ", s.replace(",", " ").replace("|", " ")).strip()
+
+
 def search_works(query, limit=25, sort="relevance", year_min=None,
-                 require_doi=True, search_field="any"):
+                 require_doi=True, search_field="any", author=None):
     """Free-text search across OpenAlex Works. Used by the Discover
     dialog's "By topic" and "By title" tabs.
 
@@ -3018,6 +3030,13 @@ def search_works(query, limit=25, sort="relevance", year_min=None,
       * `"title"` — `filter=title.search:` instead; matches the
         title field only. Right for "find me this specific paper"
         queries where the user knows (most of) the title.
+
+    `author` (optional, free text — e.g. "Emsley" or "P. Emsley")
+    ANDs a `raw_author_name.search:` filter onto the query, matching
+    the author strings as printed on the paper. It is not a
+    disambiguated person, so it is broad on common surnames — but
+    combined with title words it is the "first author + a few words
+    of the title" lookup, and it composes with either `search_field`.
 
     Result shape matches `fetch_cited_by` / `fetch_references` so
     `_build_related_row` in browse.py renders them unchanged.
@@ -3042,7 +3061,18 @@ def search_works(query, limit=25, sort="relevance", year_min=None,
     if require_doi:
         filt.append("has_doi:true")
     if search_field == "title":
-        filt.append("title.search:" + query)
+        # Filter values, unlike the top-level `search=` parameter,
+        # have to be comma-free — see `_sanitize_filter_value`. A
+        # query of nothing but separators sanitizes to "", which
+        # would send an empty filter; drop it rather than ask
+        # OpenAlex for `title.search:`.
+        clean = _sanitize_filter_value(query)
+        if not clean:
+            return []
+        filt.append("title.search:" + clean)
+    clean_author = _sanitize_filter_value(author)
+    if clean_author:
+        filt.append("raw_author_name.search:" + clean_author)
     params = [
         ("sort", sort_key),
         ("per_page", str(max(1, min(int(limit), 50)))),

@@ -414,6 +414,11 @@ class DiscoverWindow(Adw.Window):
         self._ti_query.set_placeholder_text(
             "e.g. AUSPEX graphical tool for X-ray diffraction "
             "(full or partial title)")
+        self._ti_author = Gtk.Entry()
+        controls.append(_form_row("Author", self._ti_author))
+        self._ti_author.set_placeholder_text(
+            "optional — e.g. Thorn  (any author on the paper, "
+            "not just the first)")
 
         opts = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         opts.append(Gtk.Label(label="Year ≥"))
@@ -440,7 +445,8 @@ class DiscoverWindow(Adw.Window):
         btn_row.append(self._ti_search_btn)
         controls.append(btn_row)
 
-        self._ti_query.connect("activate", self._on_title_search)
+        for entry in (self._ti_query, self._ti_author):
+            entry.connect("activate", self._on_title_search)
 
         box.append(controls)
 
@@ -461,6 +467,7 @@ class DiscoverWindow(Adw.Window):
         if not query:
             self._ti_status.set_text("Enter a title (or part of one).")
             return
+        author = (self._ti_author.get_text() or "").strip() or None
         year_text = (self._ti_year.get_text() or "").strip()
         year_min = None
         if year_text:
@@ -480,7 +487,8 @@ class DiscoverWindow(Adw.Window):
             try:
                 rows = metrics.search_works(
                     query=query, limit=20, sort=sort,
-                    year_min=year_min, search_field="title")
+                    year_min=year_min, search_field="title",
+                    author=author)
             except Exception as e:
                 rows = []
                 err = str(e)
@@ -498,7 +506,15 @@ class DiscoverWindow(Adw.Window):
                     GLib.markup_escape_text(err)))
             return False
         if not rows:
-            self._ti_status.set_text("No results.")
+            # The author box is the usual culprit for a title that
+            # ought to match — OpenAlex matches the name as printed
+            # on the paper, so an initial or a spelling variant can
+            # exclude the very paper being looked for.
+            if (self._ti_author.get_text() or "").strip():
+                self._ti_status.set_text(
+                    "No results — try clearing the Author box.")
+            else:
+                self._ti_status.set_text("No results.")
             return False
         self._ti_status.set_markup(
             "<small>{} result{}</small>".format(

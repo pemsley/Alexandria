@@ -1658,9 +1658,11 @@ class AuthorPage(Gtk.Box):
         return False
 
 
-class AuthorsWindow(Gtk.Window):
+class AuthorsWindow(Adw.Window):
     """The one Authors window: a persistent trail of authors down the
-    left, the selected author's page on the right. Pages are built
+    left, the selected author's page on the right — an
+    Adw.NavigationSplitView, so each pane gets its own header bar and
+    the sidebar folds away on narrow windows. Pages are built
     lazily on first selection and kept alive so switching back is
     instant. The trail itself lives in the `author_trail` table and
     survives restarts; works/impact data comes from the existing
@@ -1669,12 +1671,14 @@ class AuthorsWindow(Gtk.Window):
     def __init__(self, conn):
         super().__init__()
         self.conn = conn
-        self.set_title("Authors")
+        self.set_title("Alexandria: Authors")
         self.set_default_size(1000, 720)
         self._pages = {}   # trail key -> AuthorPage
         self._rows = {}    # trail key -> Gtk.ListBoxRow
 
-        root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self.split = Adw.NavigationSplitView()
+        self.split.set_min_sidebar_width(240)
+        self.split.set_max_sidebar_width(340)
 
         self.sidebar = Gtk.ListBox()
         self.sidebar.set_selection_mode(Gtk.SelectionMode.SINGLE)
@@ -1684,11 +1688,11 @@ class AuthorsWindow(Gtk.Window):
         side_scroll.set_policy(Gtk.PolicyType.NEVER,
                                Gtk.PolicyType.AUTOMATIC)
         side_scroll.set_child(self.sidebar)
-        side_scroll.set_size_request(240, -1)
-        root.append(side_scroll)
-
-        root.append(Gtk.Separator(
-            orientation=Gtk.Orientation.VERTICAL))
+        side_tb = Adw.ToolbarView()
+        side_tb.add_top_bar(Adw.HeaderBar())
+        side_tb.set_content(side_scroll)
+        self.split.set_sidebar(
+            Adw.NavigationPage.new(side_tb, "Alexandria: Authors"))
 
         self.stack = Gtk.Stack()
         self.stack.set_hexpand(True)
@@ -1697,9 +1701,23 @@ class AuthorsWindow(Gtk.Window):
         empty.set_markup(
             "<span alpha='60%'>Select an author</span>")
         self.stack.add_named(empty, "empty")
-        root.append(self.stack)
+        content_tb = Adw.ToolbarView()
+        content_tb.add_top_bar(Adw.HeaderBar())
+        content_tb.set_content(self.stack)
+        # The content page's title tracks the selected author (shown
+        # in the content header bar) — see _on_row_selected.
+        self._content_page = Adw.NavigationPage.new(content_tb, "Authors")
+        self.split.set_content(self._content_page)
 
-        self.set_child(root)
+        self.set_content(self.split)
+
+        # Below 640sp the split view collapses to a navigation stack:
+        # the sidebar fills the window and selecting an author pushes
+        # their page with a back button.
+        bp = Adw.Breakpoint.new(
+            Adw.BreakpointCondition.parse("max-width: 640sp"))
+        bp.add_setter(self.split, "collapsed", True)
+        self.add_breakpoint(bp)
 
         # Rebuild the sidebar from the persisted trail. No pages are
         # created (and nothing is fetched) until a row is selected.
@@ -1789,6 +1807,7 @@ class AuthorsWindow(Gtk.Window):
     def _on_row_selected(self, _listbox, row):
         if row is None:
             self.stack.set_visible_child_name("empty")
+            self._content_page.set_title("Authors")
             return
         entry = row.trail_entry
         key = entry["key"]
@@ -1813,6 +1832,11 @@ class AuthorsWindow(Gtk.Window):
             self._pages[key] = page
             self.stack.add_named(scroll, key)
         self.stack.set_visible_child_name(key)
+        self._content_page.set_title(entry.get("name") or "Author")
+        # In the collapsed (narrow) state the panes are a navigation
+        # stack — selecting an author must also navigate to the page.
+        # A no-op when the panes are side by side.
+        self.split.set_show_content(True)
         index.touch_author_trail(self.conn, key)
 
     def _on_page_institution(self, key, institution):
@@ -1875,6 +1899,7 @@ class AuthorsWindow(Gtk.Window):
                 self.sidebar.select_row(nxt)
             else:
                 self.stack.set_visible_child_name("empty")
+                self._content_page.set_title("Authors")
 
     # --- Public API ---------------------------------------------------
 

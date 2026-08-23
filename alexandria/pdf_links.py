@@ -49,6 +49,14 @@ _CR_RE = re.compile(r"(?:^|[^A-Za-z0-9])CR(\d+)\b")
 # character can't be silently stripped by an editor.
 _INDD_ENTRY_RE = re.compile("\\.indd:\\ufeff*(\\d{1,3})\\.")
 
+# Oxford University Press (3B2 Total Publishing System) names its
+# destinations `<article-id>-B<N>` for bibliography entries and
+# `-F<N>` / `-T<N>` for figures and tables, e.g. NAR gkr900 carries
+# "WEBgkr900-B12" alongside "WEBgkr900-F1". Anchoring on a literal
+# `-B` and end-of-string keeps the figure/table anchors out and stops
+# a bare `B` inside some other name from matching.
+_OUP_B_RE = re.compile(r"-B(\d+)$")
+
 
 def _ref_n_from_dest_name(name):
     """Reference number carried by a named destination, or None when
@@ -58,6 +66,9 @@ def _ref_n_from_dest_name(name):
     if m:
         return int(m.group(1))
     m = _INDD_ENTRY_RE.search(name)
+    if m:
+        return int(m.group(1))
+    m = _OUP_B_RE.search(name)
     if m:
         return int(m.group(1))
     return None
@@ -121,12 +132,21 @@ def _dest_top(resolved):
 
     Destination arrays look like `[page, fit_mode, ...args]`. The
     coordinate of interest depends on fit mode:
-      /XYZ left top zoom    -> args[1]   (top is 2nd arg)
-      /FitH top             -> args[0]
-      /FitBH top            -> args[0]
-    For other fit modes (Fit, FitV, FitR, FitB, FitBV) there's no
-    explicit top, so we return None and the viewer falls back to
-    scrolling to the page's top edge."""
+      /XYZ left top zoom       -> args[1]   (top is 2nd arg)
+      /FitH top                -> args[0]
+      /FitBH top               -> args[0]
+      /FitR left bottom right top -> args[3]
+    For other fit modes (Fit, FitV, FitB, FitBV) there's no explicit
+    top, so we return None and the viewer falls back to scrolling to
+    the page's top edge.
+
+    /FitR is what OUP's 3B2 exports use for citation destinations,
+    where the rect is the thin line box of the bibliography entry.
+    We take the spec's `top` slot verbatim rather than
+    `max(bottom, top)`: 3B2 emits the pair the other way round
+    (bottom > top), and on NAR gkr900 the `top` slot lands within
+    8.6pt of every parsed entry baseline while `max` misses 13 of 17
+    against `assign_ref_n_by_position`'s 12pt tolerance."""
     if not isinstance(resolved, (list, ArrayObject)) or len(resolved) < 2:
         return None
     fit = str(resolved[1])
@@ -138,6 +158,11 @@ def _dest_top(resolved):
     if fit in ("/FitH", "/FitBH") and len(resolved) >= 3 and resolved[2] is not None:
         try:
             return float(resolved[2])
+        except (TypeError, ValueError):
+            return None
+    if fit == "/FitR" and len(resolved) >= 6 and resolved[5] is not None:
+        try:
+            return float(resolved[5])
         except (TypeError, ValueError):
             return None
     return None

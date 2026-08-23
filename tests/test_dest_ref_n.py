@@ -94,6 +94,57 @@ def test_opaque_names_are_none():
     assert L._ref_n_from_dest_name("section-4.2") is None
 
 
+# --- OUP / 3B2 `-B<N>` shape ------------------------------------------
+#
+# Oxford University Press exports (NAR gkr900, PNAS Nexus pgag197)
+# name bibliography dests "<article-id>-B<N>" and figure / table
+# dests "-F<N>" / "-T<N>".
+
+def test_oup_bibliography_dest():
+    assert L._ref_n_from_dest_name("WEBgkr900-B1") == 1
+    assert L._ref_n_from_dest_name("WEBgkr900-B12") == 12
+    assert L._ref_n_from_dest_name("WEBgkr900-B17") == 17
+
+
+def test_oup_figure_and_table_dests_are_none():
+    # Same document, same naming scheme — these must not raise a
+    # reference popover.
+    assert L._ref_n_from_dest_name("WEBgkr900-F1") is None
+    assert L._ref_n_from_dest_name("WEBgkr900-T2") is None
+
+
+def test_oup_pattern_is_anchored_at_the_end():
+    # `-B<N>` only counts as the whole tail of the name, so a `-B12`
+    # buried mid-name isn't mistaken for an entry number.
+    assert L._ref_n_from_dest_name("doc-B12-figure") is None
+    assert L._ref_n_from_dest_name("sectionB4") is None
+
+
+# --- _dest_top fit modes ----------------------------------------------
+
+def test_dest_top_xyz_and_fith():
+    assert L._dest_top([None, "/XYZ", 100, 530, 0]) == 530.0
+    assert L._dest_top([None, "/FitH", 530]) == 530.0
+
+
+def test_dest_top_fitr_uses_the_top_slot():
+    # /FitR left bottom right top -> the 4th argument. OUP's 3B2
+    # emits the pair reversed (bottom > top); take the slot the spec
+    # names rather than max(), which lands ~9pt too high and pushes
+    # the entry outside assign_ref_n_by_position's 12pt tolerance.
+    assert L._dest_top([None, "/FitR", 262, 543, 605, 534]) == 534.0
+    assert L._dest_top([None, "/FitR", 275, 676, 613, 667]) == 667.0
+
+
+def test_dest_top_fitr_short_array_is_none():
+    assert L._dest_top([None, "/FitR", 262, 543]) is None
+
+
+def test_dest_top_modes_without_a_top():
+    assert L._dest_top([None, "/Fit"]) is None
+    assert L._dest_top([None, "/FitV", 100]) is None
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))

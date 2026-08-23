@@ -100,12 +100,17 @@ def test_fetch_metrics_falls_back_to_crossref_authorships(monkeypatch=None):
     # to miss and Crossref to return our sample message.
     saved_oa = metrics._openalex_metrics
     saved_cr = metrics._fetch_crossref_work_message
+    # The stub has to match _openalex_metrics' real arity (11) and the
+    # unpack below fetch_metrics' (12) — both gained `funders, grants`
+    # after this test was written, which is what used to make it fail
+    # with a bare "not enough values to unpack".
     metrics._openalex_metrics = lambda doi: (
-        None, [], None, [], [], None, None, None, None)
+        None, [], None, [], [], None, None, None, None, [], [])
     metrics._fetch_crossref_work_message = lambda doi: MSG
     try:
         (n, src, kw, abstract, authorships, cby,
-         oa_title, oa_year, is_oa, oa_status) = metrics.fetch_metrics(
+         oa_title, oa_year, is_oa, oa_status,
+         funders, grants) = metrics.fetch_metrics(
             "10.1126/science.adv3301")
     finally:
         metrics._openalex_metrics = saved_oa
@@ -118,6 +123,10 @@ def test_fetch_metrics_falls_back_to_crossref_authorships(monkeypatch=None):
     # cross-contamination guard has something to compare against.
     assert oa_title == MSG["title"][0]
     assert oa_year == 2026
+    # Crossref carries no OA or funding block, so these stay empty
+    # rather than None — callers iterate them unguarded.
+    assert is_oa is None and oa_status is None
+    assert funders == [] and grants == []
 
 
 # ---- Self-test runner (no pytest needed) ---------------------------

@@ -577,6 +577,14 @@ class AuthorPage(Gtk.Box):
 
         self.append(header)
 
+        # Avatar/photo workflow status ("Browser opened — drag…",
+        # "Looking up Wikidata portrait…"). Lives just under the
+        # header so it reads as being about the avatar, not the
+        # works list; hidden unless there is something to say.
+        self._avatar_status_lbl = Gtk.Label(xalign=0.0)
+        self._avatar_status_lbl.set_visible(False)
+        self.append(self._avatar_status_lbl)
+
         # Frequent collaborators row (populated async).
         self.coauth_label = Gtk.Label(xalign=0.0)
         self.coauth_label.set_markup(
@@ -1180,13 +1188,20 @@ class AuthorPage(Gtk.Box):
             "Browser opened — drag your chosen image onto the avatar.")
 
     def _avatar_status(self, text):
-        self.status.set_markup(
+        if not text:
+            self._avatar_status_lbl.set_visible(False)
+            return
+        self._avatar_status_lbl.set_markup(
             "<span size='small' alpha='75%'>{}</span>".format(
                 GLib.markup_escape_text(text)))
+        self._avatar_status_lbl.set_visible(True)
 
     def _apply_new_image(self, path):
         """Main-thread: refresh the header avatar and tell the
         hosting window (sidebar row) about the change."""
+        # The photo arrived — any "drag your chosen image…" /
+        # "Looking up…" instruction is done with.
+        self._avatar_status("")
         self._set_avatar_from_disk()
         if self._on_image_changed is not None:
             self._on_image_changed(path)

@@ -24,6 +24,49 @@ Pending features, roughly grouped. Newest at the top of each section.
   inspection, not yet verified against a live storm.
 
 ## Import / ingestion
+
+- **Collect and store JATS XML alongside PDFs.** When a paper's
+  full text is available as JATS (the NISO journal-article XML
+  standard), fetch it at import time and keep it next to the PDF —
+  the machine-readable twin of the human-readable copy. High
+  leverage because structured XML quietly replaces several things
+  we currently do with heuristics:
+    - **Exact reference extraction.** `<ref-list>` carries every
+      reference fully structured (authors, year, title, DOI) — no
+      line-wrap DOI reassembly, no publisher-specific patterns.
+      Directly fixes the Import Failures class of problem
+      (`acs.jcim.4c02293.pdf`), and `<xref>` elements tie each
+      in-text citation to its reference *and* its sentence —
+      feeding the citation hit-testing fallback item and, later,
+      citation-context features ("how does this paper cite X —
+      in passing, in Methods, critically?").
+    - **Clean full text.** Section-aware search ("only Methods"),
+      proper abstracts (abstract-display item), tables as data,
+      MathML. Feeds FTS, the static HTML index (a reflowable
+      reading view, not just a PDF link), and makes the MCP
+      server's `get_pdf_texts` dramatically better for
+      ask-the-library — Claude reading JATS beats pdftotext
+      output every time.
+    - **Coverage caveat.** Full-text JATS is essentially an OA
+      phenomenon: PMC / Europe PMC (biomed-heavy, includes some
+      Acta Cryst), PLOS, eLife, bioRxiv/medRxiv, MDPI, Frontiers.
+      Paywalled Elsevier/Wiley/ACS won't have it. An enrichment,
+      not a universal layer — the PDF stays canonical.
+    - **Fetching.** Europe PMC REST is the single clean entry
+      point: DOI → PMCID via their search endpoint, then
+      `GET /article/PMC{id}/fullTextXML`. Fits the existing
+      `metrics.py` helper pattern; stdlib `xml.etree` parses
+      JATS fine, no new dependencies.
+    - **On-disk shape.** Extend the same-basename convention:
+      `paper.pdf` + `paper.pdf.alexandria` + `paper.pdf.jats.xml`
+      travel together; teach the watcher/importer to ignore the
+      new extension; sharing and Drive-sync inherit it for free.
+    - **Ladder.** v0: fetch-and-store at import when the DOI
+      resolves to OA full text (plus a backfill pass for the
+      existing library). v1: prefer the JATS ref-list over PDF
+      parsing wherever it exists. v2: full-text FTS and
+      citation contexts.
+
 - **Drag-and-drop / CLI imports from outside the library tree
   (Flatpak).** Menu-driven Import Files / Import Folder now go
   through `importer.stage_into_library`, which copies the picked PDF

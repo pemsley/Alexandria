@@ -907,6 +907,23 @@ via `extract.CROSSREF_USER_AGENT`.
 
 ## UI
 
+- **"Rename to metadata" button on the paper card.** Rename the
+  PDF file so the filename reflects (to some extent) the title,
+  author and year — publisher downloads arrive as opaque names
+  (`s41586-024-07487-w.pdf`, `acs.jcim.4c02293.pdf`) and the
+  library folder is unreadable outside the app. Another button in
+  the card's action row (alongside Open / View / Edit / Rename /
+  Delete); proposes something like
+  `Smith-2024-Semantic-community-model.pdf` (first-author surname,
+  year, first few title words, sanitised and length-capped), shown
+  for confirmation/edit before applying. More than an `os.rename`:
+  the sidecar (`*.pdf.alexandria`) and thumbnail must move with
+  the PDF, the sidecar's `pdf_filename` basename and the DB row
+  need updating, and the watcher will see the rename as a
+  delete + create — reuse the existing manual-Rename plumbing,
+  which already deals with all of this; the new part is only
+  generating the proposed name from the metadata.
+
 - **Author photo on the author page.** Show a small blank-silhouette
   placeholder next to the author's name (Authors window /
   `AuthorPage` header); clicking it lets the user either pick an

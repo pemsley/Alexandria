@@ -974,6 +974,191 @@ def find_author_year_citations(pdf_path, bib_entries):
     return out
 
 
+# Numeric in-text citation tokens, for numbered bibliographies whose
+# PDF carries no internal Link annotations. Two bracket styles:
+# Science/AAAS parenthetical "(6, 7)" / "(8–14)" and the square form
+# "[6, 7]" used elsewhere. The body must be digits and separators
+# only, which is what keeps "(i)", "(Fig. 2A)" and "(fig. S1)" out.
+# The 60-char cap stops a runaway match when poppler's reflow drops a
+# closing bracket.
+_NUMERIC_CITE_RE = re.compile(r"[\(\[]([\d\s,\-–—]{1,60})[\)\]]")
+
+# A parenthesised number right after one of these is a cross-reference
+# to something that isn't a bibliography entry, so "(1)" following
+# "Eq." must not resolve to reference 1. Checked against the text
+# immediately preceding the token.
+_NOT_A_CITATION_BEFORE_RE = re.compile(
+    r"(?:eq|eqn|eqs|equation|equations|fig|figs|figure|figures|"
+    r"table|tables|movie|movies|section|sect|chapter|step|panel)"
+    r"\.?\s*$", re.IGNORECASE)
+
+# Entry numbers don't reach four digits; the cap is what stops a bare
+# year — "(2026)" — from posing as a citation when a bibliography
+# happens to be long.
+_MAX_PLAUSIBLE_ENTRY_N = 999
+
+# A publication year in a bibliography entry. Used to sanity-check
+# that what `parse_bibliography` returned is really a reference list.
+_ENTRY_YEAR_RE = re.compile(r"\b(1[89]\d{2}|20\d{2})\b")
+
+# Fraction of entries that must carry a year before we trust a
+# numbered "bibliography" enough to hang links off it. The failure
+# this catches is real: on a software manual, `parse_bibliography`
+# picks up the numbered list items of an introduction ("1.
+# Introduction…", "2. Topology…") and reports them as an 11-entry
+# bibliography, at which point every "(1)" in 900 pages of prose
+# would resolve to a bogus target. Every genuine reference list
+# measured sits at 64% or above; the mis-parses sit at 14% and
+# below, so half-way between is a comfortable place to cut.
+_MIN_ENTRIES_WITH_YEAR = 0.5
+
+
+def _looks_like_reference_list(bib_entries):
+    """True when `bib_entries` reads like a real bibliography rather
+    than a numbered list that `parse_bibliography` mistook for one.
+    See `_MIN_ENTRIES_WITH_YEAR` for why this check exists."""
+    if not bib_entries:
+        return False
+    with_year = sum(
+        1 for e in bib_entries if _ENTRY_YEAR_RE.search(e.get("text") or ""))
+    return with_year >= _MIN_ENTRIES_WITH_YEAR * len(bib_entries)
+
+
+def _numeric_parts(body):
+    """Split a citation body like "1–3, 5, 15" into
+    `[(entry_n, start_offset, end_offset), ...]`, offsets relative to
+    `body`. Each comma-separated part gets its own span so a click
+    lands on the number under the pointer rather than the whole
+    token. A range contributes its first entry only — the rect covers
+    "8–14" as a unit and there is no way to tell which of the six the
+    reader meant, so the opening one is the useful guess."""
+    out = []
+    pos = 0
+    for part in body.split(","):
+        start = pos
+        pos += len(part) + 1          # +1 for the ','
+        stripped = part.strip()
+        if not stripped:
+            continue
+        lead = start + (len(part) - len(part.lstrip()))
+        end = lead + len(stripped)
+        norm = stripped.replace("–", "-").replace("—", "-")
+        first = norm.split("-", 1)[0].strip()
+        if not first.isdigit():
+            continue
+        out.append((int(first), lead, end))
+    return out
+
+
+def find_numeric_citations(pdf_path, bib_entries):
+    """Find numeric in-text citations — "(6, 7)", "(8–14)", "[12]" —
+    in the body text of `pdf_path`, for papers with a *numbered*
+    bibliography whose PDF carries no usable internal Link
+    annotations. AAAS/Science PDFs are the motivating case: they are
+    produced by iText with every annotation a `/URI` link out to the
+    web, so `pdf_links.read_citation_links` has nothing to work with.
+
+    Returns the same shape as `pdf_links.read_citation_links`:
+    `{page_idx: [(rect, target_page, target_top, ref_n), ...]}`, so
+    the viewer's hit-testing and reference popover consume it
+    unchanged. Returns `{}` for an author-year bibliography (that's
+    `find_author_year_citations`' job) or an empty one.
+
+    Precision matters more than recall here — a wrong jump is worse
+    than no link — so a token has to clear several bars: digits and
+    separators only, every number present in the bibliography, no
+    number past `_MAX_PLAUSIBLE_ENTRY_N`, not preceded by "Eq." /
+    "Fig." / "Table", and not on a page that holds bibliography
+    entries (where volume/issue numbers like "12(3)" would otherwise
+    read as citations). The bibliography as a whole has to look like
+    a reference list too — see `_MIN_ENTRIES_WITH_YEAR`."""
+    if not bib_entries:
+        return {}
+    by_n = {}
+    for e in bib_entries:
+        if e.get("key"):
+            return {}          # author-year bibliography — not ours
+        n = e.get("n")
+        if n is not None and e.get("page") is not None \
+                and e.get("y_top_poppler") is not None:
+            by_n[n] = e
+    if not by_n:
+        return {}
+    if not _looks_like_reference_list(bib_entries):
+        return {}
+    max_n = min(max(by_n), _MAX_PLAUSIBLE_ENTRY_N)
+    # Pages holding the bibliography itself are excluded wholesale.
+    bib_pages = {e.get("page") for e in bib_entries}
+
+    try:
+        doc = _open_doc(pdf_path)
+    except Exception:
+        return {}
+
+    out = {}
+    for pi in range(doc.get_n_pages()):
+        if pi in bib_pages:
+            continue
+        page = doc.get_page(pi)
+        text = page.get_text() or ""
+        if not text:
+            continue
+        res = page.get_text_layout()
+        if isinstance(res, tuple):
+            ok, rects = res
+        else:
+            rects = res
+            ok = rects is not None
+        if not ok or rects is None:
+            continue
+        # Length-align text to rects — same dance _page_lines does.
+        if len(rects) == len(text):
+            text_aligned = text
+        else:
+            no_nl = text.replace("\n", "")
+            if len(rects) == len(no_nl):
+                text_aligned = no_nl
+            else:
+                continue
+        _, page_h = page.get_size()
+        page_links = []
+
+        for m in _NUMERIC_CITE_RE.finditer(text_aligned):
+            body = m.group(1)
+            if not any(ch.isdigit() for ch in body):
+                continue
+            if _NOT_A_CITATION_BEFORE_RE.search(
+                    text_aligned[max(0, m.start() - 14):m.start()]):
+                continue
+            parts = _numeric_parts(body)
+            if not parts:
+                continue
+            # All-or-nothing: if any number in the token is out of
+            # range or absent from the bibliography, the token isn't
+            # a citation and none of it should link.
+            if any(n < 1 or n > max_n or n not in by_n for n, _s, _e in parts):
+                continue
+            body_start = m.start(1)
+            for n, rel_start, rel_end in parts:
+                entry = by_n[n]
+                rect = _spans_to_rect(
+                    rects, body_start + rel_start, body_start + rel_end,
+                    page_h)
+                if rect is None:
+                    continue
+                target_pi = entry["page"]
+                try:
+                    _, target_h = doc.get_page(target_pi).get_size()
+                except Exception:
+                    continue
+                target_top = target_h - entry["y_top_poppler"]
+                page_links.append((rect, target_pi, target_top, n))
+
+        if page_links:
+            out[pi] = page_links
+    return out
+
+
 _CITATION_TOKEN_RE = re.compile(r"\[\s*([\d\s,\-–—]+)\s*\]")
 
 

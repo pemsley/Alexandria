@@ -292,9 +292,9 @@ class PdfViewerWindow(Gtk.Window):
         # on these, so we walk the body text for `(Surname, YYYY)`
         # / `Surname (YYYY)` patterns and resolve them against the
         # parsed bibliography. Only fires when parse_bibliography
-        # came back author-year (entries carry a `key` field); does
-        # nothing for numbered bibliographies, where Path A/B
-        # handle the work.
+        # came back author-year (entries carry a `key` field);
+        # numbered bibliographies fall through to Path A/B, or to
+        # Path D below when the PDF has no internal links at all.
         try:
             ay_bib = references_pdf.parse_bibliography(pdf_path)
         except Exception:
@@ -307,6 +307,23 @@ class PdfViewerWindow(Gtk.Window):
                 ay_links = {}
             for pi, plinks in ay_links.items():
                 self.citation_links.setdefault(pi, []).extend(plinks)
+        # Path D: text-based hit-testing for *numbered* bibliographies
+        # in PDFs that carry no usable internal Link annotations —
+        # AAAS/Science being the case in hand, where iText emits every
+        # annotation as a `/URI` link out to the web and Paths A/B
+        # have nothing to chew on. Only runs when nothing above
+        # produced a resolvable citation link, so PDFs that already
+        # work via publisher links are left exactly as they were.
+        elif not any(e[3] is not None
+                     for plinks in self.citation_links.values()
+                     for e in plinks):
+            try:
+                num_links = references_pdf.find_numeric_citations(
+                    pdf_path, ay_bib)
+            except Exception:
+                num_links = {}
+            for pi, plinks in num_links.items():
+                self.citation_links.setdefault(pi, []).extend(plinks)
         # Per-page "is the cursor currently over a link?" cache, used
         # to avoid re-setting the cursor on every motion event.
         self._cursor_over_link = {}
@@ -318,6 +335,15 @@ class PdfViewerWindow(Gtk.Window):
         # repeated clicks on different citations close the previous
         # popover instead of stacking.
         self._reference_popover = None
+        # Where the user was before each citation jump, so they can
+        # get back to the sentence they were reading. Entries are
+        # `(page_idx, y_pdf_up)` — the same coordinates `_jump_to`
+        # takes — rather than raw scroll offsets, so the return still
+        # lands correctly if the zoom changed while the reference was
+        # being read. A stack, not a single slot: following a citation
+        # out of a reference (or clicking several in a row) then
+        # unwinds one step at a time.
+        self._jump_stack = []
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
@@ -397,13 +423,24 @@ class PdfViewerWindow(Gtk.Window):
             "Click to toggle.")
         self.ref_btn.set_visible(False)
 
+        # "Back to where I was" after a citation jump. Deliberately
+        # not `go-previous-symbolic` — that icon is already Previous
+        # page two buttons along, and the two would be impossible to
+        # tell apart. Hidden until there's somewhere to go back to,
+        # like ref_btn.
+        self.back_btn = Gtk.Button.new_from_icon_name("edit-undo-symbolic")
+        self.back_btn.set_tooltip_text(
+            "Back to the text you jumped from (Alt-Left)")
+        self.back_btn.set_visible(False)
+        self.back_btn.connect("clicked", lambda _b: self._jump_back())
+
         for w in (first_btn, prev_btn, self.page_entry, self.page_total_lbl,
                   next_btn, last_btn, sep,
                   zoom_out_btn, zoom_reset_btn, zoom_in_btn, zoom_fit_btn,
                   self.zoom_lbl, sep2,
                   self.find_entry, find_prev_btn, find_next_btn,
                   self.find_count_lbl, sep3, self.sidebar_toggle,
-                  self.ref_btn):
+                  self.back_btn, self.ref_btn):
             tb.append(w)
 
         outer.append(tb)
@@ -472,6 +509,10 @@ class PdfViewerWindow(Gtk.Window):
             ("F3",             lambda *_: self._find_step(+1)),
             ("<Shift>F3",      lambda *_: self._find_step(-1)),
             ("Escape",         lambda *_: self._clear_find()),
+            # Alt-Left is the conventional "back" binding; Cmd-[ is
+            # its macOS counterpart and this is a macOS-first app.
+            ("<Alt>Left",           lambda *_: self._jump_back()),
+            ("<Meta>bracketleft",   lambda *_: self._jump_back()),
         ]:
             sc.add_shortcut(Gtk.Shortcut.new(
                 trigger=Gtk.ShortcutTrigger.parse_string(trigger),
@@ -1093,6 +1134,9 @@ class PdfViewerWindow(Gtk.Window):
         if entry is None:
             return False
         _rect, target_page, target_top, ref_n = entry
+        # Save the spot before moving, so the reader can get back to
+        # the sentence they were in the middle of.
+        self._push_jump_origin()
         self._jump_to(target_page, target_top)
         # After the jump, surface a popover anchored at the target
         # entry with "Add to library" / "Add + try PDF" actions.
@@ -1218,6 +1262,32 @@ class PdfViewerWindow(Gtk.Window):
         # Filled in once resolution settles: title/meta + action buttons.
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         outer.append(content)
+
+        # "Done with this reference" — the popover is where the
+        # reader's attention is once they've finished, so offer the
+        # return trip here as well as on the toolbar. Appended to
+        # `outer` rather than `content` so it's usable immediately,
+        # without waiting for OpenAlex resolution to settle.
+        back_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        # Label only, like the other popover actions — in GTK4
+        # `set_icon_name` would replace the label rather than sit
+        # beside it, and Adw isn't imported here for ButtonContent.
+        back_btn = Gtk.Button(label="Back to text")
+        back_btn.set_tooltip_text(
+            "Return to the citation you jumped from (Alt-Left)")
+        back_btn.set_sensitive(bool(self._jump_stack))
+        back_btn.connect("clicked", self._on_popover_back)
+        # The popover outlives the return trip — ref_btn keeps it
+        # around so the reference can be consulted again — so refresh
+        # sensitivity each time it's shown rather than only at build
+        # time. Once the reader has gone back there's nowhere left to
+        # go, and a live-looking button that does nothing is worse
+        # than a greyed-out one.
+        pop.connect(
+            "show",
+            lambda _p, _b=back_btn: _b.set_sensitive(bool(self._jump_stack)))
+        back_row.append(back_btn)
+        outer.append(back_row)
 
         pop.set_child(outer)
         self._reference_popover = pop
@@ -1477,6 +1547,63 @@ class PdfViewerWindow(Gtk.Window):
             return False
         GLib.idle_add(_do_scroll)
         self._update_page_indicator()
+
+    # --- Jump history ("back to where I was") --------------------------
+
+    def _on_popover_back(self, _btn):
+        """"Back to text" inside the reference popover: dismiss the
+        popover, then return. Popping down first keeps the popover
+        from sitting over the text the user just came back to; the
+        toolbar's Reference button stays visible so it can be
+        re-opened."""
+        if self._reference_popover is not None:
+            try:
+                self._reference_popover.popdown()
+            except Exception:
+                pass
+        self._jump_back()
+
+    def _current_position(self):
+        """Where the viewport's top edge currently sits, as
+        `(page_idx, y_pdf_up)` — the argument shape `_jump_to` takes.
+
+        Recorded in PDF user space rather than as a raw scroll value
+        so that zooming while reading a reference doesn't move the
+        spot we come back to."""
+        adj = self.scrolled.get_vadjustment()
+        y = adj.get_value()
+        page_idx = 0
+        for i in range(self.n_pages):
+            if y >= self.page_y[i]:
+                page_idx = i
+            else:
+                break
+        _, ph_pt = self.doc.get_page(page_idx).get_size()
+        offset_in_page = (y - self.page_y[page_idx]) / (self.zoom or 1.0)
+        # Clamp: the viewport top can sit in the gap between two pages,
+        # which would otherwise give a y just outside the page box and
+        # make `_jump_to` discard it.
+        offset_in_page = max(0.0, min(offset_in_page, ph_pt))
+        return page_idx, ph_pt - offset_in_page
+
+    def _push_jump_origin(self):
+        """Remember the current position so `_jump_back` can return
+        to it. Called just before a citation jump."""
+        self._jump_stack.append(self._current_position())
+        self._update_back_btn()
+
+    def _jump_back(self):
+        """Return to the position saved by the most recent citation
+        jump. No-op (and no visible complaint) when the stack is
+        empty, so the keyboard shortcut is harmless at any time."""
+        if not self._jump_stack:
+            return
+        page_idx, y_pdf_up = self._jump_stack.pop()
+        self._jump_to(page_idx, y_pdf_up)
+        self._update_back_btn()
+
+    def _update_back_btn(self):
+        self.back_btn.set_visible(bool(self._jump_stack))
 
     # --- Popovers ------------------------------------------------------
 

@@ -534,9 +534,13 @@ class AuthorPage(Gtk.Box):
             self._sub_inst_lbl.set_visible(True)
         sub_row.append(self._sub_inst_lbl)
 
+        # Deliberately not "flat": a flat MenuButton draws no frame
+        # until hover, so it reads as a decoration rather than a
+        # control. The framed look plus a "+N" count (set in
+        # _populate_affiliations) makes it look clickable.
         self._aff_history_btn = Gtk.MenuButton()
         self._aff_history_btn.set_icon_name("document-open-recent-symbolic")
-        self._aff_history_btn.add_css_class("flat")
+        self._aff_history_btn.set_valign(Gtk.Align.CENTER)
         self._aff_history_btn.set_tooltip_text(
             "Show all prior institutions")
         self._aff_history_btn.set_visible(False)
@@ -1077,6 +1081,17 @@ class AuthorPage(Gtk.Box):
         scrolled.set_child(body)
         outer.append(scrolled)
         pop.set_child(outer)
+        # Icon + "+N" count as the button face: the count hints at
+        # what is behind the popover (N institutions beyond the
+        # current one) and makes the widget read as a real button.
+        face = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        face.append(
+            Gtk.Image.new_from_icon_name("document-open-recent-symbolic"))
+        count_lbl = Gtk.Label()
+        count_lbl.set_markup(
+            "<span size='small'>+{}</span>".format(len(rows) - 1))
+        face.append(count_lbl)
+        self._aff_history_btn.set_child(face)
         self._aff_history_btn.set_popover(pop)
         self._aff_history_btn.set_visible(True)
 

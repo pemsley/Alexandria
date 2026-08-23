@@ -467,7 +467,12 @@ class AuthorPage(Gtk.Box):
         # Author photo — silhouette/initials disc until an image is
         # set. Click for fetch/choose/remove; also a drop target for
         # files and browser-dragged images.
-        self.avatar = Adw.Avatar.new(64, name or None, True)
+        self.avatar = Adw.Avatar.new(72, name or None, True)
+        # Top-anchored, not centred: profile data arriving later
+        # (wrapped institution, citing-impact line, the +N button)
+        # can grow the header, and a centred avatar visibly slides
+        # down mid-load. Anchored, growth only adds space below.
+        self.avatar.set_valign(Gtk.Align.START)
         self._avatar_menu = self._build_avatar_menu()
         self._avatar_menu.set_parent(self.avatar)
         # Either mouse button opens the menu: it is semantically a
@@ -570,7 +575,14 @@ class AuthorPage(Gtk.Box):
         self.hist_area = Gtk.DrawingArea()
         self.hist_area.set_content_width(HISTOGRAM_WIDTH)
         self.hist_area.set_content_height(HISTOGRAM_HEIGHT)
-        self.hist_area.set_visible(False)
+        # Same top anchor as the avatar: without it the drawing
+        # area is stretched to the header's full height, so the
+        # bars re-stretch whenever late content grows the header.
+        self.hist_area.set_valign(Gtk.Align.START)
+        # Always visible, drawing nothing until data arrives: its
+        # 90px is what makes the header its final height, so hiding
+        # it here made the whole header grow (and the centred
+        # avatar visibly drop) the moment the histogram appeared.
         self._hist_data = []
         self.hist_area.set_draw_func(self._on_draw_hist)
         header.append(self.hist_area)

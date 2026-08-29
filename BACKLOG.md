@@ -23,49 +23,174 @@ Pending features, roughly grouped. Newest at the top of each section.
   to *confirm* the message is gone under load — the fix is by
   inspection, not yet verified against a live storm.
 
-## Import / ingestion
+## pdb viewer zoom
 
-- **Collect and store JATS XML alongside PDFs.** When a paper's
-  full text is available as JATS (the NISO journal-article XML
-  standard), fetch it at import time and keep it next to the PDF —
-  the machine-readable twin of the human-readable copy. High
-  leverage because structured XML quietly replaces several things
-  we currently do with heuristics:
-    - **Exact reference extraction.** `<ref-list>` carries every
-      reference fully structured (authors, year, title, DOI) — no
-      line-wrap DOI reassembly, no publisher-specific patterns.
-      Directly fixes the Import Failures class of problem
-      (`acs.jcim.4c02293.pdf`), and `<xref>` elements tie each
-      in-text citation to its reference *and* its sentence —
-      feeding the citation hit-testing fallback item and, later,
-      citation-context features ("how does this paper cite X —
-      in passing, in Methods, critically?").
-    - **Clean full text.** Section-aware search ("only Methods"),
-      proper abstracts (abstract-display item), tables as data,
-      MathML. Feeds FTS, the static HTML index (a reflowable
-      reading view, not just a PDF link), and makes the MCP
-      server's `get_pdf_texts` dramatically better for
-      ask-the-library — Claude reading JATS beats pdftotext
-      output every time.
-    - **Coverage caveat.** Full-text JATS is essentially an OA
-      phenomenon: PMC / Europe PMC (biomed-heavy, includes some
-      Acta Cryst), PLOS, eLife, bioRxiv/medRxiv, MDPI, Frontiers.
-      Paywalled Elsevier/Wiley/ACS won't have it. An enrichment,
-      not a universal layer — the PDF stays canonical.
-    - **Fetching.** Europe PMC REST is the single clean entry
-      point: DOI → PMCID via their search endpoint, then
-      `GET /article/PMC{id}/fullTextXML`. Fits the existing
-      `metrics.py` helper pattern; stdlib `xml.etree` parses
-      JATS fine, no new dependencies.
-    - **On-disk shape.** Extend the same-basename convention:
-      `paper.pdf` + `paper.pdf.alexandria` + `paper.pdf.jats.xml`
-      travel together; teach the watcher/importer to ignore the
-      new extension; sharing and Drive-sync inherit it for free.
-    - **Ladder.** v0: fetch-and-store at import when the DOI
-      resolves to OA full text (plus a backfill pass for the
-      existing library). v1: prefer the JATS ref-list over PDF
-      parsing wherever it exists. v2: full-text FTS and
-      citation contexts.
+ - Command + to zoom in (on Mac)
+ - zoom to fit by default (explore)
+
+## Import / ingestion
+- **BUG: "refresh" destroys a hand-entered DOI, and there is no path
+  from "I know the DOI" to "fetch the metadata".** Reported
+  2026-08-27 against
+  `1-s2.0-S0022283695800379-molecular-recognition-of-receptor-site.pdf`
+  (Jones, Willett & Glen, JMB 1995). The user pasted the DOI into the
+  metadata dialog and hit refresh expecting OpenAlex to fill in the
+  rest. Nothing happened, and the sidecar still reads `doi: null`.
+
+  `importer.refresh_pdf` rebuilds the record with
+  `_build_record(pdf_path)` — a fresh extraction from the PDF — and
+  then restores a fixed list of user-curated keys: tags, notes, mark,
+  hand_edited, added_date, citations*, auto_keywords, abstract,
+  authorships, highlights, published_version, bibtex_*. **`doi`,
+  `title`, `authors`, `year` and `journal` are not on that list**, so
+  anything typed into those fields is overwritten by whatever the PDF
+  yields — for this paper, nothing.
+
+  It is a lose-lose, because the escape hatch does not help either:
+
+    - `hand_edited` unchecked → refresh wipes the typed DOI.
+    - `hand_edited` checked → `refresh_pdf` returns early with status
+      `hand_edited` and skips the record *entirely*, so no enrichment
+      runs at all.
+
+  There is no combination that does what the user asked for. Two
+  fixes, and they are independent:
+
+    1. **Preserve a hand-entered DOI across refresh.** At minimum add
+       `doi` to the preserved-keys list when the incoming extraction
+       has none — a typed DOI is strictly better information than an
+       absent one. (Note `do_save`'s comment claims it "auto-sets
+       hand_edited if the user actually changed anything"; the code
+       only honours the checkbox. Either fix the comment or implement
+       what it says — but see the lose-lose above before making
+       hand_edited automatic, or typing a DOI would start silently
+       disabling enrichment.)
+    2. **Add an explicit "Fetch metadata from DOI" button to the edit
+       dialog**, next to the DOI entry. This is the affordance the
+       user reached for and it does not exist. It should call
+       `metrics.fetch_work_by_doi` on the entry's current text and
+       populate title / authors / year / journal in place, before
+       save — so the result is visible and correctable rather than
+       applied blind. "Refresh" meaning "re-read the PDF" is
+       defensible; it just is not discoverable as *not* meaning "go
+       and look this up".
+
+- **Derive DOIs from publisher filename conventions.** Download
+  filenames are not noise — most publishers encode an identifier in
+  them, usually the DOI with the punctuation filed off. Worth trying
+  whenever extraction yields no DOI. Deterministic transformations,
+  each verified to resolve against a file in the library:
+
+    - **Elsevier PII** — `1-s2.0-S0022283695800379-…` (and the
+      extracted title `PII: S0022-2836(95)80037-9`) → `10.1016/` +
+      PII lowercased, punctuation kept →
+      `10.1016/s0022-2836(95)80037-9`. Rescues older ScienceDirect
+      downloads, exactly the ones whose PDFs carry no DOI.
+    - **arXiv** — `2006.11239v2.pdf` → `10.48550/arXiv.2006.11239`
+      (strip the version suffix).
+    - **RSC** — `d1ob00658d.pdf` → `10.1039/d1ob00658d`.
+    - **bioRxiv** — `2024.04.29.591684v1.full.pdf` →
+      `10.1101/2024.04.29.591684`.
+    - **Nature/BMC** — `s41467-025-56045-z.pdf` →
+      `10.1038/s41467-025-56045-z`.
+    - **Science/AAAS** — `science.aef8874.pdf` →
+      `10.1126/science.aef8874`; `sciadv.abg3338` likewise.
+    - **ACS** — `acs.jcim.4c02293.pdf` → `10.1021/acs.jcim.4c02293`.
+    - **PNAS** — `pnas.0502225102.pdf` → `10.1073/pnas.0502225102`.
+
+  **Measured on the current library (166 papers, 38 without a DOI):
+  about 14 of the 38 carry a decodable filename** — roughly a third.
+  The whole-library figure is misleading by comparison: ~36 filenames
+  decode, but 34 of those already got a DOI from the PDF text. The
+  value is concentrated exactly where extraction failed, which is the
+  point.
+
+  **Supplementary files need different handling.** Several decodable
+  ones — `42004_2020_367_MOESM1_ESM`, `41467_2025_67297_MOESM3_ESM`,
+  `jm5c03004_si_001`, `pnas.2524504123.sapp` — are supporting
+  information, not papers. Decoding yields the *parent* article's
+  DOI, which is more useful than nothing but must not create a second
+  record for a paper already in the library. Treat a recognised
+  SI / ESM / sapp marker as "attach to parent", not "this file is
+  that paper".
+
+  **IUCr is the gap, and the one that matters most here.** A large
+  cluster of the DOI-less files are IUCr article codes — `ba5248`,
+  `gr2280`, `st0606`, `be0003`, `li0224`, `hr0021`, `a25349`,
+  `a63832`, `nsb0498-266b`. They appear in journals.iucr.org URLs but
+  there is no arithmetic from code to DOI, so they need a lookup
+  (Crossref/OpenAlex search on the code, or an IUCr endpoint) rather
+  than a transformation. Given how much crystallography sits in a
+  library like this, it is the highest-value publisher to support and
+  the only one on the list that is real work.
+
+
+- **Resolve metadata from first author / journal / year when there is
+  no DOI.** The natural companion to the pasted-citation work under
+  Discovery — `find_doi_by_author_year` already does this and is
+  measurably good. Honest caveat from the case that prompted it,
+  though: it would *not* have rescued this particular PDF, because
+  the sidecar has `authors: []`, `journal: null` and `year: 2005`.
+  There was nothing to resolve *from*. The author/journal/year route
+  works when the extractor got those fields and missed only the DOI;
+  the PII route above is what saves this one.
+
+- **ResearchGate as a PDF source — considered and rejected
+  (2026-08-27).** Asked whether having an RG account would let us
+  fetch PDFs, by API or scraping. No, on three independent grounds,
+  any one of which is sufficient:
+
+    - **There is no API.** ResearchGate has never offered public
+      programmatic access. Every "ResearchGate API" on offer is a
+      third-party scraper wrapper, not an authorised interface.
+    - **The ToS prohibits it in as many words** — users may not
+      "employ any mechanisms, devices, software, scripts, robots, or
+      any other means or processes (including crawlers, browser
+      plugins, add-ons, or any other technology) … to access, scrape
+      or copy content, data, or profiles". `robots.txt` looks
+      permissive on paths, but robots.txt is not a licence and does
+      not override the ToS; the `Disallow: /cdn-cgi/` line also
+      confirms Cloudflare in front, which blocks automation in
+      practice regardless.
+    - **Having an account makes it worse, not better.** An account
+      means the ToS has been accepted personally, so automated access
+      puts *that* account at risk rather than being anonymous
+      misbehaviour.
+
+  **The 2023 settlement also changed what is even there.** ACS and
+  Elsevier sued ResearchGate in Germany (2017) and the US (2018); a
+  Munich court held RG responsible for infringing uploads in 2022,
+  and the parties settled in September 2023. The remedy was automated
+  copyright checks *at upload* for ACS and Elsevier content, with
+  affected articles stored **privately** and shared only on
+  individual request. So the full texts a scraper would target are
+  increasingly not public at all — and among those that are, many are
+  author uploads that breach the author's own publisher agreement, so
+  a "successful" fetch can be an infringing copy.
+
+  **What is legitimate, and worth doing instead.** RG's "Request
+  full-text" is a human-to-human flow — the author is asked and sends
+  a copy. Alexandria can support that without automating anything, in
+  the same shape as the proposed EZproxy affordance: an "Open on
+  ResearchGate" action on a card with no OA copy, which opens the
+  browser and stops. User-initiated, no scraping, no ToS problem. The
+  real answers to "get me this PDF" remain the OA path we already
+  have (OpenAlex / Unpaywall), EZproxy for subscribed content, and
+  the inside-the-firewall waiting list.
+
+- **Do not take the publication year from the PDF CreationDate.**
+  Same sidecar: `year: 2005`, from `CreationDate D:20050105…`, for a
+  paper published in 1995. Elsevier re-exported its back catalogue in
+  the mid-2000s, so every scanned-era PDF of an older paper carries a
+  creation date a decade or more after publication. A year that
+  disagrees wildly with a resolved DOI, or that post-dates a PII's
+  encoded year (the `(95)` in `S0022-2836(95)80037-9` *is* the year),
+  should be treated as unknown rather than asserted.
+
+- **Collect and store JATS XML alongside PDFs** — consolidated into
+  the dedicated **"Structured full text (JATS) instead of PDF
+  archaeology"** section below, which carries the full case,
+  on-disk shape and sequencing.
 
 - **Drag-and-drop / CLI imports from outside the library tree
   (Flatpak).** Menu-driven Import Files / Import Folder now go
@@ -316,6 +441,117 @@ Pending features, roughly grouped. Newest at the top of each section.
       and `metrics.fetch_cited_by` already exist.
 
 ## Discovery
+- **Resolve a pasted citation string ("Jones et al., J. Mol. Biol.
+  1995").** LLM answers, emails and talks hand out references in
+  loose prose form. We can already resolve these — the gap is a front
+  door, not machinery:
+
+    - `metrics.find_doi_by_citation` (Crossref `query.bibliographic`,
+      with a first-author-surname gate) handles strings that carry a
+      title.
+    - `metrics.find_doi_by_author_year(surname, year, journal)` was
+      built for the no-title case and already does journal-
+      abbreviation expansion (`_JOURNAL_ABBREVIATIONS`) and year
+      tolerance.
+
+  Measured: "Jones / J. Mol. Biol. / 1995" resolves to the GOLD
+  docking paper, "Jones / Acta Cryst. A / 1991" to the O
+  model-building paper, "Sankararaman / Nature / 2014" and "Jumper /
+  Nature / 2021" both correct. Note the title-bearing path is the
+  *weaker* one — the full AlphaFold citation returned None because
+  Crossref's top hit had a different first author and the guard
+  rightly rejected it, while the author/year/journal path got it.
+
+  **What is missing:** a string parser (surname / year / journal /
+  title-words) and a UI entry point — a fifth Discover tab is the
+  obvious home, since `_build_work_row`, the Add-to-library path and
+  the author field are all reusable.
+
+  **Show a ranked list, not one answer.** Google Scholar does not
+  disambiguate these either; it ranks well enough that the top row is
+  the wanted one, and that is the behaviour to copy. "Jones / JMB /
+  1995" has 21 candidates — atypical, needing a common surname *and*
+  a huge journal *and* the year window, but real. Ranking measured
+  over three queries:
+
+    - **First-author-surname match, then citations descending.**
+      Neither works alone: plain citation sort promotes papers where
+      the surname is a *co*-author (Tomlinson, Kung and Ståhlberg all
+      outranked genuine first-author Jones papers), and first-author
+      filtering alone leaves six candidates in arbitrary order.
+      Together the wanted paper was #1 in every case tested.
+    - **The citation gap between #1 and #2 is a free confidence
+      signal** — 12x for Jones/JMB/1995, 577x for Jones/Acta A/1991.
+      A large gap means "resolved, alternatives below"; near-parity
+      means "genuinely ambiguous, pick one". No threshold tuning, and
+      the alternatives are never hidden.
+    - Do not rely on OpenAlex's default ordering for a filter-only
+      query: it is not citation-ranked (positions 2-6 of the Jones
+      query ran 124, 116, 200, 166, 81), so today's single-answer
+      behaviour is partly luck.
+
+  **Worth exposing as an MCP tool too** (`resolve_citation`): a
+  reference that resolves to *nothing* is a useful signal in itself —
+  "this citation may not exist as stated" — which turns the feature
+  into a hallucination check on LLM-supplied references rather than
+  only a convenience.
+
+- **Fix the year window in `find_doi_by_author_year` — affects
+  behaviour today, not just the feature above.** The viewer's
+  reference popover falls back to this path for Acta-Cryst-style
+  entries that carry no title, and those are often old papers. The
+  current window is a symmetric +/-1 year, justified in the code
+  comment by online-vs-print drift. That justification is
+  era-specific and the window is wrong in two ways:
+
+    - **No drift exists before electronic ahead-of-print publication**
+      (roughly pre-1997 — ACS ASAP ~1996, ScienceDirect 1997, staggered
+      by publisher, so the cutoff is a judgement call; being
+      conservative costs little). For those years the window is pure
+      noise, and it is exactly where it hurts most: Jones / JMB / 1995
+      goes from 21 candidates (6 first-author) at +/-1 to **8 (3) at
+      exact year**, losing nothing — the GOLD paper is 1995 exactly.
+      Jumper / Nature / 2021 likewise drops 8 to 2.
+    - **The modern window should be asymmetric, `[year-1, year]`.**
+      The drift only runs one way: the citation carries the later
+      print year while OpenAlex records the earlier online date.
+      Verified on the case the comment itself cites — "A short
+      history of SHELX", cited as Acta Cryst. A64 (2008), has
+      `publication_date: 2007-12-21` in OpenAlex. `year+1` was never
+      justified by that failure mode.
+
+  Edge case to keep in mind: an old citation occasionally carries the
+  *volume* year rather than the issue year, and those disagree for
+  journals whose volumes straddle a year boundary. Exact matching
+  misses those — so fall back to dropping the year filter entirely
+  when an exact-year search returns nothing, and let the ranked list
+  sort it out.
+
+  **Regression fixture — the Jones/GOLD pair.** Two papers, same
+  first author, same journal, two years apart, and the wrong one is
+  4x more cited. This is the exact shape that makes citation ranking
+  confidently wrong when the year window is loose:
+
+    - `Jones, J. Mol. Biol. 1995` must resolve to
+      **10.1016/s0022-2836(95)80037-9** — Jones, Willett & Glen,
+      "Molecular recognition of receptor sites using a genetic
+      algorithm with a description of desolvation", 1,548 cites.
+    - `Jones, J. Mol. Biol. 1997` must resolve to
+      **10.1006/jmbi.1996.0897** — Jones, Willett, Glen, Leach &
+      Taylor, "Development and validation of a genetic algorithm for
+      flexible docking" (GOLD proper), 6,752 cites.
+
+  Under the current symmetric +/-1 window the 1995 query has both
+  papers in range, and first-author-then-citations ranking puts the
+  1997 paper on top — the wrong answer, delivered with a large
+  citation gap that reads as high confidence. Exact-year matching
+  fixes it. Assert both directions: the 1995 query is the one that
+  fails today, and the 1997 query guards against over-correcting.
+
+  (Incidental trap for anyone tempted to shortcut: the 1997 paper's
+  DOI suffix says `1996`. Publication year cannot be read off a
+  DOI.)
+
 - **Watch / subscription feed (Wispar-shaped).** A "follow this
   journal / save this OpenAlex search and tell me what's new"
   feature, designed by reading Wispar's `feed_service.dart` /
@@ -630,6 +866,118 @@ Pending features, roughly grouped. Newest at the top of each section.
 
 ## Sharing
 
+- **Author-avatar packs: export and import a collection wholesale.**
+  "Here are my collected author avatars — apply this set to the
+  authors in your database." Plausibly the most shareable artefact
+  the app produces, because the effort is per-person and the result
+  is reusable by anyone studying the same field.
+
+  **Where images live today.** `<library_root>/.author-images/
+  <key>.png`, where `<key>` is `index.author_trail_key(authorship)` —
+  **OpenAlex ID, else ORCID** — normalised to a <=512px PNG. The path
+  is deterministic, so there is no DB column to migrate. All 19
+  images in the current library are OpenAlex-keyed; none are
+  ORCID-keyed.
+
+  **Key packs on the OpenAlex ID, with ORCID as a secondary
+  matcher.** (Decided 2026-08-27, after first arguing for ORCID —
+  the practical numbers go the other way.)
+
+    - **Coverage.** Every image in the current set has an OpenAlex ID
+      (19/19, since it is already the storage key); only **15 of 19
+      (79%)** resolve to an ORCID. Keying on ORCID would silently
+      drop a fifth of a collection.
+    - **No resolution pass.** OpenAlex ID *is* `author_trail_key`'s
+      first choice, so export is a straight copy. ORCID-keying would
+      need a network round-trip per author at export time, and would
+      still be incomplete.
+    - **Both ends already speak OpenAlex.** Authorships come from
+      OpenAlex via `metrics`, so both libraries in an exchange
+      overwhelmingly hold OpenAlex IDs for the same person. The
+      "keyed differently in two libraries" case is real but rare.
+
+  ORCID still earns a slot in the manifest, because it costs nothing
+  and covers exactly the cases the OpenAlex ID does not: an
+  authorship carrying an ORCID but no OpenAlex ID (so `image_path`
+  keyed on the ORCID), and an OpenAlex ID that has since been merged
+  away during re-disambiguation. Record both; match on either.
+
+  **This requires no change to `image_path`.** The local storage key
+  stays exactly as it is and the *manifest* is the interchange
+  format. Export writes each local key plus every other identifier it
+  already knows; import maps a pack entry back to whatever key the
+  receiving library uses for that author and writes under it. Nothing
+  about `author_image.py`'s on-disk contract changes.
+
+  **Pack format** — a zip/tar of images plus a manifest JSON. Each
+  entry should carry *all* identifiers known, not one:
+
+    ```json
+    { "file": "A5014431830.png",
+      "openalex_id": "A5014431830",
+      "orcid": "0000-0002-1151-6227",
+      "display_name": "...",
+      "source_url": "...", "licence": "CC BY-SA 4.0",
+      "fetched": "2026-08-27" }
+    ```
+
+  **Import matching order:** OpenAlex ID → ORCID → exact display
+  name. The last is genuinely risky (the Discover author search
+  already shows how many distinct people share a name) so it should
+  be opt-in, and never silent.
+
+  **Conflict handling.** An author who already has an image: default
+  to *not* overwriting, mirroring the `hand_edited` principle
+  elsewhere — a photo the user chose deliberately should survive
+  applying someone else's pack. Offer overwrite as an explicit
+  choice, not a default.
+
+  **Licence: share pointers, not pixels.** These are photographs of
+  real people, and bundling them up and passing them on is
+  republication — an academic's photo on their institutional page is
+  not licensed for redistribution merely by being public. Measured on
+  the current collection (2026-08-27), that is not a corner case, it
+  is the whole thing:
+
+    - **1 of 19** avatars has a Wikidata P18 portrait, where licence
+      and attribution come free from the Commons `extmetadata` API
+      with no user interaction at all.
+    - **18 of 19** were hand-dropped from web pages — unknown
+      licence.
+    - The originals still on the Desktop carry only
+      `com.apple.quarantine` (downloading app: Firefox) and **no**
+      `kMDItemWhereFroms`, because Firefox does not write the
+      where-from attribute Safari and Chrome do. So the source URLs
+      for the existing set are **not recoverable retroactively**.
+
+  A pixel-bundle export would therefore be ~95% images that should
+  not be redistributed, which kills that form of the feature. The
+  version that works is **a pack of pointers**: the manifest maps
+  `OpenAlex ID → image source URL`, and import fetches each image
+  locally. No redistribution, so no licence question arises — and the
+  recipient still gets the entire benefit, because the labour in
+  assembling a set is *finding* the portraits, not downloading them.
+  Sharing that search result is the valuable part.
+
+  Consequences for capture, and note that **nobody should ever be
+  prompted to type a licence**:
+
+    - When a **URL** is dropped, record it. That is the only capture
+      that has to work, and it is free.
+    - When a **local file** is dropped there is nothing to record —
+      store `source_url: null` and accept that such entries simply
+      cannot go in a pack.
+    - When the image came from **Wikidata**, record the Commons file,
+      licence, artist and `AttributionRequired` from `extmetadata` —
+      also free, and it makes those entries shareable as actual
+      pixels if that is ever wanted.
+
+  Retrofitting is impossible, as the Firefox finding above
+  demonstrates, so the recording is worth adding to `save_image`
+  whenever it is touched — long before packs exist. The existing 19
+  are already unrecoverable.
+
+
 The on-disk format renamed sidecars to `*.pdf.alexandria` in
 v0.1.0 with this whole feature in mind: a recipient who gets a
 `.alexandria` file via email / Slack should be able to open it
@@ -780,6 +1128,40 @@ via `extract.CROSSREF_USER_AGENT`.
   data.
 
 ## OpenAlex client
+- **Author-view works cache: lengthen the TTL, and stop blocking on
+  stale rows.** Requested as "cache the Author View publications so
+  reopening tomorrow doesn't wait on OpenAlex". Most of that already
+  exists — `index.author_works_cache` is keyed
+  `(openalex_id, sort_key)`, lives in SQLite so it survives restarts,
+  and already holds both the recent and cited lists (42 rows in the
+  current library). Two things are genuinely missing:
+
+    1. **Stop blocking on stale rows — this is the actual fix.**
+       `_author_score_is_fresh` is documented as "anything older we'll
+       show briefly then refresh" (stale-while-revalidate), but
+       `_author_works_cache_is_fresh` says "stale rows are dropped on
+       read so the next switch fetches anew" — so a stale works row
+       means *waiting on the network*, which is exactly the symptom
+       reported. Adopting show-then-refresh for works removes the wait
+       **even at the current 7-day TTL**, and on a genuine miss too.
+       Do this first: it fixes the complaint on its own.
+
+    2. **Then lengthen the TTL** — a refinement, not the cure, since
+       raising it alone only makes the wait rarer. `AUTHOR_WORKS_TTL_DAYS
+       = 7` is short, and the code comment justifying it ("shorter than
+       `author_scores` because the most-recent ordering picks up new
+       publications faster than citation tallies move") is sound but
+       **asymmetric**: it argues for a short TTL on the *recent* list
+       only. The cited list barely moves in a month. Since `sort_key`
+       is already in the primary key, a **per-sort-key TTL needs no
+       schema change** — `cited` at 30 days (matching
+       `AUTHOR_SCORE_TTL_DAYS`), `recent` shorter, say 14. For authors
+       who publish a few times a year, even that is conservative.
+
+  Reducing OpenAlex requests is a real but secondary benefit — the
+  credit cost of re-fetching one author's two lists is small. The wait
+  is the complaint, which is why the ordering above matters.
+
 
 - **Migrate to PyAlex for all OpenAlex HTTP.** Today `metrics.py`
   has 17 OpenAlex callsites, each driving `_http_get_json`
@@ -949,6 +1331,32 @@ via `extract.CROSSREF_USER_AGENT`.
   folder).
 
 ## UI
+- **Open the Authors window directly from the hamburger menu.** Today
+  the only ways in are the author popover on a paper
+  (`browse.py:4793`) and the Discover author tab
+  (`discover.py:291`) — both require finding an author first. That is
+  backwards, because the window keeps a **persistent `author_trail`
+  table** and is a singleton: it accumulates state deliberately meant
+  to survive across sessions, and there is no direct route to it. The
+  trail can only be reached by going somewhere else first.
+
+  Place it with `Discover (OpenAlex)…` and `Subscriptions…` in the
+  existing section — those three are all "browse outward from the
+  library", as against the paper-centric actions elsewhere.
+
+  **The one piece of real work:** `author_works.open_window(parent,
+  conn, authorship)` requires an authorship and pops an alert dialog
+  when it has neither ORCID nor OpenAlex ID. A menu item has no
+  authorship to pass, so it needs a no-argument path — either a
+  default of `authorship=None` that skips the identifier gate, or a
+  separate `open_trail_window()` — opening on the trail with no author
+  selected. The singleton handling already does the right thing:
+  raise the existing window if one is open, create it otherwise.
+
+  **Needs an empty state.** On a fresh library the trail is empty, so
+  the menu item would open a blank window. Say so instead: "No
+  authors yet — click an author's name on a paper, or find one in
+  Discover", ideally with the Discover action right there.
 
 - **"Rename to metadata" button on the paper card.** Rename the
   PDF file so the filename reflects (to some extent) the title,
@@ -1071,6 +1479,112 @@ active editors on two hosts is not. These items would harden it.
   cross-host edit race instead of silently dropping one of the
   two edits.
 
+## Structured full text (JATS) instead of PDF archaeology
+
+Everything the citation-following work does is reconstruction of
+structure the publisher *had* and threw away. Worth writing down while
+the evidence is fresh, because it argues for a different source rather
+than more heuristics.
+
+**What we actually built to make `[7]` clickable.** Three fallback
+paths: publisher-specific destination names (Springer `CR<N>`, OUP
+`-B<N>`, an InDesign export embedding the whole reference string behind
+a variable number of BOMs); then geometry, matching a destination's
+y-coordinate to a parsed bibliography entry within 12pt; then regex
+over page text when a PDF carries no internal links at all. Alongside
+that: a "length-align `get_text` to `get_text_layout`" dance repeated
+in three functions because producers disagree about newlines;
+de-hyphenation by guesswork; reading order inferred from detected
+column edges; `parse_bibliography` deciding by inspection whether a
+reference list is numbered or author-year, and still mistaking a
+manual's numbered introduction for one (hence
+`_looks_like_reference_list`). Front matter bleeds into the first
+body sentence because a PDF has no notion of blocks — only that these
+glyphs are near those glyphs.
+
+**Root cause.** PDF is a page description language: instructions for
+putting marks on paper. It was never meant to carry document
+structure. Scholarly articles are typeset *from* JATS XML, in which
+the reference list is marked-up elements and every citation is a real
+cross-reference — and that is discarded in the last step, leaving
+every downstream tool to guess it back.
+
+**The alternative: fetch the structured version where it exists.**
+
+- **Europe PMC** serves JATS over
+  `https://www.ebi.ac.uk/europepmc/webservices/rest/{PMCID}/fullTextXML`,
+  no registration or API key, ~6.5M open-access articles. Keyed by
+  PMCID, so it needs a DOI to PMCID resolution step first.
+- **arXiv** exposes e-print LaTeX source, which carries `\cite` keys
+  and a real bibliography.
+- **bioRxiv / medRxiv** full text — worth checking what their TDM
+  channels actually expose before counting on it.
+
+**What it would buy.** Exact reference lists with no parsing;
+citations as real cross-references with no `ref_n` recovery; sentence
+and section boundaries that are marked up rather than inferred, which
+would make the "Cited here as:" context exact instead of heuristic;
+and no front-matter bleed, because the affiliation block is tagged as
+one. Beyond the citation work: section-aware search ("only Methods"),
+proper abstracts (abstract-display item), tables as data and MathML
+instead of mangled glyphs; feeds FTS, the static HTML index (a
+reflowable reading view, not just a PDF link), and makes the MCP
+server's `get_pdf_texts` dramatically better for ask-the-library —
+Claude reading JATS beats pdftotext output every time. And later,
+citation-context features: "how does this paper cite X — in passing,
+in Methods, critically?"
+
+**On-disk shape.** Extend the same-basename convention:
+`paper.pdf` + `paper.pdf.alexandria` + `paper.pdf.jats.xml` travel
+together; teach the watcher/importer to ignore the new extension;
+sharing and Drive-sync inherit it for free. Stdlib `xml.etree`
+parses JATS fine — no new dependencies; the fetch helper fits the
+existing `metrics.py` pattern.
+
+**What it does not replace.** The PDF stays the thing the user reads
+and annotates — sidecar highlights are anchored to PDF coordinates,
+and that doesn't change. This is a *structure and metadata* source
+running alongside, not a second viewer.
+
+**Honest caveat on coverage**, which matters more now the audience is
+scientists in general rather than one structural biologist: full-text
+JATS is essentially an OA phenomenon — PMC / Europe PMC (includes
+some Acta Cryst), PLOS, eLife, bioRxiv/medRxiv, MDPI, Frontiers;
+paywalled Elsevier/Wiley/ACS won't have it. Europe PMC
+is heavily biomedical and its `fullTextXML` is PMC-keyed, so preprints
+(PPR), patents and Agricola records are searchable for metadata but
+have no full text there. Physics, chemistry, engineering and astronomy
+are thinly served or absent. So this improves some fields a great deal
+and others not at all — it never removes the need for the PDF paths,
+it just means the best-covered papers stop needing them.
+
+**Sequencing.** Cheapest useful first step is not a rewrite:
+  - **v0 — fetch and store.** At import time, resolve DOI → PMCID,
+    fetch the JATS when available, store it beside the PDF (plus a
+    backfill pass over the existing library). Data on disk before
+    any consumer exists.
+  - **v1 — references.** Use the JATS *only* to supply the reference
+    list and citation targets — feeding the same
+    `{page: [(rect, target_page, target_top, ref_n)]}` shape the
+    viewer already consumes, or superseding `parse_bibliography` for
+    those papers. The rect side still has to come from the PDF,
+    since that is where the user is clicking.
+  - **v2 — full text.** Section-aware FTS and citation contexts.
+
+  *(v0 shipped 2026-08-28: `alexandria/jats.py`, import-time hook,
+  "Fetch JATS full text…" backfill in the hamburger menu, sidecar
+  `jats` block with 30-day re-check of absent answers.)*
+
+**Follow-on: JATS → Markdown converter** (2026-08-28), so LLM
+tooling (the MCP server's text tools, ask-the-library) can feed on
+Markdown rather than raw XML — Claude reads Markdown best of all.
+Open question before building: where the generated `.md` lives.
+It is a *derived* artefact (regenerable from the `.jats.xml` at any
+time), which argues against a third same-basename sibling cluttering
+the library dir — candidates: a cache dir under the library root,
+generate-on-demand in the MCP server with no file at all, or accept
+the sibling for greppability. Needs a short design chat.
+
 ## Not soon, but at some stage
 
 ### Publisher-page metadata harvest (extends the citation_pdf_url fallback)
@@ -1138,6 +1652,169 @@ fresh papers.
     MCP gateway. Verified examples in
     `chat-stuff/competitors.md` (long-tail section):
     `openalex-research-mcp` and `Scientific-Papers-MCP`.
+
+## Prompted by Paperlib (surveyed 2026-08-26)
+
+Paperlib (`Future-Scholars/paperlib`, GPL-3.0, Electron/TS, ~2.3k
+stars) is the closest direct peer found so far — same bet on metadata
+scraping, plus PDF fetch, RSS feeds, tags/folders/notes and cloud
+sync. Full survey in `chat-stuff/competitors-paperlib.md`. It has
+**no PDF annotation and no author-centric features at all**, which
+makes our viewer (highlights, comments, citation-following with
+jump-back) and the Authors side the durable differentiators. Two
+things it does better:
+
+- **Widen the metadata scrapers.** Their source list is materially
+  wider than our OpenAlex + Crossref + Unpaywall + PDBe: arXiv,
+  Semantic Scholar, Google Scholar, Springer, Scopus, openreview,
+  IEEE, DBLP, Papers with Code, NASA ADS, SPIE, ChemRxiv,
+  bioRxiv/medRxiv. Now that the audience is scientists in general
+  rather than this library's owner, breadth is the point rather than
+  scope creep, and a source being outside structural biology is not
+  an argument against it. Ranking by what each actually adds:
+
+    - **Semantic Scholar first.** The only true general aggregator in
+      the list — an OpenAlex peer from AI2, 200M+ papers across all
+      disciplines, with a free API (no key needed for light use; a
+      free key buys a dedicated ~1 req/s). Independent coverage where
+      OpenAlex is thin, plus TLDR summaries, citation-influence
+      scores and citation *contexts* — the sentence in which one
+      paper cites another, which the viewer's citation-following work
+      could surface directly. Shaped like the existing OpenAlex
+      client, so it slots in beside it.
+    - **Preprint servers next** — bioRxiv/medRxiv, ChemRxiv, and
+      arXiv for the physical sciences. OpenAlex is often thin or late
+      on preprints, the same freshness gap
+      `feed._fetch_landing_pdf_url` already works around.
+    - **Subject archives are for their own audiences.** NASA ADS
+      (astronomy/astrophysics/planetary/heliophysics, 16M+ records,
+      free API but needs an account token) is the definitive index
+      for astronomers and worthless to anyone else; it has also been
+      funded to extend into earth science and NASA-funded biological
+      and physical sciences, so its scope may broaden. Only worth
+      doing once there are astronomers using this.
+    - **SPIE is a publisher, not an aggregator** — its Digital
+      Library is SPIE's own 650k-item catalogue of optics and
+      photonics journals and conference proceedings. No public API
+      found, so Paperlib is likely scraping it: exactly the
+      per-publisher maintenance cost flagged in the
+      publisher-page-harvest entry. Lowest priority of the four.
+
+- **Quick-copy citation popup.** They ship an MS Word plugin and a
+  Spotlight-like popup for pasting references into whatever you are
+  writing. We have BibTeX / RIS / CSL *export* but no
+  "drop a citation into the document I am in right now" path. A
+  global shortcut that searches the library and puts a formatted
+  citation on the clipboard would close it — the formatting already
+  exists (`csl_format`, `bibtex_export`, `ris_export`), so this is a
+  UI surface over solved problems.
+
+- **LLM paper summaries, via MCP rather than in the app.** Paperlib
+  advertises LLM summarisation, auto-tagging and semantic search. We
+  can have the first of those without taking on any of the cost that
+  put RAG in "Speculative / maybe-never": the objection there is
+  adding an LLM dependency to a deliberately offline-first app, and
+  going through `alexandria_mcp` dissolves it. The model lives in the
+  MCP *client* (Claude Desktop / Claude Code), so we ship no model,
+  no API-key handling and no heavy dependencies; the app still works
+  fully offline and summaries are simply absent until a client is
+  connected.
+
+  **Protocol constraint that decides the shape — check before
+  designing any UI around this.** MCP has a feature for exactly this
+  job: *sampling* (`sampling/createMessage`), where a server asks the
+  client for a completion, with the client owning model choice and
+  API keys. It is **not available**: unsupported in Claude Desktop,
+  and an open feature request for Claude Code
+  (anthropics/claude-code#1785). So Alexandria cannot initiate a
+  summary. The flow is Claude-initiated — the user asks, inside a
+  client with our MCP server connected — which rules out a
+  "Summarise" button that works on its own. Re-check this: if
+  sampling ever lands, an in-app trigger becomes possible and the
+  design below gains a second entry point without changing.
+
+  **Flow.** User asks in the client → `recently_added` (exists) →
+  `get_summary_input` (new) → model writes the summary →
+  `set_summary` (new) → Alexandria displays it.
+
+  **Two new tools.** The read side already exists: `get_pdf_texts`
+  hands over sliced, truncated PDF text and `get_sidecars` exposes
+  the sidecar that is the source of truth. What is missing is a
+  **write** path — the server's only writing tool today is
+  `add_paper_by_doi`.
+
+    - `set_summary(paper_id, summary, model, source_tier)` writing
+      into the sidecar beside the existing enrichment fields, so it
+      survives re-indexing and travels with the library like every
+      other piece of user data. Recording *which model* and *which
+      tier* is not optional: a summary is a dated machine opinion,
+      and the UI must not let it be mistaken for the abstract. As a
+      write tool it wants the same care as `add_paper_by_doi` —
+      validate the ID, cap the text length, no arbitrary sidecar
+      writes.
+    - `get_summary_input(paper_ids, max_chars=...)` returning
+      `{paper_id, tier, text}` and choosing the best available
+      source. Keeping the tier choice in Python rather than in
+      prompt-space makes it testable and stops the model getting it
+      subtly wrong.
+
+  **Three-tier input, not a JATS gate.** JATS is better input — clean
+  text, tagged sections so Methods and the reference list can be
+  skipped, no page furniture (the Science extraction spliced
+  "…science.org on August 21, 2026" into the middle of a sentence),
+  MathML instead of mangled glyphs. But measured against this
+  library, only **72 of 127 DOIs (57%) have full text in Europe
+  PMC** — and that is a biomedical-heavy library, i.e. Europe PMC's
+  best case and no longer the audience. Gating summaries on JATS
+  would make the feature work for some users and silently not for
+  others. So: **JATS → PDF text → abstract**, with the tier recorded.
+  Quality upgrade on a feature that always works, not a
+  precondition.
+
+  **Sidecar shape:**
+
+    ```json
+    "summary": {
+      "text": "...", "model": "claude-opus-5",
+      "source": "jats", "generated_at": "2026-08-26T18:30:00Z"
+    }
+    ```
+
+  **Sequencing — each slice independently useful.**
+
+    1. Sidecar field + card / detail-view display. No MCP change;
+       testable by hand-writing a summary into a sidecar. Proves the
+       UI before any plumbing.
+    2. `set_summary` — end-to-end from a connected client.
+    3. `get_summary_input`, PDF tier only. Works for 100% of papers.
+    4. JATS tier. Needs DOI to PMCID resolution; see the structured
+       full text section.
+    5. *(Optional)* a pending queue. If an in-app affordance is
+       wanted despite the sampling gap, a button can only *mark*
+       papers as wanting a summary, with a `pending_summaries()` tool
+       letting the client collect them on next connect.
+
+  **What not to do:** have Alexandria call the Anthropic SDK
+  directly. It is only a few lines, and it reintroduces exactly what
+  the MCP route exists to avoid — a model dependency, API-key
+  handling, and an app that no longer works offline. The model
+  belongs in the client.
+
+  The same client-side pattern extends to auto-tagging and
+  natural-language search later, still without new dependencies —
+  which makes this worth designing as a general "let a connected
+  client write derived fields back" path rather than a
+  summaries-only special case.
+
+Explicitly **not** chasing their cloud sync — offline-first is
+deliberate; see Multi-host / NFS.
+
+Caveat on their LLM claims: the summarise / auto-tag / semantic-search
+features appear in marketing copy and a 2024 writeup but in none of
+the introduction docs fetched 2026-08-26. Possibly newer,
+extension-only, or aspirational. Worth re-checking before treating it
+as a competitive fact — though the MCP route above is worth doing on
+its own merits regardless of what they ship.
 
 ## Speculative / maybe-never
 

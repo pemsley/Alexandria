@@ -589,6 +589,13 @@ Pending features, roughly grouped. Newest at the top of each section.
       the existing ghost-import path is reused.
 
   **Still open:**
+    - **Search in the Subscriptions window.** A search entry over
+      the discovered-article cards (title + authors + journal +
+      abstract), client-side over `discovered` rows like the
+      pill filter — find that half-remembered paper without
+      scrolling the whole feed. Natural first slice of the
+      custom-feed-filters item below (same tokenised matching,
+      no persistence).
     - **Custom-feed filters.** Wispar's `FeedFilter` shape:
       `(name, journals: Set<String>, include: String,
       exclude: String, date_mode, date_after, date_before)`.

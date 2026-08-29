@@ -94,6 +94,39 @@ Pending features, roughly grouped. Newest at the top of each section.
   multi-directory-libraries item below; deciding it "flat" would
   also shrink the blast radius of bulk drops like `ramarota/`.
 
+- **Supplementary-information PDFs: link to the parent paper, "SI"
+  cartouche.** (Designed 2026-08-29 against
+  `13321_2020_429_MOESM2_ESM.pdf` — currently an empty-metadata
+  orphan card whose parent, AutoGrow4 `10.1186/s13321-020-00429-4`,
+  is sitting right there in the library.)
+
+    - **Detection:** filename markers (`MOESM\d+_ESM` Springer/BMC,
+      `_si_\d+` ACS, `.sapp` PNAS, `suppl(ementary)?` generic),
+      reinforced by extraction (the specimen's extracted title is
+      literally "Supplemental Information"). Composes with the
+      SI note already under the filename→DOI item.
+    - **Parent resolution ladder:** (1) *library first, no
+      network* — derive the DOI pattern from the filename
+      (`13321/2020/429` → `s13321-020-00429-%`) and match against
+      the papers table; (2) Crossref/OpenAlex when the parent
+      isn't local; (3) manual "Attach to paper…" reusing the
+      edit-dialog Find-metadata candidates search, with the pick
+      setting the parent link instead of filling fields.
+    - **Data model:** one sidecar field on the SI record only —
+      `si_of: {doi, title}`. The parent stores nothing; its
+      "has supplements" view is a card-build-time DB query (same
+      trick as the in-library badges). Survives renames, travels
+      with sharing.
+    - **UI:** an "SI" cartouche à la PRE (template
+      `make_preprint_badge`); on the SI card a clickable
+      "Supplement to: <parent title>" line (`_navigate_to_doi`
+      already exists); on the parent card a small "+N SI"
+      affordance listing and opening its supplements.
+    - **Exclusions:** SI records skip OpenAlex enrichment, JATS
+      fetch and the citation refresher — no DOI of their own, so
+      today they only waste calls and show as confusing empty
+      cards. Stay indexed and searchable.
+
 - **BUG: "refresh" destroys a hand-entered DOI, and there is no path
   from "I know the DOI" to "fetch the metadata".** Reported
   2026-08-27 against

@@ -3717,6 +3717,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         """Filter the visible list to the given DOI (FTS prefix-matches it)."""
         if not doi:
             return
+        self.search_bar.set_search_mode(True)
         self.search.set_text(doi)
         self.search.grab_focus()
 
@@ -4818,6 +4819,9 @@ class BrowserWindow(Adw.ApplicationWindow):
         # matching means partial surnames still match.
         parts = (name or "").strip().split()
         query = parts[-1] if parts else (name or "")
+        # Reveal the search bar so the active filter is visible (and
+        # clearable) rather than silently narrowing the list.
+        self.search_bar.set_search_mode(True)
         self.search.set_text(query)   # search-changed → _reload
         if popover is not None:
             popover.popdown()

@@ -336,12 +336,27 @@ def _download_pdf(url, target_path, timeout=60):
     return True, ""
 
 
-def _truncate_authors(names, max_n=4):
+def _truncate_authors(names, max_chars=110):
+    """Join as many whole author names as fit in `max_chars`,
+    appending ", et al." when any were dropped. The default budget
+    approximates one line of small text across the works pane at
+    the default window width — fuller than the old fixed four, and
+    still one line for typical name lengths."""
     if not names:
         return ""
-    if len(names) <= max_n:
-        return ", ".join(names)
-    return ", ".join(names[:max_n]) + ", et al."
+    full = ", ".join(names)
+    if len(full) <= max_chars:
+        return full
+    suffix = ", et al."
+    shown = []
+    used = 0
+    for n in names:
+        cost = len(n) if not shown else len(n) + 2
+        if shown and used + cost + len(suffix) > max_chars:
+            break
+        shown.append(n)
+        used += cost
+    return ", ".join(shown) + suffix
 
 
 def _draw_histogram(area, cr, width, height, counts_by_year):
@@ -1484,14 +1499,18 @@ class AuthorPage(Gtk.Box):
             title_row.append(badge)
         box.append(title_row)
 
-        # Authors.
+        # Authors. Fill the line to the character budget; when names
+        # were dropped, hovering shows the complete list.
         if w.get("authors"):
+            auth_line = _truncate_authors(w["authors"])
             auth_lbl = Gtk.Label(xalign=0.0)
             auth_lbl.set_wrap(True)
             auth_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
             auth_lbl.set_markup(
                 "<span size='small'>{}</span>".format(
-                    GLib.markup_escape_text(_truncate_authors(w["authors"]))))
+                    GLib.markup_escape_text(auth_line)))
+            if auth_line.endswith("et al."):
+                auth_lbl.set_tooltip_text(", ".join(w["authors"]))
             box.append(auth_lbl)
 
         # Funders. Up to two displayed; rest collapse to "+N more"

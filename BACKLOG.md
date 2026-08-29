@@ -1636,6 +1636,14 @@ covered. The wider scope is whack-a-mole maintenance with
 diminishing returns, and only buys speed-of-recognition for
 fresh papers.
 
+### Research
+
+  - What are ResearchRabbit, Connected Papers, Scite, Litmaps
+    - can they help us?
+  - What are Consensus, SciSpace, and Elicit?
+  - What are the tools here: https://effortlessacademic.com/tools/
+    How do we compare?
+
 ### Server Sync
 
   - Create a server that syncs the library. The client will

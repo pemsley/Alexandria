@@ -1,4 +1,4 @@
-# pdforg Backlog
+# Alexandria Backlog
 
 Pending features, roughly grouped. Newest at the top of each section.
 
@@ -29,6 +29,71 @@ Pending features, roughly grouped. Newest at the top of each section.
  - zoom to fit by default (explore)
 
 ## Import / ingestion
+
+- **GUI goes laggy/unresponsive during bulk import — measure, then
+  restructure.** Observed 2026-08-29 importing a ~180-PDF folder;
+  it is the first thing a new user with 100 PDFs would see. The
+  import runs on background *threads*, which only helps while the
+  work releases the GIL. Suspects, in order of likely guilt:
+
+    1. **GIL starvation.** Extraction (pypdf is pure Python and
+       holds the GIL solidly; the pdftotext/poppler bindings are C
+       but hold it through long calls), thumbnail rendering
+       (poppler+cairo), and regex-heavy parsing all starve the GTK
+       main loop while a worker chews each PDF. A hundred PDFs is
+       a hundred consecutive starvation windows.
+    2. **Reload churn.** Every finished import pokes the debounced
+       reload; through a long storm the main thread repeatedly
+       rebuilds ~200 Pango-heavy cards while also GIL-starved.
+    3. **SQLite contention** (upsert + FTS writes vs GUI reads;
+       busy_timeout turns collisions into main-thread stalls) —
+       real but probably secondary.
+
+  **MEASURED 2026-08-29 — the ranking above was wrong.** Two
+  instrumented runs on a scratch copy (main-loop heartbeat, 10 ms
+  tick, stalls >50 ms logged; network stubbed):
+
+    - **Worker thread exonerated.** 60-PDF import_tree on a
+      background thread: 7.8 s wall, **zero** main-loop stalls.
+      Extraction and thumbnails already shell out to pdftotext /
+      pdftoppm (subprocesses, GIL-free); pdfx/pypdf and sha256
+      never held the loop past 50 ms. The out-of-process worker
+      pool idea is NOT needed for responsiveness (only ever for
+      throughput).
+    - **The main-thread `_reload` is the whole problem.** At 166
+      papers a full rebuild took **17.2 s cold / 15.5 s second
+      run / 0.63 s warm** (~100 ms/card cold — per-card work:
+      sidecar reads for chips, texture loads, Pango). A simulated
+      import storm (watcher events at 400 ms; imports land
+      >300 ms apart, so the trailing-edge debounce fires per
+      import) froze the loop for **14.3 s total across 25 stalls,
+      worst 4.1 s** — the WM even raised "not responding", which
+      is precisely the reported symptom.
+
+  **Fixes, re-ranked from the data:**
+    - **Incremental card updates**: an import should insert/update
+      one card, not rebuild ~200. The full rebuild remains only
+      for query changes.
+    - **Storm coalescing** as a stopgap: during a burst, hold
+      reloads to at most one per few seconds plus one final —
+      turns 100 rebuilds into a handful.
+    - **Make the rebuild itself cheap(er)**: the 17 s cold case
+      wants per-card async population (sidecar-derived chips,
+      thumbnails off the hot path) or list virtualisation
+      (Gtk.ListView + factory instead of eager card widgets).
+    - DB batching: no longer implicated for GUI feel.
+
+  Measurement scripts: perf_import.py / perf_reload.py in the
+  session scratchpad (recreate freely — ~150 lines total; the
+  numbers above are the durable part).
+
+  Related but separate *policy* question (not the perf fix):
+  should the importer/watcher recurse into subdirectories at all,
+  or import only the catalogue's own directory, with subdirs
+  becoming catalogues of their own? Ties into the
+  multi-directory-libraries item below; deciding it "flat" would
+  also shrink the blast radius of bulk drops like `ramarota/`.
+
 - **BUG: "refresh" destroys a hand-entered DOI, and there is no path
   from "I know the DOI" to "fetch the metadata".** Reported
   2026-08-27 against
@@ -1847,3 +1912,16 @@ sober "do we actually want this?" — before any work happens.
   google / llama-cpp / transformers). Adds an LLM dependency to
   Alexandria, which is currently a deliberately offline-first app.
   We may decide we don't want that at all.
+
+## Bug?
+
+  Why doesn't Charlotte Deane appear as the PI of Nicholas Pearce?
+  Investigate.
+  - Resolved: Not a bug. Frank von Delft is the last author of those
+    papers.
+
+## alexandria-firefox-extension issues:
+
+  https://onlinelibrary.wiley.com/doi/pdfdirect/10.1002/pro.4391
+  fails to see the pdf.
+

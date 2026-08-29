@@ -29,6 +29,7 @@ Pending features, roughly grouped. Newest at the top of each section.
  - zoom to fit by default (explore)
 
 ## Import / ingestion
+
 - **BUG: "refresh" destroys a hand-entered DOI, and there is no path
   from "I know the DOI" to "fetch the metadata".** Reported
   2026-08-27 against
@@ -187,6 +188,48 @@ Pending features, roughly grouped. Newest at the top of each section.
   encoded year (the `(95)` in `S0022-2836(95)80037-9` *is* the year),
   should be treated as unknown rather than asserted.
 
+- **Collect and store JATS XML alongside PDFs.** When a paper's
+  full text is available as JATS (the NISO journal-article XML
+  standard), fetch it at import time and keep it next to the PDF —
+  the machine-readable twin of the human-readable copy. High
+  leverage because structured XML quietly replaces several things
+  we currently do with heuristics:
+    - **Exact reference extraction.** `<ref-list>` carries every
+      reference fully structured (authors, year, title, DOI) — no
+      line-wrap DOI reassembly, no publisher-specific patterns.
+      Directly fixes the Import Failures class of problem
+      (`acs.jcim.4c02293.pdf`), and `<xref>` elements tie each
+      in-text citation to its reference *and* its sentence —
+      feeding the citation hit-testing fallback item and, later,
+      citation-context features ("how does this paper cite X —
+      in passing, in Methods, critically?").
+    - **Clean full text.** Section-aware search ("only Methods"),
+      proper abstracts (abstract-display item), tables as data,
+      MathML. Feeds FTS, the static HTML index (a reflowable
+      reading view, not just a PDF link), and makes the MCP
+      server's `get_pdf_texts` dramatically better for
+      ask-the-library — Claude reading JATS beats pdftotext
+      output every time.
+    - **Coverage caveat.** Full-text JATS is essentially an OA
+      phenomenon: PMC / Europe PMC (biomed-heavy, includes some
+      Acta Cryst), PLOS, eLife, bioRxiv/medRxiv, MDPI, Frontiers.
+      Paywalled Elsevier/Wiley/ACS won't have it. An enrichment,
+      not a universal layer — the PDF stays canonical.
+    - **Fetching.** Europe PMC REST is the single clean entry
+      point: DOI → PMCID via their search endpoint, then
+      `GET /article/PMC{id}/fullTextXML`. Fits the existing
+      `metrics.py` helper pattern; stdlib `xml.etree` parses
+      JATS fine, no new dependencies.
+    - **On-disk shape.** Extend the same-basename convention:
+      `paper.pdf` + `paper.pdf.alexandria` + `paper.pdf.jats.xml`
+      travel together; teach the watcher/importer to ignore the
+      new extension; sharing and Drive-sync inherit it for free.
+    - **Ladder.** v0: fetch-and-store at import when the DOI
+      resolves to OA full text (plus a backfill pass for the
+      existing library). v1: prefer the JATS ref-list over PDF
+      parsing wherever it exists. v2: full-text FTS and
+      citation contexts.
+
 - **Drag-and-drop / CLI imports from outside the library tree
   (Flatpak).** Menu-driven Import Files / Import Folder now go
   through `importer.stage_into_library`, which copies the picked PDF
@@ -240,6 +283,7 @@ Pending features, roughly grouped. Newest at the top of each section.
       single-writer-at-a-time guarantee documented in
       `docs/design/database-and-nfs.md` — two simultaneous
       editors on two hosts is the unsolved race.
+
 - **Import from DOI (paste):** small dialog with a DOI entry field. Fetch
   metadata via OpenAlex/CrossRef, then attempt to fetch the open-access
   PDF (when `is_oa` and `oa_url` are present); if no OA copy, save a
@@ -1353,6 +1397,23 @@ via `extract.CROSSREF_USER_AGENT`.
   authors yet — click an author's name on a paper, or find one in
   Discover", ideally with the Discover action right there.
 
+
+- **"Rename to metadata" button on the paper card.** Rename the
+  PDF file so the filename reflects (to some extent) the title,
+  author and year — publisher downloads arrive as opaque names
+  (`s41586-024-07487-w.pdf`, `acs.jcim.4c02293.pdf`) and the
+  library folder is unreadable outside the app. Another button in
+  the card's action row (alongside Open / View / Edit / Rename /
+  Delete); proposes something like
+  `Smith-2024-Semantic-community-model.pdf` (first-author surname,
+  year, first few title words, sanitised and length-capped), shown
+  for confirmation/edit before applying. More than an `os.rename`:
+  the sidecar (`*.pdf.alexandria`) and thumbnail must move with
+  the PDF, the sidecar's `pdf_filename` basename and the DB row
+  need updating, and the watcher will see the rename as a
+  delete + create — reuse the existing manual-Rename plumbing,
+  which already deals with all of this; the new part is only
+  generating the proposed name from the metadata.
 
 - **Author photo on the author page.** Show a small blank-silhouette
   placeholder next to the author's name (Authors window /

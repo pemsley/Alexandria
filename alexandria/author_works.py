@@ -19,7 +19,7 @@ from gi.repository import Gtk, GLib, Gdk, Gio, Pango, Adw, GObject
 
 import datetime
 
-from . import metrics, index, importer, opener, author_image
+from . import metrics, index, importer, opener, author_image, viewer
 from .identity import maintainer_email
 from .markup import safe_pango_markup
 
@@ -421,6 +421,28 @@ def _draw_histogram(area, cr, width, height, counts_by_year):
     # Peak count label, above the tallest bar.
     cx = pad_x + peak_idx * (bw + gap) + bw / 2
     _draw_text(str(peak), cx, 0, "center")
+
+
+def _library_pdf_for_doi(conn, doi):
+    """Resolve a DOI to the library's (pdf_path, sidecar_path), or
+    None when the paper isn't here as a real file — ghost rows
+    (BibTeX imports, metadata-only) have a DOI but no PDF to open."""
+    want = index.normalize_doi(doi)
+    if not want:
+        return None
+    want = want.lower()
+    try:
+        cur = conn.execute(
+            "SELECT doi, pdf_path, sidecar_path FROM papers "
+            "WHERE doi IS NOT NULL AND doi<>''")
+        for row_doi, pdf_path, sc_path in cur:
+            d = index.normalize_doi(row_doi)
+            if (d and d.lower() == want
+                    and pdf_path and os.path.isfile(pdf_path)):
+                return pdf_path, sc_path
+    except Exception:
+        pass
+    return None
 
 
 def _existing_dois(conn):
@@ -1563,14 +1585,33 @@ class AuthorPage(Gtk.Box):
             _attach_copy_link_menu(b, view_target)
             btn_row.append(b)
 
-            already_in_lib = (doi or "").lower() in self._existing
+        # In-library rows get an Open button whatever their OA
+        # status — the library copy is right there. A ghost row
+        # (metadata-only BibTeX import) has the DOI but no PDF, so
+        # it keeps an inert label.
+        already_in_lib = (doi or "").lower() in self._existing
+        if already_in_lib:
+            lib_btn = Gtk.Button()
+            local = _library_pdf_for_doi(self.conn, doi)
+            if local:
+                lib_btn.set_label("Open")
+                lib_btn.set_tooltip_text(
+                    "Open the PDF from your library\n" + local[0])
+                lib_btn.connect(
+                    "clicked",
+                    lambda _b, p=local:
+                        viewer.open_viewer(self.get_root(), p[0], p[1]))
+            else:
+                lib_btn.set_label("In library")
+                lib_btn.set_sensitive(False)
+                lib_btn.set_tooltip_text(
+                    "In the library as metadata only — no PDF "
+                    "on disk yet.")
+            btn_row.append(lib_btn)
+        elif w.get("is_oa") and view_target:
             add_btn = Gtk.Button(label="Add to Archive")
             add_btn.add_css_class("suggested-action")
-            if already_in_lib:
-                add_btn.set_label("In library")
-                add_btn.set_sensitive(False)
-                add_btn.remove_css_class("suggested-action")
-            elif not pdf_urls:
+            if not pdf_urls:
                 add_btn.set_sensitive(False)
                 add_btn.remove_css_class("suggested-action")
                 add_btn.set_tooltip_text(

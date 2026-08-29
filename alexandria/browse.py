@@ -4751,18 +4751,23 @@ class BrowserWindow(Adw.ApplicationWindow):
         institution = authorship.get("institution")
 
         # Each author occupies two grid rows: the first carries the name
-        # button + position label + search button; the second carries
+        # button + position label + filter button; the second carries
         # the institution underneath. This keeps each author's
         # affiliation visually attached to that author.
         name_row = idx * 2
         inst_row = idx * 2 + 1
 
-        # Filter button: click → set search to the surname, FTS picks up.
+        # Name button: click → this author in the Authors window
+        # (the graceful no-identifier message inside
+        # _find_more_by_author covers scraped/unmatched names).
         name_btn = Gtk.Button(label=name)
         name_btn.add_css_class("flat")
         name_btn.set_halign(Gtk.Align.START)
         name_btn.set_hexpand(True)
-        name_btn.set_tooltip_text("Filter library by this author")
+        tip = "Show this author in the Authors window"
+        if orcid:
+            tip += "\nORCID: " + orcid
+        name_btn.set_tooltip_text(tip)
         if authorship.get("scraped"):
             # Scraped-only name: greyed italic, and an honest tooltip.
             lbl = Gtk.Label()
@@ -4771,10 +4776,10 @@ class BrowserWindow(Adw.ApplicationWindow):
             name_btn.set_child(lbl)
             name_btn.set_tooltip_text(
                 "As printed in the PDF — not (yet) matched to an "
-                "OpenAlex authorship record.\nClick to filter the "
-                "library by this author.")
-        name_btn.connect("clicked",
-                         lambda _b, n=name: self._filter_by_author(n, popover))
+                "OpenAlex authorship record.")
+        name_btn.connect(
+            "clicked",
+            lambda _b, a=authorship: self._find_more_by_author(a, popover))
         grid.attach(name_btn, 0, name_row, 1, 1)
 
         # Position marker (subtle): "first" / "last" only.
@@ -4784,22 +4789,18 @@ class BrowserWindow(Adw.ApplicationWindow):
             pos_lbl.set_halign(Gtk.Align.START)
             grid.attach(pos_lbl, 1, name_row, 1, 1)
 
-        # ORCID / "more by author" button — only when we have something
-        # authoritative to query on (ORCID or OpenAlex ID).
-        if orcid or authorship.get("openalex_id"):
-            more_btn = Gtk.Button.new_from_icon_name("system-search-symbolic")
-            tip = "Find more by this author"
-            if orcid:
-                tip += "\nORCID: " + orcid
-            more_btn.set_tooltip_text(tip)
-            more_btn.add_css_class("flat")
-            # Keep the icon clear of the popover's scrollbar — without
-            # this it overlaps and the click target shrinks.
-            more_btn.set_margin_end(10)
-            more_btn.connect(
-                "clicked",
-                lambda _b, a=authorship: self._find_more_by_author(a, popover))
-            grid.attach(more_btn, 2, name_row, 1, 1)
+        # Filter button: click → set search to the surname, FTS picks
+        # up. Works for every author, matched or not.
+        filter_btn = Gtk.Button.new_from_icon_name("view-filter-symbolic")
+        filter_btn.set_tooltip_text("Filter library by this author")
+        filter_btn.add_css_class("flat")
+        # Keep the icon clear of the popover's scrollbar — without
+        # this it overlaps and the click target shrinks.
+        filter_btn.set_margin_end(10)
+        filter_btn.connect(
+            "clicked",
+            lambda _b, n=name: self._filter_by_author(n, popover))
+        grid.attach(filter_btn, 2, name_row, 1, 1)
 
         # Institution directly under the name, in small grey text.
         if institution:

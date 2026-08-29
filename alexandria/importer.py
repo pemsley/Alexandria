@@ -115,6 +115,10 @@ def find_pdfs(root, skip_roots=None):
                     keep.append(d)
             dirs[:] = keep
         for name in files:
+            # macOS AppleDouble resource forks ("._foo.pdf") are
+            # metadata, not PDFs — Macs strew them when copying in.
+            if name.startswith("._"):
+                continue
             if name.lower().endswith(".pdf"):
                 yield os.path.join(dirpath, name)
 

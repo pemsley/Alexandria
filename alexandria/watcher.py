@@ -32,7 +32,11 @@ RATE_LIMIT_MS = 1500
 
 
 def _is_pdf(path):
-    return bool(path) and path.lower().endswith(".pdf")
+    if not path or not path.lower().endswith(".pdf"):
+        return False
+    # macOS AppleDouble resource forks ("._foo.pdf") are metadata,
+    # not PDFs — skip them or every Mac copy-in spams failed imports.
+    return not os.path.basename(path).startswith("._")
 
 
 def _is_sidecar(path):

@@ -322,6 +322,30 @@ def make_license_chip(label, url=None):
     return frame
 
 
+def make_fulltext_chips(pdf_path):
+    """Small chips for structured-full-text siblings stored beside
+    the PDF (today JATS XML; the generated Markdown will join it).
+    Returns a possibly-empty list of widgets."""
+    chips = []
+    for label, tip in jats.fulltext_siblings(pdf_path):
+        frame = Gtk.Frame()
+        frame.set_valign(Gtk.Align.CENTER)
+        lbl = Gtk.Label()
+        # Blue: distinct from the green licence family — this is
+        # "what we have on disk", not "what you may do with it".
+        lbl.set_markup(
+            '<span foreground="#1c71d8" weight="bold"><small>{}'
+            '</small></span>'.format(GLib.markup_escape_text(label)))
+        lbl.set_margin_start(5)
+        lbl.set_margin_end(5)
+        lbl.set_margin_top(1)
+        lbl.set_margin_bottom(1)
+        lbl.set_tooltip_text(tip)
+        frame.set_child(lbl)
+        chips.append(frame)
+    return chips
+
+
 def make_preprint_badge():
     """A small 'PRE' chip to flag preprint entries (no published
     version known)."""
@@ -805,6 +829,9 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
         if oa_chip is not None:
             oa_chip.set_valign(Gtk.Align.START)
             title_row.append(oa_chip)
+    for ft_chip in make_fulltext_chips(row["pdf_path"]):
+        ft_chip.set_valign(Gtk.Align.START)
+        title_row.append(ft_chip)
     text.append(title_row)
 
     # Authors row: clickable, opens a popover with the full list and

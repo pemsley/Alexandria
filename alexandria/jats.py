@@ -41,6 +41,26 @@ def jats_path(pdf_path):
     return pdf_path + JATS_SUFFIX
 
 
+# Structured-full-text siblings a paper can carry beside its PDF:
+# (suffix, chip label, tooltip). The browser renders a small card
+# chip per sibling present. The planned JATS->Markdown converter's
+# output joins this list when it lands.
+FULLTEXT_SIBLINGS = [
+    (JATS_SUFFIX, "JATS",
+     "Structured full text (JATS XML) stored beside the PDF"),
+]
+
+
+def fulltext_siblings(pdf_path):
+    """(label, tooltip) for each structured-full-text file present
+    beside `pdf_path`."""
+    if not pdf_path:
+        return []
+    return [(label, tip)
+            for suffix, label, tip in FULLTEXT_SIBLINGS
+            if os.path.isfile(pdf_path + suffix)]
+
+
 def _today_iso():
     return datetime.date.today().isoformat()
 

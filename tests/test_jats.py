@@ -131,6 +131,28 @@ def test_transport_error_reported_as_error(tmp_path, monkeypatch):
     assert block["status"] == "error"
 
 
+# ---- fulltext_siblings (card chips) --------------------------------
+
+def test_fulltext_siblings_empty_when_nothing_stored(tmp_path):
+    pdf = str(tmp_path / "paper.pdf")
+    assert jats.fulltext_siblings(pdf) == []
+
+
+def test_fulltext_siblings_reports_jats(tmp_path):
+    pdf = str(tmp_path / "paper.pdf")
+    with open(jats.jats_path(pdf), "wb") as fh:
+        fh.write(b"<article/>")
+    got = jats.fulltext_siblings(pdf)
+    assert len(got) == 1
+    label, tip = got[0]
+    assert label == "JATS"
+    assert "JATS" in tip
+
+
+def test_fulltext_siblings_none_path():
+    assert jats.fulltext_siblings(None) == []
+
+
 # ---- should_attempt (backfill skip logic) --------------------------
 
 def _days_ago(n):

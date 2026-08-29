@@ -654,6 +654,16 @@ Pending features, roughly grouped. Newest at the top of each section.
       the existing ghost-import path is reused.
 
   **Still open:**
+    - **Feed cards: handle markup properly, and hover-to-read the
+      full abstract** (noted 2026-08-29 while viewing Science China
+      Life Sciences updates). Publisher feeds carry markup in
+      titles/abstracts (sub/sup, italics, entities) that the cards
+      should render or strip cleanly — same class of problem the
+      library cards solved with `markup.safe_pango_markup` /
+      `<scp>`-style handling; reuse that. And the truncated
+      abstract line should show the complete abstract on mouse-over
+      (tooltip, like the works-row author line in the Authors
+      window) so reading it doesn't require View.
     - **Search in the Subscriptions window.** A search entry over
       the discovered-article cards (title + authors + journal +
       abstract), client-side over `discovered` rows like the

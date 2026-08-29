@@ -46,7 +46,7 @@ from . import (index, edit_dialog, importer, metrics, sidecar, extract,
                author_works, bibtex_import, bibtex_export, ris_export,
                csl_export, opener, references_pdf, discover, csl_format,
                feed, feed_window, import_toast, pdb_mentions,
-               funding_links, doi_import_dialog)
+               funding_links, doi_import_dialog, jats)
 
 LIBRARY_ROOT = prefs.get_library_root()
 
@@ -1460,6 +1460,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         hamburger_menu.append_section(None, discover_section)
         tools_section = Gio.Menu()
         tools_section.append("Toggle terminal", "win.toggle-terminal")
+        tools_section.append("Fetch JATS full text…", "win.jats-backfill")
         hamburger_menu.append_section(None, tools_section)
         hamburger_menu.append("Preferences…", "win.preferences")
         hamburger_menu.append("About Alexandria", "win.about")
@@ -2050,6 +2051,41 @@ class BrowserWindow(Adw.ApplicationWindow):
         if visible and self._terminal is not None:
             self._terminal.grab_focus()
 
+    def _on_jats_backfill(self, _btn):
+        """Hamburger 'Fetch JATS full text…': walk DOI-bearing
+        papers and store Europe PMC JATS XML beside each PDF where
+        the OA full text exists. Runs on a daemon thread with its
+        own connection; progress on the status line."""
+        if getattr(self, "_jats_busy", False):
+            self.status.set_text("JATS fetch already running")
+            return
+        self._jats_busy = True
+        self.status.set_text("[jats] starting…")
+
+        def progress(done, total):
+            GLib.idle_add(self.status.set_text,
+                          "[jats] {}/{}…".format(done, total))
+
+        def finish(totals):
+            self._jats_busy = False
+            msg = ("JATS: {stored} stored, {absent} without full "
+                   "text, {skipped} already done".format(**totals))
+            if totals["errors"]:
+                msg += ", {} errors".format(totals["errors"])
+            self.status.set_text(msg)
+            self._toast(msg, timeout=5)
+            return False
+
+        def work():
+            conn = index.connect_existing(self._db_path)
+            try:
+                totals = jats.backfill(conn, on_progress=progress)
+            finally:
+                conn.close()
+            GLib.idle_add(finish, totals)
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _build_terminal(self, Vte):
         """Construct the Vte.Terminal and spawn the user's shell with
         ALEXANDRIA_* env vars set so a `claude` invocation from the
@@ -2156,6 +2192,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             ("subscriptions", self._open_subscriptions),
             ("preferences",   self._open_preferences),
             ("toggle-terminal", self._on_toggle_terminal),
+            ("jats-backfill", self._on_jats_backfill),
             ("about",         self._open_about),
             ("new-catalogue", self._on_new_catalogue),
             ("remove-catalogue", self._on_remove_catalogue),

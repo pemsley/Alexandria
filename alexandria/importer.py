@@ -9,7 +9,7 @@ import shutil
 import threading
 import time
 
-from . import sidecar, thumbnail, extract, index, metrics
+from . import sidecar, thumbnail, extract, index, metrics, jats
 
 
 def _db_path_of(conn):
@@ -471,6 +471,17 @@ def import_pdf(conn, pdf_path):
             rec.get("title"), rec.get("authors") or [], rec["doi"])
         if pv:
             rec["published_version"] = pv
+
+    # JATS full text (Europe PMC), best-effort: stores
+    # <pdf>.jats.xml beside the PDF when the paper is in the PMC OA
+    # subset, and records the attempt in the sidecar either way so
+    # the backfill knows not to repeat it.
+    if rec.get("doi"):
+        try:
+            rec["jats"] = jats.fetch_and_store(pdf_path, rec["doi"])
+        except Exception as e:
+            print("[importer] JATS fetch failed for {}: {}".format(
+                rec["doi"], e))
 
     sidecar.write(sc_path, rec)
     thumbnail.make_thumbnail(pdf_path, th_path, title=rec.get("title"))

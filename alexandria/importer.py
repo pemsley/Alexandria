@@ -272,7 +272,7 @@ def refresh_pdf(conn, pdf_path):
                 "citations", "citations_source", "citations_fetched",
                 "citations_by_year",
                 "auto_keywords", "abstract", "authorships", "highlights",
-                "published_version",
+                "published_version", "summary",
                 "bibtex_key", "bibtex_type", "bibtex_extra"):
         if key in old:
             fresh[key] = old[key]

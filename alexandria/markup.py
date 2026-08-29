@@ -135,3 +135,20 @@ def safe_pango_markup(text):
     if not _markup_parses(result):
         return GLib.markup_escape_text(original)
     return result
+
+
+def summary_attribution(summary):
+    """One-line provenance for a machine-written sidecar summary —
+    "claude-opus-5 · from jats · 2026-08-29". Always returns at
+    least "AI-generated" so the UI can never show an unattributed
+    machine summary as if it were the abstract."""
+    if not summary:
+        return "AI-generated"
+    bits = []
+    if summary.get("model"):
+        bits.append(str(summary["model"]))
+    if summary.get("source"):
+        bits.append("from {}".format(summary["source"]))
+    if summary.get("generated_at"):
+        bits.append(str(summary["generated_at"])[:10])
+    return " · ".join(bits) if bits else "AI-generated"

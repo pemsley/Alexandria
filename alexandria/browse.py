@@ -64,7 +64,8 @@ _AUTHOR_SCORE_CREDIT_BUFFER = 1500
 display_auto_keywords = False
 
 
-from .markup import safe_pango_markup  # noqa: E402,F401  (re-export)
+from .markup import (safe_pango_markup,  # noqa: E402,F401  (re-export)
+                     summary_attribution)
 
 
 def _wlog(tag, msg):
@@ -548,6 +549,42 @@ def authors_str(authors_json):
     return ", ".join(a)
 
 
+def _sidecar_summary(sidecar_path):
+    """The sidecar's machine-written summary dict, or None when
+    absent/unreadable/empty. Tolerant like _pdf_comment_count."""
+    if not sidecar_path:
+        return None
+    try:
+        record = sidecar.read(sidecar_path)
+    except (OSError, ValueError):
+        return None
+    s = record.get("summary")
+    if s and (s.get("text") or "").strip():
+        return s
+    return None
+
+
+def make_summary_chip(summary):
+    """Small purple 'AI' chip for a machine-written summary; the
+    text lives in the tooltip with its attribution line, clearly
+    marked so it cannot pass for the abstract."""
+    frame = Gtk.Frame()
+    frame.set_valign(Gtk.Align.CENTER)
+    lbl = Gtk.Label()
+    lbl.set_markup(
+        '<span foreground="#9141ac" weight="bold"><small>AI</small>'
+        '</span>')
+    lbl.set_margin_start(5)
+    lbl.set_margin_end(5)
+    lbl.set_margin_top(1)
+    lbl.set_margin_bottom(1)
+    lbl.set_tooltip_text("{}\n\n— {}".format(
+        summary["text"].strip(),
+        summary_attribution(summary)))
+    frame.set_child(lbl)
+    return frame
+
+
 def _pdf_comment_count(sidecar_path):
     """Number of highlights in this sidecar that carry a non-empty
     comment. Returns 0 on a missing or unreadable sidecar — surfacing
@@ -832,6 +869,11 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     for ft_chip in make_fulltext_chips(row["pdf_path"]):
         ft_chip.set_valign(Gtk.Align.START)
         title_row.append(ft_chip)
+    card_summary = _sidecar_summary(row["sidecar_path"])
+    if card_summary:
+        s_chip = make_summary_chip(card_summary)
+        s_chip.set_valign(Gtk.Align.START)
+        title_row.append(s_chip)
     text.append(title_row)
 
     # Authors row: clickable, opens a popover with the full list and

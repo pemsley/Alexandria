@@ -2720,6 +2720,195 @@ def find_doi_by_author_year(surname, year, journal=None):
     return None
 
 
+def parse_citation_hint(text):
+    """Parse a human-copied citation fragment — "Jones et al. JMB,
+    1995", "Read, Acta Cryst. A, 1986" — into {surname, year,
+    journal} (any of which may be None). Deliberately forgiving:
+    the caller shows its interpretation and the ranked candidate
+    list absorbs parse imperfection."""
+    out = {"surname": None, "year": None, "journal": None}
+    s = (text or "").strip()
+    if not s:
+        return out
+    # Year: the last 18xx/19xx/20xx run bounded by non-digits —
+    # digit lookarounds rather than \b so "JMB1995" still yields
+    # the year, while digit runs inside DOIs/PIIs stay unmatched.
+    years = list(re.finditer(
+        r"(?<!\d)(1[89]\d{2}|20\d{2})(?!\d)", s))
+    if years:
+        out["year"] = int(years[-1].group(1))
+        s = s[:years[-1].start()] + s[years[-1].end():]
+    # Split authors from the rest: at "et al." when present, else at
+    # the first comma, else after the first token.
+    m = re.search(r"\bet\.?\s+al\.?,?", s)
+    if m:
+        authors_part, rest = s[:m.start()], s[m.end():]
+    elif "," in s:
+        authors_part, rest = s.split(",", 1)
+    else:
+        parts = s.strip().split(None, 1)
+        authors_part = parts[0] if parts else ""
+        rest = parts[1] if len(parts) > 1 else ""
+    # Surname: first author token that isn't initials.
+    for tok in re.split(r"[\s,&]+", authors_part):
+        t = tok.strip(".,;:()")
+        if not t or t.lower() == "and":
+            continue
+        if re.fullmatch(r"(?:[A-Za-z]\.)+", tok.strip(",;")):
+            continue   # "R.J." style initials
+        out["surname"] = t
+        break
+    # Journal: the last comma-segment of the rest that isn't
+    # initials, connectives, or page/volume digits.
+    journal = None
+    for seg in rest.split(","):
+        seg = seg.strip(" ,;:()")
+        if not seg:
+            continue
+        if re.fullmatch(r"(?:[A-Za-z]\.\s*)+|&|and", seg):
+            continue
+        if re.fullmatch(r"[\d\s\-–—:.]+", seg):
+            continue
+        journal = seg
+    out["journal"] = journal or None
+    return out
+
+
+def _journal_hint_match(hint, name):
+    """Does a citation-style journal hint name this OpenAlex source?
+    Token/prefix match via _journal_token_match, plus an initialism
+    rule so "JMB" matches "Journal of Molecular Biology" and "PNAS"
+    matches the Proceedings."""
+    if not hint or not name:
+        return False
+    if _journal_token_match(hint, name):
+        return True
+    h = re.sub(r"[^a-z]", "", hint.lower())
+    if not 2 <= len(h) <= 6:
+        return False
+    stops = {"of", "and", "the", "for", "in", "a", "an"}
+    words = [w for w in re.split(r"[^a-z0-9]+", name.lower())
+             if w and w not in stops]
+    return h == "".join(w[0] for w in words)
+
+
+def _first_author_surname_match(w, surname_lc):
+    """Does this OpenAlex Work's first author carry `surname_lc`?
+    Exact last-token match, with a substring fallback for
+    hyphenated / particle / all-caps display names."""
+    for a in (w.get("authorships") or []):
+        if (a.get("author_position") or "middle") != "first":
+            continue
+        n = (a.get("author") or {}).get("display_name") or ""
+        if _surname(n).lower() == surname_lc:
+            return True
+        return surname_lc in n.lower()
+    return False
+
+
+def find_citation_candidates(surname, year, journal=None, max_n=10):
+    """Ranked candidate Works for a partial citation ("Jones / JMB /
+    1995"): OpenAlex filtered by raw author name (+ year + journal
+    source when available), first-author-surname matches ranked
+    ahead of the rest, citation-sorted within each group.
+
+    Year ladder: exact year first (pre-electronic-publication
+    citations carry no online/print drift, and a loose window is
+    exactly what promotes a wrong same-surname paper), then
+    [year-1, year] (online-first drift runs that way only), then no
+    year filter. Returns (year_mode, [candidate, ...]) where
+    candidate has doi/title/year/journal/first_author/authors/
+    cited_by_count/openalex_id; ((None, []) when nothing found."""
+    if not surname:
+        return (None, [])
+    surname_clean = re.sub(r"\W+", " ", surname).strip()
+    if not surname_clean:
+        return (None, [])
+    source_ids = _resolve_journal_source_ids(journal) if journal else []
+    modes = []
+    if year:
+        y = int(year)
+        modes.append(("exact", "publication_year:{}".format(y)))
+        modes.append(("minus1", "publication_year:{}|{}".format(y - 1, y)))
+    modes.append(("none", None))
+    surname_lc = surname_clean.lower()
+    # Try the ladder with the journal filter first; if every rung is
+    # empty, once more without it — an abbreviation can resolve to
+    # the WRONG source ("JMB" → J. Microbiology & Biotechnology) and
+    # a poisoned filter must not zero the whole search. The
+    # first-author ranking keeps the unfiltered pass relevant.
+    source_attempts = [source_ids, []] if source_ids else [[]]
+    for attempt_sources in source_attempts:
+        for mode, year_filt in modes:
+            filt = ["raw_author_name.search:{}".format(surname_clean)]
+            if year_filt:
+                filt.append(year_filt)
+            if attempt_sources:
+                filt.append("primary_location.source.id:"
+                            + "|".join(attempt_sources))
+            params = [
+                ("filter", ",".join(filt)),
+                ("per_page", "25"),
+                ("sort", "cited_by_count:desc"),
+            ]
+            if OPENALEX_MAILTO:
+                params.append(("mailto", OPENALEX_MAILTO))
+            url = ("https://api.openalex.org/works?"
+                   + urllib.parse.urlencode(params))
+            data = _http_get_json(
+                url,
+                headers={"User-Agent": OPENALEX_UA,
+                         "Accept": "application/json"},
+                timeout=15)
+            results = (data or {}).get("results") or []
+            if not results:
+                continue
+
+            # Rank: first-author-surname match, then journal-hint
+            # match (soft — carries the weight when the source
+            # filter was dropped or wrong), then citations. The
+            # results arrive citation-sorted; Python's stable sort
+            # preserves that within equal (first, journal) groups.
+            def rank_key(w):
+                jname = (((w.get("primary_location") or {})
+                          .get("source") or {}).get("display_name")
+                         or "")
+                return (
+                    _first_author_surname_match(w, surname_lc),
+                    _journal_hint_match(journal, jname)
+                    if journal else False,
+                    w.get("cited_by_count") or 0,
+                )
+            ranked = sorted(results, key=rank_key, reverse=True)
+            cands = [_citation_candidate(w) for w in ranked]
+            return mode, cands[:max_n]
+    return (None, [])
+
+
+def _citation_candidate(w):
+    first = None
+    authors = []
+    for a in (w.get("authorships") or []):
+        n = (a.get("author") or {}).get("display_name")
+        if not n:
+            continue
+        authors.append(n)
+        if (a.get("author_position") or "") == "first" and first is None:
+            first = n
+    oa_id = (w.get("id") or "").rsplit("/", 1)[-1] or None
+    return {
+        "doi": _normalize_doi(w.get("doi")),
+        "title": w.get("title"),
+        "year": w.get("publication_year"),
+        "journal": (((w.get("primary_location") or {}).get("source")
+                     or {}).get("display_name")),
+        "first_author": first,
+        "authors": authors,
+        "cited_by_count": w.get("cited_by_count") or 0,
+        "openalex_id": oa_id,
+    }
+
+
 def _published_version_via_crossref_relation(preprint_doi):
     """Look up `preprint_doi` in CrossRef and walk `message.relation`
     for an `is-preprint-of` link. Returns a `find_published_version`-

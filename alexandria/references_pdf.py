@@ -1159,6 +1159,159 @@ def find_numeric_citations(pdf_path, bib_entries):
     return out
 
 
+# Sentence-boundary punctuation followed by whitespace. The
+# lookbehind keeps initials ("J. Smith") and abbreviations from
+# ending a sentence — a single capital before the dot is far more
+# often an initial than a sentence end in a reference-dense paper.
+_SENTENCE_END_RE = re.compile(r"(?<![A-Z])[.!?][\"\u2019\)\]]?\s")
+
+# How far either side of a citation to look for the sentence bounds.
+# Body text sentences run well under this; the cap is what stops a
+# failed search from walking to the top of the page and dragging in
+# the author/email block, which is exactly what an early prototype
+# did.
+_CONTEXT_MAX_BACK = 420
+_CONTEXT_MAX_FWD = 420
+
+
+def _page_text_and_rects(page):
+    """`(text, rects)` for a Poppler page with the two length-aligned,
+    or `(None, None)` when they can't be reconciled. Same dance as
+    `_page_lines` — poppler's `get_text` and `get_text_layout`
+    disagree about newlines depending on the producer."""
+    text = page.get_text() or ""
+    if not text:
+        return None, None
+    res = page.get_text_layout()
+    if isinstance(res, tuple):
+        ok, rects = res
+    else:
+        rects = res
+        ok = rects is not None
+    if not ok or rects is None:
+        return None, None
+    if len(rects) == len(text):
+        return text, rects
+    no_nl = text.replace("\n", "")
+    if len(rects) == len(no_nl):
+        return no_nl, rects
+    return None, None
+
+
+def _offsets_for_rect(rects, rect, page_height):
+    """Character span `(start, end)` of the glyphs under `rect`.
+
+    `rect` is `(x1, y1, x2, y2)` in PDF user space (origin
+    bottom-left, y up) — the convention citation links use. Returns
+    None when nothing falls inside. Slightly generous vertically:
+    publisher-authored link rects are often a point or two off the
+    glyph boxes, and a superscript marker sits high in its line."""
+    x1, y1, x2, y2 = rect
+    x_lo, x_hi = min(x1, x2), max(x1, x2)
+    y_top = page_height - max(y1, y2)
+    y_bot = page_height - min(y1, y2)
+    pad = 1.0
+    lo = hi = None
+    for i, r in enumerate(rects):
+        if r.x2 < x_lo - pad or r.x1 > x_hi + pad:
+            continue
+        if r.y2 < y_top - pad or r.y1 > y_bot + pad:
+            continue
+        if lo is None:
+            lo = i
+        hi = i
+    if lo is None:
+        return None
+    return lo, hi + 1
+
+
+def _sentence_bounds(text, start, end):
+    """Character bounds of the sentence containing `text[start:end]`,
+    clamped to the context window."""
+    win_lo = max(0, start - _CONTEXT_MAX_BACK)
+    lo = win_lo
+    for m in _SENTENCE_END_RE.finditer(text, win_lo, start):
+        lo = m.end()
+    if lo == win_lo:
+        # No sentence break in range — fall back to the last line
+        # break, so we start at a plausible boundary rather than
+        # mid-word in whatever preceded.
+        nl = text.rfind("\n", win_lo, start)
+        if nl != -1:
+            lo = nl + 1
+    m = _SENTENCE_END_RE.search(text, end, min(len(text), end + _CONTEXT_MAX_FWD))
+    hi = m.end() if m else min(len(text), end + _CONTEXT_MAX_FWD)
+    return lo, hi
+
+
+# Front matter — author lists, affiliations, correspondence blocks —
+# abuts the first body sentence in poppler's extraction order, and
+# supplies a plausible-looking sentence boundary ("...corresponding
+# author. Email: ..."), so a citation in the opening sentence drags
+# it in. Line breaks can't be used as block boundaries instead: in a
+# multi-column layout a real sentence wraps across both lines and
+# columns. Trim the markers that cannot occur mid-sentence.
+_FRONT_MATTER_RE = re.compile(
+    r"(?:\S+@\S+\.\w+|\bE-?mail\b|\bCorrespond(?:ence|ing\s+author)\b)",
+    re.IGNORECASE)
+
+
+def _strip_front_matter(s):
+    """Drop a leading correspondence/affiliation fragment, keeping the
+    body sentence that follows it."""
+    last = None
+    for m in _FRONT_MATTER_RE.finditer(s):
+        last = m
+    if last is None:
+        return s
+    tail = s[last.end():]
+    # What follows the last marker is the block's tail-end punctuation
+    # and initials — "; (P.M.) " — so skip to the first genuine word
+    # start rather than trying to enumerate the punctuation. An
+    # initial fails this test ("P." has no lowercase run), a real
+    # opening word passes it.
+    m = re.search(r"[A-Z][a-z]{2,}", tail)
+    if m is None:
+        return s
+    return tail[m.start():]
+
+
+def _tidy_context(s):
+    """Flatten PDF-extracted text into one readable line: undo
+    end-of-line hyphenation, collapse whitespace."""
+    s = re.sub(r"(\w)[-\u2010\u2011]\s*\n\s*(\w)", r"\1\2", s)
+    s = re.sub(r"(\w)[-\u2010\u2011]\s+(?=[a-z])", r"\1", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def citation_context(page, rect):
+    """The sentence of body text in which a citation appears — "how
+    *this* paper characterised the work it is citing".
+
+    `page` is a Poppler page (the viewer already holds the open
+    document, so nothing is reopened); `rect` is the citation link's
+    bounding box in PDF user space. Returns the cleaned-up sentence,
+    or None when the page text can't be aligned or the rect lands on
+    nothing.
+
+    Path-independent: it starts from the rect, so it serves citations
+    found via publisher link annotations just as well as the ones
+    recovered from page text."""
+    try:
+        _, page_h = page.get_size()
+        text, rects = _page_text_and_rects(page)
+        if text is None:
+            return None
+        span = _offsets_for_rect(rects, rect, page_h)
+        if span is None:
+            return None
+        lo, hi = _sentence_bounds(text, span[0], span[1])
+        out = _tidy_context(_strip_front_matter(text[lo:hi]))
+        return out or None
+    except Exception:
+        return None
+
+
 _CITATION_TOKEN_RE = re.compile(r"\[\s*([\d\s,\-–—]+)\s*\]")
 
 

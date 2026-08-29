@@ -1455,6 +1455,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         hamburger_menu.append_section("Catalogues",
                                       catalogues_section)
         discover_section = Gio.Menu()
+        discover_section.append("Authors…", "win.authors")
         discover_section.append("Discover (OpenAlex)…", "win.discover")
         discover_section.append("Subscriptions…", "win.subscriptions")
         hamburger_menu.append_section(None, discover_section)
@@ -2190,6 +2191,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             ("export-csl-json", self._on_export_csl_json),
             ("discover",      self._open_discover),
             ("subscriptions", self._open_subscriptions),
+            ("authors",       self._open_authors),
             ("preferences",   self._open_preferences),
             ("toggle-terminal", self._on_toggle_terminal),
             ("jats-backfill", self._on_jats_backfill),
@@ -4953,6 +4955,9 @@ class BrowserWindow(Adw.ApplicationWindow):
 
     def _open_subscriptions(self, _btn):
         feed_window.open_window(self, self.conn)
+
+    def _open_authors(self, _btn):
+        author_works.open_trail_window(self, self.conn)
 
     def _open_preferences(self, _btn):
         dlg = Adw.PreferencesDialog()

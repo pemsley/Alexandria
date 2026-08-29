@@ -1695,9 +1695,13 @@ class AuthorsWindow(Adw.Window):
     survives restarts; works/impact data comes from the existing
     author_works_cache / author_scores tables."""
 
-    def __init__(self, conn):
+    def __init__(self, conn, on_discover=None):
         super().__init__()
         self.conn = conn
+        # Optional zero-arg callback that opens the Discover window —
+        # supplied by BrowserWindow so the empty-trail state can
+        # offer a way to find a first author.
+        self._on_discover = on_discover
         self.set_title("Alexandria: Authors")
         self.set_default_size(1000, 720)
         self._pages = {}   # trail key -> AuthorPage
@@ -1724,9 +1728,25 @@ class AuthorsWindow(Adw.Window):
         self.stack = Gtk.Stack()
         self.stack.set_hexpand(True)
         self.stack.set_vexpand(True)
-        empty = Gtk.Label()
-        empty.set_markup(
-            "<span alpha='60%'>Select an author</span>")
+        # Empty-pane state: "select one" when the trail has rows,
+        # a get-started hint (with a Discover shortcut when the
+        # opener provided one) when it is empty — the menu-opened
+        # window on a fresh library must not be a blank pane.
+        empty = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                        spacing=12)
+        empty.set_valign(Gtk.Align.CENTER)
+        empty.set_halign(Gtk.Align.CENTER)
+        self._empty_lbl = Gtk.Label(justify=Gtk.Justification.CENTER)
+        self._empty_lbl.set_wrap(True)
+        empty.append(self._empty_lbl)
+        self._empty_discover_btn = Gtk.Button(label="Open Discover…")
+        self._empty_discover_btn.set_halign(Gtk.Align.CENTER)
+        self._empty_discover_btn.set_visible(False)
+        self._empty_discover_btn.connect(
+            "clicked",
+            lambda _b: self._on_discover() if self._on_discover
+            else None)
+        empty.append(self._empty_discover_btn)
         self.stack.add_named(empty, "empty")
         content_tb = Adw.ToolbarView()
         content_tb.add_top_bar(Adw.HeaderBar())
@@ -1750,6 +1770,20 @@ class AuthorsWindow(Adw.Window):
         # created (and nothing is fetched) until a row is selected.
         for entry in index.list_author_trail(self.conn):
             self._append_row(entry)
+        self._update_empty_state()
+
+    def _update_empty_state(self):
+        if self._rows:
+            self._empty_lbl.set_markup(
+                "<span alpha='60%'>Select an author</span>")
+            self._empty_discover_btn.set_visible(False)
+        else:
+            self._empty_lbl.set_markup(
+                "<span alpha='60%'>No authors yet — click an "
+                "author's name on a paper,\nor find one in "
+                "Discover.</span>")
+            self._empty_discover_btn.set_visible(
+                self._on_discover is not None)
 
     # --- Sidebar rows -------------------------------------------------
 
@@ -1829,6 +1863,7 @@ class AuthorsWindow(Adw.Window):
         row.set_child(hbox)
         self.sidebar.append(row)
         self._rows[entry["key"]] = row
+        self._update_empty_state()
         return row
 
     def _on_row_selected(self, _listbox, row):
@@ -1927,6 +1962,7 @@ class AuthorsWindow(Adw.Window):
             else:
                 self.stack.set_visible_child_name("empty")
                 self._content_page.set_title("Authors")
+        self._update_empty_state()
 
     # --- Public API ---------------------------------------------------
 
@@ -2008,22 +2044,18 @@ class AuthorsWindow(Adw.Window):
 _authors_window = None
 
 
-def open_window(parent, conn, authorship):
-    """Route `authorship` into the singleton AuthorsWindow, creating
-    it on first use. Same signature as the historical
-    one-window-per-author implementation, so the browse popover,
-    Discover, and collaborator chips all work unchanged."""
+def _ensure_window(parent, conn):
+    """Create the singleton AuthorsWindow if needed and return it."""
     global _authors_window
-    if not (authorship.get("orcid") or authorship.get("openalex_id")):
-        # No usable identifier — caller should have checked, but be safe.
-        dlg = Gtk.AlertDialog()
-        dlg.set_message(
-            "No ORCID or OpenAlex ID available for {}".format(
-                authorship.get("name") or "this author"))
-        dlg.show(parent)
-        return None
     if _authors_window is None:
-        win = AuthorsWindow(conn)
+        # Wire the empty-state Discover shortcut when the opener can
+        # provide one (BrowserWindow can; viewer/discover callers
+        # simply don't get the button).
+        on_discover = None
+        opener = getattr(parent, "_open_discover", None)
+        if opener is not None:
+            on_discover = lambda: opener(None)
+        win = AuthorsWindow(conn, on_discover=on_discover)
         # Register with the BrowserWindow (when it supports it) so an
         # import landing elsewhere can live-refresh in-library badges.
         reg = getattr(parent, "_register_author_window", None)
@@ -2036,6 +2068,31 @@ def open_window(parent, conn, authorship):
             return False
         win.connect("close-request", _on_close)
         _authors_window = win
-    _authors_window.show_author(authorship)
-    _authors_window.present()
     return _authors_window
+
+
+def open_trail_window(parent, conn):
+    """Open (or raise) the Authors window on the persisted trail
+    with no particular author — the hamburger-menu entry point."""
+    win = _ensure_window(parent, conn)
+    win.present()
+    return win
+
+
+def open_window(parent, conn, authorship):
+    """Route `authorship` into the singleton AuthorsWindow, creating
+    it on first use. Same signature as the historical
+    one-window-per-author implementation, so the browse popover,
+    Discover, and collaborator chips all work unchanged."""
+    if not (authorship.get("orcid") or authorship.get("openalex_id")):
+        # No usable identifier — caller should have checked, but be safe.
+        dlg = Gtk.AlertDialog()
+        dlg.set_message(
+            "No ORCID or OpenAlex ID available for {}".format(
+                authorship.get("name") or "this author"))
+        dlg.show(parent)
+        return None
+    win = _ensure_window(parent, conn)
+    win.show_author(authorship)
+    win.present()
+    return win

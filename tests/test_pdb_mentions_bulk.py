@@ -7,6 +7,7 @@ measurable part of a multi-second rebuild.
 
 import os
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -118,3 +119,65 @@ def test_storing_new_ids_refreshes_the_cache(tmp_path):
     assert pdb_mentions.get_valid_pdb_ids(conn) == {"1abc"}
     pdb_mentions._store_valid_pdb_ids(conn, ["9xyz"])
     assert "9xyz" in pdb_mentions.get_valid_pdb_ids(conn)
+
+
+# ---- the weekly id-cache refresh must not block an import ---------
+
+def test_stale_cache_refresh_is_scheduled_not_awaited(tmp_path,
+                                                      monkeypatch):
+    """refresh_valid_pdb_id_cache downloads wwPDB's 57 MB entries.idx
+    and parses ~259k lines. It was called from
+    index_pdb_mentions_for_paper, so the first import after the
+    7-day TTL expired paid for all of it inline, holding the GIL.
+    Scheduling must return immediately."""
+    conn, _ids = _library(tmp_path)
+    started = []
+
+    def fake_worker(db_path):
+        started.append(db_path)
+
+    monkeypatch.setattr(pdb_mentions, "_refresh_worker", fake_worker)
+    # Empty cache table == stale.
+    assert pdb_mentions.schedule_valid_pdb_id_refresh(conn) is True
+    for _ in range(50):
+        if started:
+            break
+        time.sleep(0.02)
+    assert started, "refresh worker was never started"
+
+
+def test_fresh_cache_schedules_nothing(tmp_path, monkeypatch):
+    conn, _ids = _library(tmp_path)
+    pdb_mentions._store_valid_pdb_ids(conn, ["1abc"])
+
+    def explode(db_path):
+        raise AssertionError("should not refresh a fresh cache")
+
+    monkeypatch.setattr(pdb_mentions, "_refresh_worker", explode)
+    assert pdb_mentions.schedule_valid_pdb_id_refresh(conn) is False
+
+
+def test_indexing_a_paper_never_downloads_inline(tmp_path,
+                                                 monkeypatch):
+    """The import path may schedule a refresh; it must never wait
+    for one."""
+    conn, ids = _library(tmp_path)
+    monkeypatch.setattr(
+        pdb_mentions, "refresh_valid_pdb_id_cache",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("blocking refresh called from import")))
+    monkeypatch.setattr(pdb_mentions, "_refresh_worker",
+                        lambda db_path: None)
+    monkeypatch.setattr(pdb_mentions, "_pdf_fulltext",
+                        lambda p: "a paper mentioning 1abc")
+    monkeypatch.setattr(pdb_mentions, "fetch_pmid_for_doi",
+                        lambda doi, timeout=15: None)
+    pdb_mentions.index_pdb_mentions_for_paper(conn, ids["a"])
+
+
+def test_parser_skips_headers_and_keeps_four_char_ids():
+    lines = [b"IDCODE\tHEADER\n", b"------\t------\n",
+             b"100D\tsomething\n", b"1ABC\tother\n",
+             b"TOOLONG\tx\n", b"\n"]
+    got = pdb_mentions._parse_entries_idx(lines)
+    assert got == ["100d", "1abc"]

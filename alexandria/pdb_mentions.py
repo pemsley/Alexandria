@@ -214,27 +214,100 @@ def fetch_europepmc_annotations(pmids, timeout=30):
     return out
 
 
+ENTRIES_IDX_URL = (
+    "https://files.wwpdb.org/pub/pdb/derived_data/index/entries.idx")
+
+# Only one refresh at a time, process-wide.
+_refresh_thread = None
+_refresh_thread_lock = threading.Lock()
+
+
+def _db_path_of(conn):
+    """Filesystem path of a connection's database, or '' when it is
+    in-memory. (Local copy so this module doesn't import importer.)"""
+    try:
+        for _seq, name, file in conn.execute("PRAGMA database_list"):
+            if name == "main":
+                return file or ""
+    except Exception:
+        pass
+    return ""
+
+
+def _parse_entries_idx(lines):
+    """Lowercased 4-character PDB ids from wwPDB's entries.idx,
+    skipping its two header lines. Takes an iterable of byte lines
+    so the caller can stream the response instead of holding the
+    whole ~57 MB file (and a 259k-element line list) in memory."""
+    ids = []
+    for n, raw in enumerate(lines):
+        if n < 2:
+            continue
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", "replace")
+        tok = raw.split("\t", 1)[0].strip()
+        if len(tok) == 4:
+            ids.append(tok.lower())
+    return ids
+
+
 def refresh_valid_pdb_id_cache(conn, max_age_days=7, timeout=60):
-    """Refresh the local set of valid PDB ids from wwPDB's entries.idx
-    when stale. Best-effort: leaves the cache untouched on failure."""
+    """Refresh the local set of valid PDB ids from wwPDB's
+    entries.idx when stale. Best-effort: leaves the cache untouched
+    on failure.
+
+    Blocking, and the download is ~57 MB — call
+    `schedule_valid_pdb_id_refresh` from anything a user is waiting
+    on."""
     if not _valid_cache_is_stale(conn, max_age_days):
         return
-    url = "https://files.wwpdb.org/pub/pdb/derived_data/index/entries.idx"
     try:
         req = urllib.request.Request(
-            url, headers={"User-Agent": metrics.EUROPEPMC_UA})
+            ENTRIES_IDX_URL,
+            headers={"User-Agent": metrics.EUROPEPMC_UA})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            text = resp.read().decode("utf-8", "replace")
+            # Stream: iterating the response reads incrementally and
+            # releases the GIL on each socket read, where slurping
+            # the lot and calling .splitlines() held it throughout.
+            ids = _parse_entries_idx(resp)
     except Exception as e:
         print("[pdb_mentions] valid-id refresh failed:", e)
         return
-    ids = []
-    for line in text.splitlines()[2:]:   # skip 2 header lines
-        tok = line.split("\t", 1)[0].strip()
-        if len(tok) == 4:
-            ids.append(tok)
     if ids:
         _store_valid_pdb_ids(conn, ids)
+
+
+def _refresh_worker(db_path):
+    conn = index.connect_existing(db_path)
+    try:
+        refresh_valid_pdb_id_cache(conn)
+    except Exception as e:
+        print("[pdb_mentions] background id refresh failed:", e)
+    finally:
+        conn.close()
+
+
+def schedule_valid_pdb_id_refresh(conn, max_age_days=7):
+    """Start a background refresh if the id cache is stale, and
+    return immediately.
+
+    The refresh downloads 57 MB and parses ~259k lines; done inline
+    it froze the first import after the 7-day TTL expired. Nothing a
+    user waits on should call the blocking version. Returns True if
+    a refresh was started."""
+    if not _valid_cache_is_stale(conn, max_age_days):
+        return False
+    db_path = _db_path_of(conn)
+    if not db_path:
+        return False
+    global _refresh_thread
+    with _refresh_thread_lock:
+        if _refresh_thread is not None and _refresh_thread.is_alive():
+            return False
+        _refresh_thread = threading.Thread(
+            target=_refresh_worker, args=(db_path,), daemon=True)
+        _refresh_thread.start()
+    return True
 
 
 def extract_pdb_ids_from_text(text, valid_pdb_ids):
@@ -301,7 +374,10 @@ def index_pdb_mentions_for_paper(conn, paper_id, pdf_path=None, doi=None):
     if not text:
         index.mark_pdb_indexed(conn, paper_id)
         return 0
-    refresh_valid_pdb_id_cache(conn)
+    # Never block an import on the 57 MB entries.idx download; a
+    # stale id set just means the newest PDB codes go unrecognised
+    # until the background refresh lands.
+    schedule_valid_pdb_id_refresh(conn)
     valid = get_valid_pdb_ids(conn)
     ids = extract_pdb_ids_from_text(text, valid)
     if not ids:

@@ -11,6 +11,23 @@ current window.
 COLLAPSE_THRESHOLD = 3
 
 
+def record_start(window_names, basename):
+    """Note that `basename` has begun importing, returning
+    `(names, is_new)`.
+
+    A single dropped PDF reaches import_pdf more than once — the
+    drop handler imports it, and the watcher fires again for the
+    file's CREATED and CHANGES_DONE_HINT events — so the same name
+    arrives repeatedly within one window. Each repeat used to queue
+    its own toast, which the user saw as 'Importing x…' appearing,
+    vanishing, and appearing again. Repeats are dropped: they are
+    the same work, and they must not inflate the collapsed count
+    either."""
+    if basename in window_names:
+        return window_names, False
+    return window_names + [basename], True
+
+
 def toast_action(window_names):
     """Decide the toast to show for the current import window.
 

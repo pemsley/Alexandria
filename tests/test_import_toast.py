@@ -40,6 +40,39 @@ def test_empty_window_is_noop():
 # ---- Self-test runner (no pytest needed) ---------------------------
 
 
+
+# ---- duplicate starts for one file ---------------------------------
+
+def test_record_start_adds_a_new_name():
+    names, is_new = import_toast.record_start(["a.pdf"], "b.pdf")
+    assert names == ["a.pdf", "b.pdf"]
+    assert is_new is True
+
+
+def test_record_start_ignores_a_repeat_of_the_same_file():
+    """One dropped PDF reaches the watcher twice — CREATED and
+    CHANGES_DONE_HINT — and the drop handler imports it as well.
+    Each start used to queue its own toast, so the user saw
+    'Importing x…' appear, vanish, and appear again."""
+    names, is_new = import_toast.record_start(["a.pdf"], "a.pdf")
+    assert names == ["a.pdf"]
+    assert is_new is False
+
+
+def test_repeats_do_not_inflate_the_collapsed_count():
+    names = []
+    for n in ("a.pdf", "a.pdf", "b.pdf", "b.pdf", "a.pdf"):
+        names, _ = import_toast.record_start(names, n)
+    assert names == ["a.pdf", "b.pdf"]
+    assert import_toast.toast_action(names) == ("name", "b.pdf")
+
+
+def test_three_distinct_files_still_collapse():
+    names = []
+    for n in ("a.pdf", "b.pdf", "b.pdf", "c.pdf"):
+        names, _ = import_toast.record_start(names, n)
+    assert import_toast.toast_action(names) == ("count", 3)
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0

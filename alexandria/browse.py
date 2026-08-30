@@ -4161,7 +4161,12 @@ class BrowserWindow(Adw.ApplicationWindow):
         importing a PDF. Coalesces near-simultaneous starts: name each
         for 1-2 files, collapse to one 'Importing N PDFs…' toast at 3+.
         See import_toast.toast_action for the decision logic."""
-        self._import_window_names.append(basename)
+        self._import_window_names, is_new = import_toast.record_start(
+            self._import_window_names, basename)
+        if not is_new:
+            # Same file, same window: the watcher's second event or
+            # the drop handler's own import. Already toasted.
+            return False
         kind, payload = import_toast.toast_action(self._import_window_names)
         if kind == "name":
             self._toast("Importing {}…".format(payload))

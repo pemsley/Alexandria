@@ -74,6 +74,24 @@ _JATS_P_CLOSE_RE = re.compile(r"</jats:p>\s*(?=<jats:p>)",
                               re.IGNORECASE)
 
 
+# Crossref hands back pretty-printed XML, so titles and abstracts
+# carry the indentation with them:
+#   'Crystal structure of rice\n          <scp>L</scp>\n          -galactose'
+# Left alone that renders as three lines with a gap before the
+# hyphen. Collapse every whitespace run to one space, then close
+# the gaps that leaves around punctuation and brackets.
+_WS_RUN_RE = re.compile(r"\s+")
+_WS_BEFORE_PUNCT_RE = re.compile(r" +([-\u2013\u2014,;:.!?)\]}])")
+_WS_AFTER_OPEN_RE = re.compile(r"([(\[{]) +")
+
+
+def _collapse_source_whitespace(text):
+    text = _WS_RUN_RE.sub(" ", text)
+    text = _WS_BEFORE_PUNCT_RE.sub(r"\1", text)
+    text = _WS_AFTER_OPEN_RE.sub(r"\1", text)
+    return text.strip()
+
+
 def _translate_jats(text):
     if "jats:" not in text.lower():
         return text
@@ -147,6 +165,9 @@ def safe_pango_markup(text):
     # The whole string is re-escaped afterwards, so this is safe.
     text = (text.replace("&lt;", "<").replace("&gt;", ">")
                 .replace("&quot;", '"').replace("&amp;", "&"))
+    # Collapse the source's XML formatting *before* tag translation,
+    # so the paragraph breaks _translate_jats inserts survive.
+    text = _collapse_source_whitespace(text)
     text = _translate_jats(text)
     text = _translate_scp(text)
     text = _pad_inline_tags(text)
@@ -163,7 +184,9 @@ def safe_pango_markup(text):
     def _restore(m):
         return placeholders[int(m.group(1))]
 
-    result = _PLACEHOLDER_RE.sub(_restore, escaped)
+    # Dropped tags (<jats:p> and friends) can leave the string
+    # starting or ending with the space that stood beside them.
+    result = _PLACEHOLDER_RE.sub(_restore, escaped).strip()
     # Malformed source markup can yield unbalanced tags Pango rejects;
     # degrade to fully-escaped plain text rather than letting
     # set_markup() raise.

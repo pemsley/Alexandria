@@ -92,3 +92,43 @@ def test_output_parses_for_awkward_jats():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ---- source whitespace (Crossref returns pretty-printed XML) -------
+
+REAL_TITLE = ('Crystal structure of rice\n                    '
+              '<scp>L</scp>\n                    '
+              '-galactose dehydrogenase')
+REAL_ABSTRACT = ('<jats:p>\n                    L-Galactose plays a '
+                 'role in rice (\n                    '
+                 '<jats:italic>Oryza sativa</jats:italic>\n'
+                 '                    ) leaves.</jats:p>')
+
+
+def test_indented_title_collapses_to_one_line():
+    out = safe(REAL_TITLE)
+    assert "\n" not in out
+    assert "                " not in out
+
+
+def test_title_keeps_the_word_space_but_not_the_hyphen_gap():
+    out = safe(REAL_TITLE)
+    assert "rice <span" in out                  # space before small-caps L
+    assert "</span>-galactose" in out           # but not before the hyphen
+
+
+def test_abstract_bracket_spacing_is_tidied():
+    out = safe(REAL_ABSTRACT)
+    assert "rice (<i>Oryza sativa</i>) leaves." in out
+
+
+def test_paragraph_breaks_survive_whitespace_collapsing():
+    out = safe("<jats:p>One.</jats:p>\n  <jats:p>Two.</jats:p>")
+    assert "One." in out and "Two." in out
+    assert "One. Two." not in out
+
+
+def test_no_leading_space_where_a_dropped_tag_stood():
+    out = safe("<jats:p> Text begins here.</jats:p>")
+    assert not out.startswith(" ")
+    assert out.startswith("Text begins here.")

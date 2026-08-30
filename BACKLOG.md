@@ -49,43 +49,70 @@ Pending features, roughly grouped. Newest at the top of each section.
        busy_timeout turns collisions into main-thread stalls) —
        real but probably secondary.
 
-  **MEASURED 2026-08-29 — the ranking above was wrong.** Two
-  instrumented runs on a scratch copy (main-loop heartbeat, 10 ms
-  tick, stalls >50 ms logged; network stubbed):
+  **DIAGNOSED AND LARGELY FIXED 2026-08-30.** Both guesses above
+  were wrong, and so was a first round of measurement that blamed
+  `_reload` (17 s per rebuild) — that number came from a harness
+  whose own startup reconcile was saturating the machine. Measured
+  honestly against the real 197-paper library, every widely-blamed
+  component is fast:
 
-    - **Worker thread exonerated.** 60-PDF import_tree on a
-      background thread: 7.8 s wall, **zero** main-loop stalls.
-      Extraction and thumbnails already shell out to pdftotext /
-      pdftoppm (subprocesses, GIL-free); pdfx/pypdf and sha256
-      never held the loop past 50 ms. The out-of-process worker
-      pool idea is NOT needed for responsiveness (only ever for
-      throughput).
-    - **The main-thread `_reload` is the whole problem.** At 166
-      papers a full rebuild took **17.2 s cold / 15.5 s second
-      run / 0.63 s warm** (~100 ms/card cold — per-card work:
-      sidecar reads for chips, texture loads, Pango). A simulated
-      import storm (watcher events at 400 ms; imports land
-      >300 ms apart, so the trailing-edge debounce fires per
-      import) froze the loop for **14.3 s total across 25 stalls,
-      worst 4.1 s** — the WM even raised "not responding", which
-      is precisely the reported symptom.
+    | component | measured |
+    |---|---|
+    | build all 198 cards | 0.5 s (3 ms/card) |
+    | render them in a window | 1.2 s to idle |
+    | `_reload` remove-all + rebuild | 0.06 s + 0.53 s |
+    | pdftotext + pdftoppm, 25-page PDF | 0.09 s |
+    | poppler render, worst figure page | 0.38 s |
 
-  **Fixes, re-ranked from the data:**
-    - **Incremental card updates**: an import should insert/update
-      one card, not rebuild ~200. The full rebuild remains only
-      for query changes.
-    - **Storm coalescing** as a stopgap: during a burst, hold
-      reloads to at most one per few seconds plus one final —
-      turns 100 rebuilds into a handful.
-    - **Make the rebuild itself cheap(er)**: the 17 s cold case
-      wants per-card async population (sidecar-derived chips,
-      thumbnails off the hot path) or list virtualisation
-      (Gtk.ListView + factory instead of eager card widgets).
-    - DB batching: no longer implicated for GUI feel.
+  The real cause, caught by a watchdog thread sampling the *main*
+  thread's stack during the freeze (the technique to reuse next
+  time — guessing cost hours, this took minutes):
 
-  Measurement scripts: perf_import.py / perf_reload.py in the
-  session scratchpad (recreate freely — ~150 lines total; the
-  numbers above are the durable part).
+    - **The viewer parsed the bibliography synchronously in
+      `PdfViewerWindow.__init__`** (`bibliography_positions` →
+      `parse_bibliography` → `_page_lines`). ~0.5 s alone.
+    - **One dropped PDF was imported three times concurrently** —
+      the drop handler plus the watcher's CREATED and
+      CHANGES_DONE_HINT events. Each pass runs `_build_record`
+      (pdfx/pypdf, pure Python, 1.7 s alone → 6.5 s under
+      contention) and holds the GIL.
+    - Together: the viewer's poppler work crawled between GIL
+      slices, stretching 0.5 s into a **43 s** freeze. Total
+      main-loop stalls for one import: **76.3 s**.
+
+  **Fixed** (commit below): imports of the same path de-duplicate
+  via an in-flight registry in `importer` (later arrivals wait,
+  then take the cheap existing/recent path), and the viewer builds
+  its citation links on a worker thread via the new module-level
+  `viewer.build_citation_links`. Re-measured: **4.4 s total stalls,
+  worst 1.8 s** (startup, not import), no watchdog reports at all.
+
+  **Still open, in value order:**
+    - **`_build_record` is the remaining GIL hog** (1.7 s per PDF
+      of pure-Python pdfx/pypdf work). Fine for one import; a
+      100-PDF first run is 3 minutes of intermittent contention.
+      *Now* the out-of-process worker-pool idea earns its keep —
+      for throughput, and to stop bulk imports competing with the
+      GUI at all.
+    - **`refresh_valid_pdb_id_cache` is a weekly freeze bomb**:
+      downloads wwPDB's 57 MB `entries.idx`, splits ~259 k lines
+      and inserts them, all in Python holding the GIL. Fires every
+      7 days from whatever import happens to trip it (last run
+      2026-08-26). Make it incremental, off the interactive path,
+      or at least chunked.
+    - **`_do_drop_import` uses `self.conn` from a worker thread**
+      (browse.py) — the same cross-thread `sqlite3.Connection`
+      sharing that caused the "another row available" corruption
+      and the macOS segfault fixed in `7bd858d` / `ab347ba`.
+      Hasn't bitten yet; give it its own connection.
+    - Incremental card updates / list virtualisation: NOT needed
+      for responsiveness on today's evidence. Revisit only if a
+      much larger library makes the 0.6 s rebuild matter.
+
+  Measurement scripts (session scratchpad, recreate freely — the
+  numbers and the watchdog technique are the durable parts):
+  perf_card.py, perf_render.py, perf_rebuild.py, and
+  perf_import_hang.py (stall detector + main-thread stack sampler).
 
   Related but separate *policy* question (not the perf fix):
   should the importer/watcher recurse into subdirectories at all,

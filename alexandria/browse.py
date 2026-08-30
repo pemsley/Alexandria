@@ -565,6 +565,11 @@ def _sidecar_summary(sidecar_path):
     return None
 
 
+# Overall reading width of the summary popover, margins included —
+# so the number here is what you measure on screen.
+SUMMARY_POPOVER_WIDTH = 584
+_SUMMARY_POPOVER_MARGIN = 12
+
 _SUMMARY_SOURCE_PHRASE = {
     "jats": "from the full text (JATS)",
     "pdf": "from the PDF text",
@@ -595,8 +600,15 @@ def make_summary_chip(summary):
 
     pop = Gtk.Popover()
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-    box.set_margin_start(12)
-    box.set_margin_end(12)
+    # Fix the reading width here rather than on the scroller: with
+    # POLICY_NEVER a ScrolledWindow propagates its child's *minimum*
+    # width, and a wrapping label's minimum is a few pixels — so
+    # set_min_content_width was silently ignored (measured: the
+    # scroller requested 17px while asking for 720).
+    box.set_size_request(
+        SUMMARY_POPOVER_WIDTH - 2 * _SUMMARY_POPOVER_MARGIN, -1)
+    box.set_margin_start(_SUMMARY_POPOVER_MARGIN)
+    box.set_margin_end(_SUMMARY_POPOVER_MARGIN)
     box.set_margin_top(10)
     box.set_margin_bottom(10)
 
@@ -612,7 +624,7 @@ def make_summary_chip(summary):
     body = Gtk.Label(xalign=0.0)
     body.set_wrap(True)
     body.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
-    body.set_max_width_chars(78)
+    body.set_max_width_chars(80)
     body.set_selectable(True)
     # Summaries are written in Markdown; render the subset
     # markdown_to_pango handles and leave the rest as literal text.
@@ -622,9 +634,6 @@ def make_summary_chip(summary):
     scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
     scroll.set_propagate_natural_height(True)
     scroll.set_max_content_height(320)
-    # Wide enough for comfortable prose: a summary is paragraphs,
-    # not a tooltip, and a narrow column makes it feel cramped.
-    scroll.set_min_content_width(540)
     scroll.set_child(body)
     box.append(scroll)
 
@@ -632,7 +641,7 @@ def make_summary_chip(summary):
     foot = Gtk.Label(xalign=0.0)
     foot.set_hexpand(True)
     foot.set_wrap(True)
-    foot.set_max_width_chars(64)
+    foot.set_max_width_chars(88)
     foot.set_markup(
         "<span size='small' alpha='70%'>— {}</span>".format(
             GLib.markup_escape_text(summary_attribution(summary))))

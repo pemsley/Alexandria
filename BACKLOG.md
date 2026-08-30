@@ -30,6 +30,8 @@ Pending features, roughly grouped. Newest at the top of each section.
 
 ## Import / ingestion
 
+- "Drag and drop" papers/references/cards into claude.
+
 - **GUI goes laggy/unresponsive during bulk import — measure, then
   restructure.** Observed 2026-08-29 importing a ~180-PDF folder;
   it is the first thing a new user with 100 PDFs would see. The
@@ -714,16 +716,40 @@ Pending features, roughly grouped. Newest at the top of each section.
       the existing ghost-import path is reused.
 
   **Still open:**
-    - **Feed cards: handle markup properly, and hover-to-read the
-      full abstract** (noted 2026-08-29 while viewing Science China
-      Life Sciences updates). Publisher feeds carry markup in
-      titles/abstracts (sub/sup, italics, entities) that the cards
-      should render or strip cleanly — same class of problem the
-      library cards solved with `markup.safe_pango_markup` /
-      `<scp>`-style handling; reuse that. And the truncated
-      abstract line should show the complete abstract on mouse-over
-      (tooltip, like the works-row author line in the Authors
-      window) so reading it doesn't require View.
+    - **Publisher thumbnails on feed cards.** Feed articles have no
+      PDF, so their cards have no thumbnail — the one place in the
+      app where that slot is genuinely empty (library cards render
+      the real first page, which is better and stays). Publisher
+      landing pages carry a graphical abstract we can use: on IUCr,
+      `journals.iucr.org/paper?<doi-suffix>` has
+      `<div class="thumbinmain"><img src="…rl5208thumbnail.gif">`.
+      Decided 2026-08-30:
+        - **IUCr first, behind a per-publisher dispatch table** in
+          the shape `funding_links.funding_url` already uses for
+          funders — so Springer/Wiley/etc. are one function each
+          later, with no restructuring. Not OpenGraph-first:
+          `og:image` is usually a logo or social banner, not the
+          paper's own graphic.
+        - **Cache in `<library_root>/.feed-thumbs/`**, keyed by
+          DOI, matching the existing `.author-images/` convention:
+          travels with a synced library, one place to delete.
+        - **Feed cards only.** Ghost library cards keep their
+          generic icon for now (same fetcher would serve them —
+          one extra call site — if that gap starts to itch).
+      Fetch lazily on a worker thread when a card is built; never
+      block, and a miss just leaves the slot empty. Needs the polite
+      per-host throttling the publisher-page-harvest item describes
+      (robots.txt, ~1 req/host/sec) since this scrapes HTML.
+
+    - **Feed cards: hover-to-read the full abstract.** The
+      truncated abstract line should show the complete text on
+      mouse-over (tooltip, like the works-row author line in the
+      Authors window) so reading it doesn't require View.
+      *(Markup rendering — the other half of this item, noted
+      2026-08-29 — shipped 2026-08-30: feed titles/abstracts go
+      through `safe_pango_markup`, which now also translates
+      namespaced JATS and collapses the pretty-printed XML
+      whitespace Crossref ships.)*
     - **Search in the Subscriptions window.** A search entry over
       the discovered-article cards (title + authors + journal +
       abstract), client-side over `discovered` rows like the
@@ -1473,6 +1499,30 @@ via `extract.CROSSREF_USER_AGENT`.
   folder).
 
 ## UI
+
+- **The Edit-metadata dialog should not be modal.** Reported
+  2026-08-30: with a PDF open in the viewer, opening Edit metadata
+  froze the viewer — no zoom, no scrolling — so the obvious check
+  ("does the DOI on the page match the DOI in the metadata?")
+  can't be done while the dialog is up. `edit_dialog.open_editor`
+  creates its window with `modal=True` (`edit_dialog.py:91`),
+  which grabs input across the application, viewer included.
+  Consulting the paper while correcting its metadata is exactly
+  the workflow the dialog exists to serve.
+
+  Fix is one flag, but two things want thought first:
+    - **Concurrent sidecar writes.** The viewer saves highlights
+      and comments to the same sidecar the dialog saves metadata
+      to; with both open, last-write-wins could drop one side's
+      changes. Either re-read-and-merge before writing (the
+      cross-host race the Multi-host section describes, now
+      in-process), or have the dialog write only the fields it
+      owns.
+    - **Several editors at once.** Non-modal means N dialogs for
+      N papers. Fine, but the window title must name the paper
+      (it does) and a second editor on the *same* paper should
+      raise the first rather than open a duplicate.
+
 - **Open the Authors window directly from the hamburger menu.** Today
   the only ways in are the author popover on a paper
   (`browse.py:4793`) and the Discover author tab

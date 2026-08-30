@@ -103,6 +103,19 @@ def new_record(pdf_path):
         # published version: {doi, title, journal, year, openalex_id,
         # checked}. None for non-preprints or when no match was found.
         "published_version": None,
+        # Metadata provenance, set by the importer's DOI-first
+        # enrichment and rendered as a chip on the card:
+        #   metadata_conflict: the DOI's record was taken but
+        #     disagrees with what the PDF says about itself —
+        #     {pdf_title, pdf_year, pdf_authors, doi, doi_title,
+        #     doi_year}, so nothing is lost and the card can offer
+        #     "PDF says X · DOI says Y".
+        #   metadata_unverified: no DOI resolved to a paper record,
+        #     so these fields are whatever the PDF yielded.
+        # Both are absent when the DOI's record agreed, and both are
+        # ignored once the user sets hand_edited.
+        "metadata_conflict": None,
+        "metadata_unverified": False,
         # A summary of the paper — {text, generated_at} plus its
         # provenance, which decides how the UI presents it:
         #   machine-written: `model` (e.g. "claude-opus-5") and

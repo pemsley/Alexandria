@@ -1,6 +1,7 @@
 """Walk a directory tree, ensure each PDF has a sidecar + thumbnail,
 and upsert into the local index."""
 
+import collections
 import hashlib
 import json
 import os
@@ -188,6 +189,192 @@ def _title_token_set(title):
              "for", "to", "by", "with", "from", "as", "via",
              "study", "analysis", "using", "based"}
     return {w for w in words if len(w) > 2 and w not in stops}
+
+
+DoiChoice = collections.namedtuple(
+    "DoiChoice", "doi record agrees")
+
+
+def _record_is_a_paper(record):
+    """An OpenAlex record we can label a PDF with — one with
+    authors. (A truncated DOI that names only the journal is
+    rejected earlier, by `_doi_looks_complete`.)"""
+    return bool(record and record.get("authors"))
+
+
+def _enrich_from_openalex(rec, pdf_path):
+    """Fill `rec` from OpenAlex, choosing between the DOI the PDF
+    claims and the one its download filename encodes.
+
+    Sets `metadata_conflict` when the record we take disagrees with
+    what the PDF says about itself, and `metadata_unverified` when
+    no DOI resolved to a usable paper record — the browser shows a
+    chip for each, so a bad import is visible instead of silent."""
+    rec.pop("metadata_conflict", None)
+    rec.pop("metadata_unverified", None)
+    pdf_title, pdf_year = rec.get("title"), rec.get("year")
+    filename_doi = extract.doi_from_filename(pdf_path)
+    candidates = [c for c in (rec.get("doi"), filename_doi) if c]
+    if not candidates:
+        rec["metadata_unverified"] = True
+        return
+
+    if len(set(c.lower() for c in candidates)) > 1:
+        # Two candidates that disagree: resolve both cheaply and keep
+        # the one whose record matches the PDF. Neither source wins in
+        # general — measured over the library, preferring the filename
+        # would have fixed 2 papers and broken 11. The PDF's first
+        # pages settle it when the extracted title is itself wrong.
+        try:
+            from . import pdf_text as _pdf_text
+            page_text, _trunc, _err = _pdf_text.extract_pages(
+                pdf_path, page_from=1, page_to=2, max_chars=8000)
+        except Exception:
+            page_text = ""
+        choice = choose_doi_candidate(
+            pdf_title, pdf_year, candidates, metrics.resolve_doi,
+            pdf_text=page_text)
+        if choice.record is None:
+            rec["metadata_unverified"] = True
+            return
+        chosen, agrees = choice.doi, choice.agrees
+    else:
+        chosen, agrees = candidates[0], None
+
+    (n, src, kw, abstract, authorships, cby,
+     oa_title, oa_year, is_oa, oa_status,
+     funders, grants) = metrics.fetch_metrics(chosen)
+    if not authorships:
+        # No usable record — a dead DOI, or one that resolves to the
+        # journal rather than a paper ("10.1073/pnas").
+        rec["metadata_unverified"] = True
+        return
+    if agrees is None:
+        agrees = _openalex_record_matches(
+            pdf_title, pdf_year, oa_title, oa_year)
+
+    rec["doi"] = chosen
+    if n is not None:
+        rec["citations"] = n
+        rec["citations_source"] = src
+        rec["citations_fetched"] = metrics.today_iso()
+    if kw:
+        rec["auto_keywords"] = kw
+    if abstract:
+        rec["abstract"] = abstract
+    rec["authorships"] = authorships
+    oa_names = metrics.oa_author_names(authorships, rec.get("authors"))
+    if cby:
+        rec["citations_by_year"] = cby
+    if is_oa is not None:
+        rec["is_oa"] = is_oa
+    if oa_status:
+        rec["oa_status"] = oa_status
+    if funders:
+        rec["funders"] = funders
+    if grants:
+        rec["grants"] = grants
+
+    if not agrees:
+        # Keep what the PDF said so nothing is lost and the card can
+        # offer "PDF says X · DOI says Y".
+        rec["metadata_conflict"] = {
+            "pdf_title": pdf_title,
+            "pdf_year": pdf_year,
+            "pdf_authors": list(rec.get("authors") or []),
+            "doi": chosen,
+            "doi_title": oa_title,
+            "doi_year": oa_year,
+        }
+    if oa_title:
+        rec["title"] = oa_title
+    if oa_year:
+        rec["year"] = oa_year
+    if oa_names:
+        rec["authors"] = oa_names
+
+
+def _doi_looks_complete(doi):
+    """Reject a DOI whose suffix names only the journal — the
+    extractor sometimes truncates at the first delimiter, and
+    '10.1073/pnas' resolves happily to the *journal's* OpenAlex
+    record (authors and all, from an editorial roster), which would
+    then label a fragment-screening paper 'Proceedings of the
+    National Academy of Sciences'. Real article suffixes carry
+    digits; a bare journal token doesn't."""
+    if not doi or "/" not in doi:
+        return False
+    suffix = doi.split("/", 1)[1]
+    return any(ch.isdigit() for ch in suffix)
+
+
+def _title_found_in_text(title, text):
+    """Does this record's title actually appear in the PDF's text?
+
+    The decisive witness when a PDF's Info dict lies: the Usón paper
+    carries both a wrong title ("List of Referees 1999") and a wrong
+    DOI in its metadata, so comparing candidate records against the
+    *extracted* title cannot discriminate — but the real title is
+    printed on page one. Requires most of the title's significant
+    words, in the text, to tolerate line breaks and hyphenation."""
+    tokens = _title_token_set(title)
+    if not tokens or not text:
+        return False
+    haystack = set(re.findall(r"[\w']+", text.lower()))
+    hits = sum(1 for t in tokens if t in haystack)
+    return hits >= max(2, int(len(tokens) * 0.7))
+
+
+def choose_doi_candidate(pdf_title, pdf_year, candidates, resolve,
+                         pdf_text=None):
+    """Pick between the DOIs a PDF offers — the one in its text or
+    Info dict, and the one encoded in its download filename.
+
+    Neither source wins in general. Measured over the library
+    (2026-08-30), preferring the filename would have fixed 2 papers
+    and broken 11: Elsevier PII forms disagree with the canonical
+    `j.`-style DOI for the same paper, and bioRxiv changed its
+    prefix from 10.1101 to 10.64898, which no filename can know.
+    Conversely the PDF's own metadata is sometimes a different
+    article entirely ("List of Referees 1999").
+
+    So resolve each candidate and keep the one whose record matches
+    what the PDF says about itself, falling back to the first that
+    resolves, then to the first candidate. `resolve(doi)` returns an
+    OpenAlex-shaped record or None; it is injected so this stays
+    testable without network.
+
+    Returns DoiChoice(doi, record, agrees) — `record` is None when
+    nothing usable resolved, and `agrees` reports whether the chosen
+    record matches the PDF's own title/year (the caller flags a
+    disagreement rather than refusing it)."""
+    seen = []
+    for c in candidates or []:
+        norm = (c or "").strip()
+        if norm and norm.lower() not in [s.lower() for s in seen]:
+            seen.append(norm)
+    if not seen:
+        return DoiChoice(None, None, False)
+    first_resolved = None
+    for doi in seen:
+        if not _doi_looks_complete(doi):
+            continue
+        try:
+            record = resolve(doi)
+        except Exception:
+            record = None
+        if not _record_is_a_paper(record):
+            continue
+        if (_openalex_record_matches(pdf_title, pdf_year,
+                                     record.get("title"),
+                                     record.get("year"))
+                or _title_found_in_text(record.get("title"), pdf_text)):
+            return DoiChoice(doi, record, True)
+        if first_resolved is None:
+            first_resolved = (doi, record)
+    if first_resolved is not None:
+        return DoiChoice(first_resolved[0], first_resolved[1], False)
+    return DoiChoice(seen[0], None, False)
 
 
 def _openalex_record_matches(pdf_title, pdf_year, oa_title, oa_year):
@@ -474,57 +661,12 @@ def _import_pdf_locked(conn, pdf_path):
         if ghost:
             return ghost, "duplicate"
 
-    # OpenAlex enrichment (one HTTP, six outputs). Best-effort;
-    # failures leave fields untouched.
-    if rec.get("doi"):
-        (n, src, kw, abstract, authorships, cby,
-         oa_title, oa_year, is_oa, oa_status,
-         funders, grants) = metrics.fetch_metrics(rec["doi"])
-        # OpenAlex sanity-check: rare but real, an OpenAlex Work
-        # record cross-contaminates two papers — the DOI is right
-        # but the title/authors/year come from a different paper.
-        # When that happens we DON'T want to clobber the
-        # PDF-extracted authors / abstract / keywords with the wrong
-        # ones (and the citation count for a conflated record is
-        # untrustworthy too). Detect by comparing PDF title vs
-        # OpenAlex title; if they share no significant tokens, or
-        # the years differ by more than 1, treat the OpenAlex
-        # record as suspect and skip the override.
-        if _openalex_record_matches(
-                rec.get("title"), rec.get("year"), oa_title, oa_year):
-            if n is not None:
-                rec["citations"] = n
-                rec["citations_source"] = src
-                rec["citations_fetched"] = metrics.today_iso()
-            if kw:
-                rec["auto_keywords"] = kw
-            if abstract:
-                rec["abstract"] = abstract
-            if authorships:
-                rec["authorships"] = authorships
-                # Prefer OpenAlex display names for the flat
-                # authors list.
-                oa_names = metrics.oa_author_names(
-                    authorships, rec.get("authors"))
-                if oa_names:
-                    rec["authors"] = oa_names
-            if cby:
-                rec["citations_by_year"] = cby
-            if is_oa is not None:
-                rec["is_oa"] = is_oa
-            if oa_status:
-                rec["oa_status"] = oa_status
-            if funders:
-                rec["funders"] = funders
-            if grants:
-                rec["grants"] = grants
-        elif oa_title or oa_year:
-            print("[importer] OpenAlex record for {} looks corrupted "
-                  "(PDF: {!r}/{} vs OpenAlex: {!r}/{}) — keeping "
-                  "PDF-extracted metadata".format(
-                      rec["doi"],
-                      rec.get("title"), rec.get("year"),
-                      oa_title, oa_year))
+    # OpenAlex enrichment. DOI-first: when a DOI resolves to a real
+    # paper record we take its metadata, even if what we scraped from
+    # the PDF disagrees — the PDF's own title is often page furniture
+    # ("Chem. Pharm. Bull. 74(6): 513-528"). A disagreement is
+    # recorded for the card to flag, not used to refuse the data.
+    _enrich_from_openalex(rec, pdf_path)
 
     # Preprint → published-version lookup. One extra OpenAlex call,
     # only for preprint DOIs.

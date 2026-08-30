@@ -550,6 +550,16 @@ def authors_str(authors_json):
     return ", ".join(a)
 
 
+def _sidecar_record(sidecar_path):
+    """The sidecar dict, or None when missing/unreadable."""
+    if not sidecar_path:
+        return None
+    try:
+        return sidecar.read(sidecar_path)
+    except (OSError, ValueError):
+        return None
+
+
 def _sidecar_summary(sidecar_path):
     """The sidecar's machine-written summary dict, or None when
     absent/unreadable/empty. Tolerant like _pdf_comment_count."""
@@ -575,6 +585,78 @@ _SUMMARY_SOURCE_PHRASE = {
     "pdf": "from the PDF text",
     "abstract": "from the abstract only",
 }
+
+
+def make_metadata_chip(record, parent_window=None, pdf_path=None,
+                       sidecar_path=None, on_saved=None):
+    """Chip flagging metadata the importer could not confirm.
+
+    Two states, from the importer's DOI-first enrichment:
+      * `metadata_conflict` — the DOI's record was used but the PDF
+        says something different. Amber; the popover shows both and
+        lets the user keep the PDF's version.
+      * `metadata_unverified` — no DOI resolved to a paper record,
+        so the fields are whatever scraping produced. Grey.
+    Returns None when the record is confirmed, or hand-edited (the
+    user's own answer settles it)."""
+    if not record or record.get("hand_edited"):
+        return None
+    conflict = record.get("metadata_conflict")
+    if not conflict and not record.get("metadata_unverified"):
+        return None
+    label = "Check metadata" if conflict else "Unverified"
+    colour = "#c07000" if conflict else "#888888"
+    btn = Gtk.MenuButton()
+    btn.set_valign(Gtk.Align.CENTER)
+    lbl = Gtk.Label()
+    lbl.set_markup(
+        '<span foreground="{}" weight="bold"><small>{}</small>'
+        '</span>'.format(colour, label))
+    btn.set_child(lbl)
+    btn.set_cursor(Gdk.Cursor.new_from_name("pointer"))
+
+    pop = Gtk.Popover()
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    box.set_size_request(420, -1)
+    for m in (box.set_margin_start, box.set_margin_end,
+              box.set_margin_top, box.set_margin_bottom):
+        m(12)
+    head = Gtk.Label(xalign=0.0)
+    body = Gtk.Label(xalign=0.0)
+    body.set_wrap(True)
+    body.set_max_width_chars(52)
+    body.set_selectable(True)
+    if conflict:
+        btn.set_tooltip_text(
+            "The DOI's record and the PDF disagree — click to compare")
+        head.set_markup("<b>The DOI and the PDF disagree</b>")
+        body.set_markup(
+            "<b>PDF says:</b> {}\n<b>DOI ({}) says:</b> {}".format(
+                safe_pango_markup(conflict.get("pdf_title") or "—"),
+                GLib.markup_escape_text(conflict.get("doi") or "?"),
+                safe_pango_markup(conflict.get("doi_title") or "—")))
+    else:
+        btn.set_tooltip_text(
+            "No DOI could be confirmed for this paper")
+        head.set_markup("<b>Metadata not verified</b>")
+        body.set_text(
+            "No DOI resolved to a paper record, so these fields come "
+            "from the PDF alone. Use Edit \u2192 Find metadata to "
+            "identify it.")
+    box.append(head)
+    box.append(body)
+    if parent_window is not None and pdf_path:
+        edit_btn = Gtk.Button(label="Edit metadata…")
+        edit_btn.set_halign(Gtk.Align.END)
+        edit_btn.connect(
+            "clicked",
+            lambda _b: edit_dialog.open_editor(
+                parent_window, parent_window.conn, pdf_path,
+                sidecar_path, on_saved))
+        box.append(edit_btn)
+    pop.set_child(box)
+    btn.set_popover(pop)
+    return btn
 
 
 def make_summary_chip(summary):
@@ -946,6 +1028,12 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     for ft_chip in make_fulltext_chips(row["pdf_path"]):
         ft_chip.set_valign(Gtk.Align.START)
         title_row.append(ft_chip)
+    meta_chip = make_metadata_chip(
+        _sidecar_record(row["sidecar_path"]), parent_window,
+        row["pdf_path"], row["sidecar_path"], on_saved)
+    if meta_chip is not None:
+        meta_chip.set_valign(Gtk.Align.START)
+        title_row.append(meta_chip)
     card_summary = _sidecar_summary(row["sidecar_path"])
     if card_summary:
         s_chip = make_summary_chip(card_summary)

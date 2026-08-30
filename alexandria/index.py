@@ -816,6 +816,7 @@ CREATE TABLE IF NOT EXISTS discovered (
     openalex_id TEXT,
     title TEXT,
     authors_json TEXT,
+    authorships_json TEXT,
     journal TEXT,
     year INTEGER,
     published_date TEXT,
@@ -942,6 +943,14 @@ def _migrate_discovered(conn):
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(discovered)")}
     if "oa_status" not in cols:
         conn.execute("ALTER TABLE discovered ADD COLUMN oa_status TEXT")
+    if "authorships_json" not in cols:
+        # Author identifiers (OpenAlex ID / ORCID) alongside the
+        # display names in authors_json, so feed articles can be
+        # matched against the author trail without guessing from
+        # names. Rows fetched before this stay names-only; the feed
+        # prunes after 60 days, so it heals itself.
+        conn.execute(
+            "ALTER TABLE discovered ADD COLUMN authorships_json TEXT")
     conn.commit()
 
 
@@ -1049,15 +1058,19 @@ def upsert_discovered(conn, subscription_id, article):
     cur = conn.execute(
         "INSERT OR IGNORE INTO discovered"
         " (subscription_id, doi, openalex_id, title, authors_json,"
+        "  authorships_json,"
         "  journal, year, published_date, abstract, is_oa, oa_url,"
         "  fetched_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (subscription_id,
          doi.lower(),
          article.get("openalex_id"),
          article.get("title"),
          json.dumps(article.get("authors") or [],
                     ensure_ascii=False) if article.get("authors")
+         else None,
+         json.dumps(article.get("authorships") or [],
+                    ensure_ascii=False) if article.get("authorships")
          else None,
          article.get("journal"),
          article.get("year"),

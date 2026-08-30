@@ -31,6 +31,63 @@ from . import feed, index, opener
 from .markup import safe_pango_markup
 
 
+def _known_author_chip(matched, window):
+    """Chip naming the trail author(s) on this article. Clicking
+    opens them in the Authors window — the trail entry carries the
+    ORCID / OpenAlex ID that needs."""
+    surnames = []
+    for e in matched:
+        name = (e.get("name") or "").strip()
+        surnames.append(name.split()[-1] if name else "?")
+    face = "★ " + ", ".join(surnames[:2])
+    if len(surnames) > 2:
+        face += " +{}".format(len(surnames) - 2)
+    btn = Gtk.Button()
+    btn.add_css_class("flat")
+    btn.set_valign(Gtk.Align.CENTER)
+    lbl = Gtk.Label()
+    lbl.set_markup(
+        "<span foreground='#c07000' weight='bold'><small>{}</small>"
+        "</span>".format(GLib.markup_escape_text(face)))
+    btn.set_child(lbl)
+    btn.set_tooltip_text(
+        "You have looked up {} before — click to open in the "
+        "Authors window.".format(
+            ", ".join(e.get("name") or "?" for e in matched)))
+    btn.connect(
+        "clicked",
+        lambda _b, e=matched[0]: _open_trail_author(window, e))
+    return btn
+
+
+def _open_trail_author(window, entry):
+    from . import author_works
+    author_works.open_window(window, window.conn, {
+        "name": entry.get("name"),
+        "orcid": entry.get("orcid"),
+        "openalex_id": entry.get("openalex_id"),
+        "institution": entry.get("institution"),
+    })
+
+
+def _article_authorships(art):
+    """The article's [{name, orcid, openalex_id}] list, or [] for
+    rows fetched before authorships_json existed."""
+    try:
+        raw = art["authorships_json"] if "authorships_json" in art.keys() \
+            else art.get("authorships_json")
+    except Exception:
+        raw = None
+    if not raw:
+        return []
+    try:
+        import json as _json
+        v = _json.loads(raw)
+        return v if isinstance(v, list) else []
+    except Exception:
+        return []
+
+
 def open_window(parent, conn):
     """Show the feed window. Bound to its `parent` BrowserWindow
     because "Get PDF" needs to call back into the ghost-import
@@ -258,6 +315,14 @@ class FeedWindow(Adw.Window):
         for h in hits[:30]:
             self._add_results.append(self._build_journal_pick_row(h))
         return False
+
+    def _refresh_author_trail(self):
+        """Authors the user has looked up before, loaded once per
+        list build rather than per card."""
+        try:
+            self._author_trail = index.list_author_trail(self.conn)
+        except Exception:
+            self._author_trail = []
 
     def _build_journal_pick_row(self, h):
         btn = Gtk.Button()
@@ -499,6 +564,7 @@ class FeedWindow(Adw.Window):
             empty.set_margin_top(40)
             self.feed_box.append(empty)
             return
+        self._refresh_author_trail()
         for sub, art in rows[:100]:
             self.feed_box.append(self._build_feed_card(sub, art))
 
@@ -578,6 +644,15 @@ class FeedWindow(Adw.Window):
                 "“Show in library” to jump to the card.")
             title_row.append(lib_badge)
 
+        # Authors the user has looked up before wrote this one.
+        matched_trail = feed.match_trail_authors(
+            _article_authorships(art),
+            getattr(self, "_author_trail", []) or [])
+        if matched_trail:
+            chip = _known_author_chip(matched_trail, self)
+            chip.set_valign(Gtk.Align.START)
+            title_row.append(chip)
+
         outer.append(title_row)
 
         meta_bits = []
@@ -595,21 +670,33 @@ class FeedWindow(Adw.Window):
         meta.set_ellipsize(Pango.EllipsizeMode.END)
         outer.append(meta)
 
-        # Authors line, truncated.
+        # Authors line, truncated. Authors the user has looked up
+        # before (the author trail) are bolded in place and named
+        # by the chip in the title row above.
         try:
             import json
             authors = (json.loads(art["authors_json"])
                        if art.get("authors_json") else [])
         except Exception:
             authors = []
+        matched_article_names = set()
+        for a in _article_authorships(art):
+            if feed.match_trail_authors([a], self._author_trail):
+                matched_article_names.add(a.get("name"))
         if authors:
-            short = ", ".join(authors[:6])
+            shown = authors[:6]
+            parts = []
+            for name in shown:
+                esc = GLib.markup_escape_text(name)
+                if name in matched_article_names:
+                    parts.append("<b>{}</b>".format(esc))
+                else:
+                    parts.append(esc)
+            short = ", ".join(parts)
             if len(authors) > 6:
                 short += ", …"
             au = Gtk.Label(xalign=0.0)
-            au.set_markup(
-                "<span size='small'>{}</span>".format(
-                    GLib.markup_escape_text(short)))
+            au.set_markup("<span size='small'>{}</span>".format(short))
             au.set_ellipsize(Pango.EllipsizeMode.END)
             outer.append(au)
 

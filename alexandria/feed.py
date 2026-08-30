@@ -224,6 +224,55 @@ def fetch_openalex_query_articles(query, limit=FEED_FETCH_ROWS):
 # canonical source for the ISSN-scoped journal feed.
 
 
+def _normalize_orcid(value):
+    """Bare ORCID digits from any of the forms the sources use
+    ("https://orcid.org/0000-...", "http://orcid.org/0000-...",
+    or already bare). None when absent."""
+    if not value:
+        return None
+    v = str(value).strip()
+    for prefix in ("https://orcid.org/", "http://orcid.org/",
+                   "orcid.org/"):
+        if v.lower().startswith(prefix):
+            v = v[len(prefix):]
+            break
+    return v.strip() or None
+
+
+def match_trail_authors(authorships, trail_entries):
+    """Trail entries (authors the user has looked up before) that
+    wrote this article, matched on **identifiers only** — OpenAlex
+    ID or ORCID.
+
+    Deliberately no name fallback: the trail holds a 'Yulin Zhang'
+    and a journal feed carries plenty of unrelated Zhangs, so a
+    name match would flag the wrong people confidently. An article
+    author with no identifier simply doesn't match.
+
+    Each trail author is reported at most once, in trail order."""
+    if not authorships or not trail_entries:
+        return []
+    oa_ids = set()
+    orcids = set()
+    for a in authorships:
+        if not isinstance(a, dict):
+            continue
+        oa = a.get("openalex_id")
+        if oa:
+            oa_ids.add(str(oa).strip().upper())
+        orc = _normalize_orcid(a.get("orcid"))
+        if orc:
+            orcids.add(orc)
+    out = []
+    for entry in trail_entries:
+        e_oa = entry.get("openalex_id")
+        e_orc = _normalize_orcid(entry.get("orcid"))
+        if ((e_oa and str(e_oa).strip().upper() in oa_ids)
+                or (e_orc and e_orc in orcids)):
+            out.append(entry)
+    return out
+
+
 def _crossref_pick_date(item):
     """Pick the most informative date from a CrossRef item. Order:
     `published-online`, `published-print`, `issued`. Each is a
@@ -257,12 +306,18 @@ def _normalize_crossref_item(item):
                 if ymd[2] is not None:
                     pub_date += "-{:02d}".format(int(ymd[2]))
     authors = []
+    authorships = []
     for a in (item.get("author") or []):
         given = a.get("given") or ""
         family = a.get("family") or ""
         full = (given + " " + family).strip()
         if full:
             authors.append(full)
+            authorships.append({
+                "name": full,
+                "orcid": _normalize_orcid(a.get("ORCID")),
+                "openalex_id": None,
+            })
     # CrossRef abstracts are JATS-flavoured XML; we strip the
     # outermost <jats:p> if present and otherwise hand the raw
     # string back. UI can render it lightly.
@@ -274,6 +329,7 @@ def _normalize_crossref_item(item):
         "openalex_id":    None,
         "title":          title,
         "authors":        authors,
+        "authorships":    authorships,
         "journal":        journal,
         "year":           year,
         "published_date": pub_date,
@@ -287,10 +343,17 @@ def _normalize_openalex_item(w):
     pl = w.get("primary_location") or {}
     src = pl.get("source") or {}
     authors = []
+    authorships = []
     for a in (w.get("authorships") or []):
-        n = (a.get("author") or {}).get("display_name")
+        au = a.get("author") or {}
+        n = au.get("display_name")
         if n:
             authors.append(n)
+            authorships.append({
+                "name": n,
+                "orcid": _normalize_orcid(au.get("orcid")),
+                "openalex_id": _strip_openalex_id(au.get("id")),
+            })
     inv = w.get("abstract_inverted_index")
     abstract = _reconstruct_abstract(inv) if inv else None
     oa = w.get("open_access") or {}
@@ -299,6 +362,7 @@ def _normalize_openalex_item(w):
         "openalex_id":    _strip_openalex_id(w.get("id")),
         "title":          w.get("title"),
         "authors":        authors,
+        "authorships":    authorships,
         "journal":        src.get("display_name"),
         "year":           w.get("publication_year"),
         "published_date": w.get("publication_date"),

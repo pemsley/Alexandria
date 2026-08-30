@@ -46,7 +46,7 @@ from . import (index, edit_dialog, importer, metrics, sidecar, extract,
                author_works, bibtex_import, bibtex_export, ris_export,
                csl_export, opener, references_pdf, discover, csl_format,
                feed, feed_window, import_toast, pdb_mentions,
-               funding_links, doi_import_dialog, jats)
+               funding_links, doi_import_dialog, jats, theme)
 
 LIBRARY_ROOT = prefs.get_library_root()
 
@@ -2156,6 +2156,19 @@ class BrowserWindow(Adw.ApplicationWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _apply_terminal_colours(self):
+        """Set both ends of the terminal's colour pair for the
+        current theme. Setting only the background (as this did
+        before) leaves VTE's default light-grey foreground, which
+        is unreadable on the light scheme's white."""
+        if self._terminal is None:
+            return
+        fg_hex, bg_hex = theme.terminal_colours(_is_dark_theme(self))
+        fg, bg = Gdk.RGBA(), Gdk.RGBA()
+        fg.parse(fg_hex)
+        bg.parse(bg_hex)
+        self._terminal.set_colors(fg, bg, None)
+
     def _build_terminal(self, Vte):
         """Construct the Vte.Terminal and spawn the user's shell with
         ALEXANDRIA_* env vars set so a `claude` invocation from the
@@ -2167,16 +2180,16 @@ class BrowserWindow(Adw.ApplicationWindow):
         # Paned position governs actual rendered size; this is just
         # the minimum / fallback.
         self._terminal.set_size(80, 12)
-        # VTE defaults to pure #000 which reads as a hard black slab
-        # against Adwaita's dark surface (~#242424). Tint it toward
-        # the theme's view-bg so the panel feels part of the window
-        # rather than a void cut into it.
-        bg = Gdk.RGBA()
-        if _is_dark_theme(self):
-            bg.parse("#1e1e1e")
-        else:
-            bg.parse("#ffffff")
-        self._terminal.set_color_background(bg)
+        self._apply_terminal_colours()
+        # Follow later light/dark switches: the colours are resolved
+        # once here, so without this a theme change mid-session
+        # leaves the panel in the old scheme until it's rebuilt.
+        try:
+            Adw.StyleManager.get_default().connect(
+                "notify::dark",
+                lambda *_a: self._apply_terminal_colours())
+        except Exception:
+            pass
         # Ctrl-+ / Ctrl-- / Ctrl-0 — zoom convention every terminal
         # emulator uses. Scoped to the terminal widget so the rest
         # of the window's keybindings aren't shadowed.

@@ -103,7 +103,7 @@ def test_second_import_still_returns_a_usable_status(
     assert second in ("recent", "existing")
 
 
-def test_different_paths_are_not_serialised(tmp_path, monkeypatch):
+def test_different_paths_both_import(tmp_path, monkeypatch):
     calls = []
     _quiet(monkeypatch, calls, delay=0.5)
     a = _pdf(tmp_path, "a.pdf")
@@ -125,12 +125,69 @@ def test_different_paths_are_not_serialised(tmp_path, monkeypatch):
     _run_concurrently([imp(a), imp(b)])
     elapsed = time.monotonic() - t0
 
+    # Both files are extracted — the in-flight guard collapses
+    # repeats of ONE path, never distinct ones.
     assert len(calls) == 2
-    # Both ran in parallel: well under the 1.0 s a serialised pair
-    # would need.
-    assert elapsed < 0.9, "took {:.2f}s — serialised?".format(elapsed)
+    # They no longer overlap: extraction is deliberately serialised
+    # (see test_extraction_is_serialised), so this is ~2x the single
+    # extraction time rather than 1x. The bound catches a deadlock,
+    # not a slow machine.
+    assert elapsed < 5.0, "took {:.2f}s — deadlock?".format(elapsed)
 
 
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_extraction_is_serialised(tmp_path, monkeypatch):
+    """Three producers reach extraction at once during a bulk
+    import — _run_import, the watcher's per-file threads, and the
+    startup reconcile. _run_pdfx is pure Python, so running them
+    concurrently just splits the GIL three ways and each takes
+    three times as long. Serialise it.
+    """
+    concurrent = {"now": 0, "peak": 0}
+    lock = threading.Lock()
+
+    def watching_build(pdf_path):
+        with lock:
+            concurrent["now"] += 1
+            concurrent["peak"] = max(concurrent["peak"],
+                                     concurrent["now"])
+        time.sleep(0.15)
+        with lock:
+            concurrent["now"] -= 1
+        return {"title": "T", "authors": ["A"], "year": 2020,
+                "journal": "J", "doi": None}
+
+    monkeypatch.setattr(importer, "_build_record", watching_build)
+    monkeypatch.setattr(
+        importer.metrics, "fetch_metrics", lambda d: (None,) * 12)
+    monkeypatch.setattr(
+        importer.metrics, "is_preprint_doi", lambda d: False)
+    monkeypatch.setattr(
+        importer.thumbnail, "make_thumbnail", lambda *a, **k: None)
+    monkeypatch.setattr(importer, "_schedule_pdb_indexing",
+                        lambda *a: None)
+    monkeypatch.setattr(
+        importer.jats, "fetch_and_store",
+        lambda p, d: {"status": "no_pmcid", "pmcid": None,
+                      "checked": "2026-08-30"})
+
+    db_path = str(tmp_path / "lib.db")
+    index.open_db(db_path).close()
+    pdfs = [_pdf(tmp_path, "p{}.pdf".format(i)) for i in range(4)]
+
+    def imp(path):
+        def go():
+            conn = index.connect_existing(db_path)
+            try:
+                importer.import_pdf(conn, path)
+            finally:
+                conn.close()
+        return go
+
+    _run_concurrently([imp(p) for p in pdfs])
+    assert concurrent["peak"] == 1, \
+        "{} extractions ran at once".format(concurrent["peak"])

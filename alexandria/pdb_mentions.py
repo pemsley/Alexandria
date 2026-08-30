@@ -7,6 +7,7 @@ best-effort and never fatal. See PDB_MENTIONS_BRIEF.md.
 """
 
 import re
+import threading
 import shutil
 import subprocess
 import urllib.parse
@@ -97,6 +98,29 @@ def get_pdb_mentions(conn, paper_id):
     return [dict(r) for r in rows]
 
 
+def get_pdb_mentions_bulk(conn, paper_ids):
+    """Mentions for many papers in one query: {paper_id: [mention]}.
+
+    The card list asked per card, which cost a query per card on
+    every full rebuild — measurable once a bulk import had the
+    database busy. Papers with no mentions are simply absent from
+    the mapping; callers should use `.get(pid, [])`."""
+    ids = [int(i) for i in (paper_ids or [])]
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        "SELECT paper_id, pdb_id, section, source, fetched "
+        "FROM pdb_mentions WHERE paper_id IN ({}) "
+        "ORDER BY paper_id, pdb_id".format(placeholders),
+        ids).fetchall()
+    out = {}
+    for r in rows:
+        d = dict(r)
+        out.setdefault(d.pop("paper_id"), []).append(d)
+    return out
+
+
 def get_papers_for_pdb_id(conn, pdb_id):
     rows = conn.execute(
         "SELECT DISTINCT paper_id FROM pdb_mentions WHERE pdb_id = ? "
@@ -104,17 +128,44 @@ def get_papers_for_pdb_id(conn, pdb_id):
     return [r["paper_id"] for r in rows]
 
 
+# The valid-id set is ~259k strings rebuilt from the database on
+# every call. `_schedule_pdb_indexing` runs one thread per imported
+# paper, so a bulk import had ~200 threads each building their own
+# copy — pure-Python work, all contending for the GIL, which an
+# all-threads dump on 2026-08-30 caught in the act. The underlying
+# table is refreshed weekly at most, so cache it process-wide and
+# invalidate on write.
+_valid_ids_cache = None
+_valid_ids_lock = threading.Lock()
+
+
+def reset_valid_pdb_id_cache():
+    """Drop the cached set (called after a refresh, and by tests)."""
+    global _valid_ids_cache
+    with _valid_ids_lock:
+        _valid_ids_cache = None
+
+
 def get_valid_pdb_ids(conn):
-    return {r["pdb_id"] for r in
-            conn.execute("SELECT pdb_id FROM pdb_id_cache")}
+    """The set of known-valid PDB ids, cached process-wide."""
+    global _valid_ids_cache
+    with _valid_ids_lock:
+        if _valid_ids_cache is None:
+            _valid_ids_cache = frozenset(
+                r[0] for r in
+                conn.execute("SELECT pdb_id FROM pdb_id_cache"))
+        return _valid_ids_cache
 
 
 def _store_valid_pdb_ids(conn, ids):
+    """Replace the cached valid-id table (and drop the in-process
+    copy so the next reader sees the new set)."""
     now = _now_iso()
     conn.executemany(
         "INSERT OR REPLACE INTO pdb_id_cache (pdb_id, fetched) VALUES (?, ?)",
         [(i.lower(), now) for i in ids if i])
     conn.commit()
+    reset_valid_pdb_id_cache()
 
 
 def _valid_cache_is_stale(conn, max_age_days=7):

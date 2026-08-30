@@ -46,7 +46,8 @@ from . import (index, edit_dialog, importer, metrics, sidecar, extract,
                author_works, bibtex_import, bibtex_export, ris_export,
                csl_export, opener, references_pdf, discover, csl_format,
                feed, feed_window, import_toast, pdb_mentions,
-               funding_links, doi_import_dialog, jats, theme)
+               funding_links, doi_import_dialog, jats, theme,
+               reload_policy)
 
 LIBRARY_ROOT = prefs.get_library_root()
 
@@ -560,19 +561,21 @@ def _sidecar_record(sidecar_path):
         return None
 
 
-def _sidecar_summary(sidecar_path):
-    """The sidecar's machine-written summary dict, or None when
-    absent/unreadable/empty. Tolerant like _pdf_comment_count."""
-    if not sidecar_path:
-        return None
-    try:
-        record = sidecar.read(sidecar_path)
-    except (OSError, ValueError):
+def _summary_of(record):
+    """The summary dict from an already-read sidecar record, or None
+    when absent or empty."""
+    if not record:
         return None
     s = record.get("summary")
     if s and (s.get("text") or "").strip():
         return s
     return None
+
+
+def _sidecar_summary(sidecar_path):
+    """The sidecar's summary dict by path (for callers that don't
+    already hold the record)."""
+    return _summary_of(_sidecar_record(sidecar_path))
 
 
 # Overall reading width of the summary popover, margins included —
@@ -754,12 +757,24 @@ def _pdf_comment_count(sidecar_path):
         record = sidecar.read(sidecar_path)
     except (OSError, ValueError):
         return 0
+    return _comment_count(record)
+
+
+def _comment_count(record):
+    """Commented highlights in an already-read sidecar record."""
+    if not record:
+        return 0
     return sum(
         1 for h in (record.get("highlights") or [])
         if (h.get("comment") or "").strip())
 
 
-def make_card(row, parent_window, conn, on_saved, mark_labels=None):
+def make_card(row, parent_window, conn, on_saved, mark_labels=None,
+              pdb_by_paper=None):
+    # One sidecar read, shared by the comment count, the summary chip
+    # and the metadata chip. Each used to read and parse the file for
+    # itself — three reads per card, on every full rebuild.
+    card_record = _sidecar_record(row["sidecar_path"])
     box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
     box.set_margin_start(8)
     # 8 px sat under the results list's overlay scrollbar (which is
@@ -787,7 +802,7 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
     frame = Gtk.Frame()
     frame.set_size_request(146, 185)
     comment_count = (0 if is_ghost
-                     else _pdf_comment_count(row["sidecar_path"]))
+                     else _comment_count(card_record))
     if comment_count:
         # Yellow count-chip in the top-right of the thumbnail signals
         # "this PDF has commented highlights". The chip text is plain
@@ -1029,12 +1044,12 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
         ft_chip.set_valign(Gtk.Align.START)
         title_row.append(ft_chip)
     meta_chip = make_metadata_chip(
-        _sidecar_record(row["sidecar_path"]), parent_window,
+        card_record, parent_window,
         row["pdf_path"], row["sidecar_path"], on_saved)
     if meta_chip is not None:
         meta_chip.set_valign(Gtk.Align.START)
         title_row.append(meta_chip)
-    card_summary = _sidecar_summary(row["sidecar_path"])
+    card_summary = _summary_of(card_record)
     if card_summary:
         s_chip = make_summary_chip(card_summary)
         s_chip.set_valign(Gtk.Align.START)
@@ -1188,9 +1203,13 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None):
             text.append(kw_row)
 
     try:
-        pdb_ids = sorted({m["pdb_id"].upper()
-                          for m in pdb_mentions.get_pdb_mentions(
-                              conn, row["id"])})
+        # `pdb_by_paper` is the whole page's mentions, fetched in one
+        # query by the caller; fall back to a per-card query for
+        # callers that build a single card.
+        mentions = (pdb_by_paper.get(row["id"], [])
+                    if pdb_by_paper is not None
+                    else pdb_mentions.get_pdb_mentions(conn, row["id"]))
+        pdb_ids = sorted({m["pdb_id"].upper() for m in mentions})
     except Exception:
         pdb_ids = []
     if pdb_ids:
@@ -2780,10 +2799,25 @@ class BrowserWindow(Adw.ApplicationWindow):
         # files on the user's Desktop / Downloads).
         library_root = prefs.get_library_root()
         n = len(paths)
+        # This runs on a worker thread, so it needs its own SQLite
+        # connection. Python's sqlite3 serialises every statement on
+        # a Connection with an internal lock, so sharing self.conn
+        # with the main thread means each blocks the other: measured
+        # 2026-08-30 importing 184 PDFs, the GUI froze for minutes at
+        # a time while the import made no progress either. Same
+        # reason the PDB indexer and the watcher open their own — see
+        # index.connect_existing.
+        conn = index.connect_existing(self._db_path)
+        try:
+            self._run_import_with_conn(conn, paths, library_root, n)
+        finally:
+            conn.close()
+
+    def _run_import_with_conn(self, conn, paths, library_root, n):
         for i, p in enumerate(paths, 1):
             try:
                 staged, stage_status = importer.stage_into_library(
-                    p, library_root, conn=self.conn)
+                    p, library_root, conn=conn)
             except Exception as e:
                 print("stage failed for {}: {}".format(p, e))
                 GLib.idle_add(self._update_progress, i, n, p, None, "error")
@@ -2800,7 +2834,7 @@ class BrowserWindow(Adw.ApplicationWindow):
                 GLib.idle_add(self._update_progress, i, n, p, rec, "duplicate")
                 continue
             try:
-                rec, status = importer.import_pdf(self.conn, staged)
+                rec, status = importer.import_pdf(conn, staged)
             except Exception as e:
                 print("import failed for {}: {}".format(staged, e))
                 rec, status = None, "error"
@@ -3101,9 +3135,12 @@ class BrowserWindow(Adw.ApplicationWindow):
                 return
 
     def _refresh_visible_row(self, pdf_path, count):
-        # Cheap: just rebuild the list. (Could rebuild a single card later.)
-        self._reload(self.search.get_text() or None)
-        return False
+        # Rebuilds the whole list (a single-card update is the real
+        # answer, see BACKLOG). Route it through the policy: the
+        # citation refresher calls this once per refreshed row, and
+        # during a bulk import those rebuilds pile onto the import
+        # threads until the window stops responding entirely.
+        return self.request_reload("citations")
 
     def _crossref_extras_backfill(self, initial_delay_seconds=10.0,
                                    pause_seconds=3.0):
@@ -3166,10 +3203,9 @@ class BrowserWindow(Adw.ApplicationWindow):
             if filled:
                 _wlog("crossref", "backfilled {} row(s)".format(filled))
                 # Repaint cards so newly-filled chips appear without
-                # the user having to scroll or reload.
-                GLib.idle_add(
-                    lambda: (self._reload(self.search.get_text() or None),
-                             False)[1])
+                # the user having to scroll or reload — through the
+                # policy, so a bulk import isn't interrupted.
+                GLib.idle_add(self.request_reload, "crossref-backfill")
         finally:
             conn.close()
 
@@ -3217,9 +3253,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             if filled:
                 _wlog("pdb",
                       "backfilled mentions for {} row(s)".format(filled))
-                GLib.idle_add(
-                    lambda: (self._reload(self.search.get_text() or None),
-                             False)[1])
+                GLib.idle_add(self.request_reload, "pdb-backfill")
         finally:
             conn.close()
 
@@ -3491,6 +3525,15 @@ class BrowserWindow(Adw.ApplicationWindow):
         return None
 
     def _do_drop_import(self, paths):
+        # Worker thread: its own connection, never self.conn — see
+        # _run_import for what sharing one costs.
+        conn = index.connect_existing(self._db_path)
+        try:
+            self._do_drop_import_with_conn(conn, paths)
+        finally:
+            conn.close()
+
+    def _do_drop_import_with_conn(self, conn, paths):
         os.makedirs(self.library_root, exist_ok=True)
         results = {"imported": [], "duplicate": [], "exists": [],
                    "error": [], "merged": []}
@@ -3507,7 +3550,7 @@ class BrowserWindow(Adw.ApplicationWindow):
                 try:
                     new_path, gstatus, gmsg = (
                         bibtex_import.attach_pdf_to_ghost(
-                            self.conn, ghost, src, self.library_root))
+                            conn, ghost, src, self.library_root))
                 except Exception as e:
                     results["error"].append((src, None, str(e)))
                     continue
@@ -3521,7 +3564,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             if os.path.realpath(src) == os.path.realpath(target):
                 # Already in the library — just (re)import in place.
                 try:
-                    rec, status = importer.import_pdf(self.conn, target)
+                    rec, status = importer.import_pdf(conn, target)
                     results.setdefault(status, []).append((src, target, rec))
                 except Exception as e:
                     results["error"].append((src, target, str(e)))
@@ -3535,7 +3578,7 @@ class BrowserWindow(Adw.ApplicationWindow):
                 results["error"].append((src, target, str(e)))
                 continue
             try:
-                rec, status = importer.import_pdf(self.conn, target)
+                rec, status = importer.import_pdf(conn, target)
             except Exception as e:
                 results["error"].append((src, target, str(e)))
                 try: os.remove(target)
@@ -3647,10 +3690,18 @@ class BrowserWindow(Adw.ApplicationWindow):
         rows = index.search(self.conn, query, mark_filter=mark_filter,
                             sort_key=sort_key, sort_direction=sort_direction)
         on_saved = lambda: self._reload(self.search.get_text() or None)
+        # One query for the whole page's PDB mentions rather than one
+        # per card.
+        try:
+            pdb_by_paper = pdb_mentions.get_pdb_mentions_bulk(
+                self.conn, [r["id"] for r in rows])
+        except Exception:
+            pdb_by_paper = {}
         for r in rows:
             self.results.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
             self.results.append(make_card(r, self, self.conn, on_saved,
-                                          mark_labels=self.mark_labels))
+                                          mark_labels=self.mark_labels,
+                                          pdb_by_paper=pdb_by_paper))
         self.status.set_text("{} entries".format(len(rows)))
         if self._focus_pdf_path:
             GLib.idle_add(self._scroll_focus_into_view)
@@ -4112,8 +4163,19 @@ class BrowserWindow(Adw.ApplicationWindow):
                 GLib.source_remove(self._reload_timer_id)
             except Exception:
                 pass
+        # Ration rebuilds during a burst: a bulk import otherwise
+        # rebuilds every card once per imported file, and each
+        # rebuild competes with the import threads for the GIL and
+        # the SQLite lock. See reload_policy.
+        delay = reload_policy.reload_delay_ms(
+            time.monotonic(), getattr(self, "_last_reload_at", None),
+            import_busy=getattr(self, "_import_busy", False))
+        if delay is None:
+            # Bulk import in progress: _end_progress rebuilds once
+            # when it finishes.
+            return False
         self._reload_timer_id = GLib.timeout_add(
-            300, self._do_debounced_reload)
+            delay, self._do_debounced_reload)
         return False
 
     def _register_author_window(self, win):
@@ -4134,8 +4196,23 @@ class BrowserWindow(Adw.ApplicationWindow):
             return False
         win.connect("close-request", _on_close)
 
+    def request_reload(self, status="updated"):
+        """Ask for a card repaint, subject to the reload policy.
+
+        Background workers (the CrossRef and PDB backfills, and
+        anything else that finishes off the main thread) must come
+        through here rather than calling _reload directly: during a
+        bulk import a direct rebuild competes with the import
+        threads for the GIL and loses for minutes at a time — the
+        window goes catatonic while the import stops progressing.
+        Called from the main thread (wrap in GLib.idle_add if you
+        are on a worker)."""
+        self._on_watcher_change(status)
+        return False
+
     def _do_debounced_reload(self):
         self._reload_timer_id = None
+        self._last_reload_at = time.monotonic()
         self._reload(self.search.get_text() or None)
         self.status.set_text("Library updated ({})".format(
             getattr(self, "_pending_reload_status", "")))

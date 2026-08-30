@@ -543,6 +543,17 @@ _inflight_lock = threading.Lock()
 _inflight = {}                 # abspath -> threading.Event
 INFLIGHT_WAIT_SECONDS = 120
 
+# Extraction (pdfx / pypdf) is pure Python, so it holds the GIL.
+# Several producers reach it at once during a bulk import — the
+# folder import, the watcher's per-file threads, and the startup
+# reconcile — and an all-threads dump on 2026-08-30 caught three of
+# them inside _run_pdfx together, each running at a third speed
+# while the paper count crawled. Concurrency buys nothing for
+# CPU-bound Python; serialising it is faster and keeps the machine
+# responsive. (The real answer is extraction out of process — see
+# BACKLOG.)
+_extract_gate = threading.Semaphore(1)
+
 
 def _await_inflight(pdf_path):
     """Claim this path, or wait for whoever holds it. Returns the
@@ -641,7 +652,8 @@ def _import_pdf_locked(conn, pdf_path):
         return by_hash, "duplicate"
 
     # No hash match: extract metadata and dedup by DOI.
-    rec = _build_record(pdf_path)
+    with _extract_gate:
+        rec = _build_record(pdf_path)
     rec["sha256"] = sha
     dup = index.find_duplicate(conn, doi=rec.get("doi"),
                                exclude_path=pdf_path)

@@ -220,6 +220,68 @@ def _truncate(s, n):
     return s[:n - 1] + "…"
 
 
+def build_citation_links(pdf_path):
+    """Citation-link map for `pdf_path`:
+    `{page_idx: [(rect, target_page, target_top, ref_n), …]}`.
+
+    Pure, GTK-free and slow (it parses the bibliography and walks
+    page text layouts), so the viewer runs it on a worker thread.
+    Never raises: a PDF it can't read yields no links, which is the
+    same outcome the caller gets from a PDF with no citations.
+
+    Path A: publisher `/Link` annotations, with ref_n recovered from
+    `CR<N>`-style destination names (Springer / Nature).
+    Path B: for opaque destination names (Taylor & Francis's
+    `Anchor N`, unnamed array destinations), match each link's
+    destination y-coordinate against the parsed bibliography.
+    Path C: author-year bibliographies (Acta Cryst, IUCr, older
+    crystallography) carry no link annotations at all — walk the
+    body text for `(Surname, YYYY)` / `Surname (YYYY)`.
+    Path D: numbered bibliographies in PDFs whose annotations are
+    all `/URI` links out to the web (AAAS/Science via iText), where
+    A and B have nothing to chew on. Only when nothing above
+    produced a resolvable link, so PDFs that already work via
+    publisher links are left exactly as they were.
+    """
+    try:
+        links = pdf_links.read_citation_links(pdf_path)
+    except Exception:
+        return {}
+    try:
+        bib_positions = references_pdf.bibliography_positions(pdf_path)
+    except Exception:
+        bib_positions = []
+    if bib_positions:
+        try:
+            links = pdf_links.assign_ref_n_by_position(
+                links, bib_positions)
+        except Exception:
+            pass
+    try:
+        ay_bib = references_pdf.parse_bibliography(pdf_path)
+    except Exception:
+        ay_bib = []
+    if ay_bib and any(e.get("key") for e in ay_bib):
+        try:
+            ay_links = references_pdf.find_author_year_citations(
+                pdf_path, ay_bib)
+        except Exception:
+            ay_links = {}
+        for pi, plinks in ay_links.items():
+            links.setdefault(pi, []).extend(plinks)
+    elif not any(e[3] is not None
+                 for plinks in links.values()
+                 for e in plinks):
+        try:
+            num_links = references_pdf.find_numeric_citations(
+                pdf_path, ay_bib)
+        except Exception:
+            num_links = {}
+        for pi, plinks in num_links.items():
+            links.setdefault(pi, []).extend(plinks)
+    return links
+
+
 def open_viewer(parent, pdf_path, sidecar_path=None):
     """Public entry point: open `pdf_path` in a new viewer window.
 
@@ -265,65 +327,19 @@ class PdfViewerWindow(Gtk.Window):
         self._highlights_popover = None
         self._load_highlights()
 
-        # Citation/cross-reference link annotations: built once at
-        # open time so a click on `[1]` in the body can jump straight
-        # to entry [1] in the references, like Preview does.
-        self.citation_links = pdf_links.read_citation_links(pdf_path)
-        # Path A finds the Link annotations but can only attach a
-        # ref_n when the destination name follows a `CR<N>` pattern
-        # (Springer / Nature). For publishers that use opaque
-        # destination names (Taylor & Francis's `Anchor N`, array
-        # destinations with no name at all, …), fall back to
-        # geometry: parse the bibliography, then match each Link's
-        # destination y-coord against the parsed entries to recover
-        # ref_n. Links that don't land on a bibliography entry —
-        # figure / section cross-references — keep ref_n=None and
-        # silently skip the popover, which is the right behaviour.
-        try:
-            bib_positions = references_pdf.bibliography_positions(pdf_path)
-        except Exception:
-            bib_positions = []
-        if bib_positions:
-            self.citation_links = pdf_links.assign_ref_n_by_position(
-                self.citation_links, bib_positions)
-        # Path C: text-based hit-testing for author-year style
-        # bibliographies (Acta Cryst, IUCr, older crystallography
-        # papers in general). Publisher /Link annotations are absent
-        # on these, so we walk the body text for `(Surname, YYYY)`
-        # / `Surname (YYYY)` patterns and resolve them against the
-        # parsed bibliography. Only fires when parse_bibliography
-        # came back author-year (entries carry a `key` field);
-        # numbered bibliographies fall through to Path A/B, or to
-        # Path D below when the PDF has no internal links at all.
-        try:
-            ay_bib = references_pdf.parse_bibliography(pdf_path)
-        except Exception:
-            ay_bib = []
-        if ay_bib and any(e.get("key") for e in ay_bib):
-            try:
-                ay_links = references_pdf.find_author_year_citations(
-                    pdf_path, ay_bib)
-            except Exception:
-                ay_links = {}
-            for pi, plinks in ay_links.items():
-                self.citation_links.setdefault(pi, []).extend(plinks)
-        # Path D: text-based hit-testing for *numbered* bibliographies
-        # in PDFs that carry no usable internal Link annotations —
-        # AAAS/Science being the case in hand, where iText emits every
-        # annotation as a `/URI` link out to the web and Paths A/B
-        # have nothing to chew on. Only runs when nothing above
-        # produced a resolvable citation link, so PDFs that already
-        # work via publisher links are left exactly as they were.
-        elif not any(e[3] is not None
-                     for plinks in self.citation_links.values()
-                     for e in plinks):
-            try:
-                num_links = references_pdf.find_numeric_citations(
-                    pdf_path, ay_bib)
-            except Exception:
-                num_links = {}
-            for pi, plinks in num_links.items():
-                self.citation_links.setdefault(pi, []).extend(plinks)
+        # Citation/cross-reference links, so a click on `[1]` in the
+        # body jumps to entry [1] in the references. Built on a
+        # worker thread: the bibliography parsing it needs walks
+        # every page's text layout, which is ~0.5 s alone but was
+        # measured at 43 s (2026-08-30) when a concurrent import held
+        # the GIL — all of it blocking the main loop, and the window
+        # doesn't need links to open. Until it lands, clicks on
+        # citations simply do nothing.
+        self.citation_links = {}
+        self._citation_links_ready = False
+        threading.Thread(
+            target=self._load_citation_links, args=(pdf_path,),
+            daemon=True).start()
         # Per-page "is the cursor currently over a link?" cache, used
         # to avoid re-setting the cursor on every motion event.
         self._cursor_over_link = {}
@@ -917,6 +933,26 @@ class PdfViewerWindow(Gtk.Window):
             w.queue_draw()
 
     # --- Annotation layer ---------------------------------------------
+
+    def _load_citation_links(self, pdf_path):
+        """Worker thread: build the citation-link map and hand it to
+        the main loop. Failures leave the map empty — the PDF still
+        reads, its citations just aren't clickable."""
+        try:
+            links = build_citation_links(pdf_path)
+        except Exception as e:
+            print("[viewer] citation links failed for {}: {}".format(
+                pdf_path, e))
+            links = {}
+        GLib.idle_add(self._apply_citation_links, links)
+
+    def _apply_citation_links(self, links):
+        self.citation_links = links or {}
+        self._citation_links_ready = True
+        # Hover cursors are cached per page against the old (empty)
+        # map; drop the cache so links become clickable immediately.
+        self._cursor_over_link = {}
+        return False
 
     def _load_highlights(self):
         if not self.sidecar_path:

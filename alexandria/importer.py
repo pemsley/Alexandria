@@ -338,6 +338,56 @@ def refresh_pdf(conn, pdf_path):
     return fresh, "refreshed"
 
 
+# One dropped PDF reaches import_pdf up to three times at once: the
+# drop handler imports the file it just copied in, and the watcher
+# fires its own imports for the CREATED and CHANGES_DONE_HINT events
+# on the same path. Each pass runs _build_record (pdfx / pypdf — pure
+# Python, so it holds the GIL for seconds on a figure-heavy PDF), and
+# the concurrent passes starve the GTK main loop: measured 2026-08-30
+# at 76 s of main-loop stalls for a single 25-page import, the worst
+# a 43 s freeze while the viewer waited its turn for the GIL.
+#
+# RECENT_THRESHOLD_SECONDS can't help — it only looks at what an
+# earlier pass has already *finished* writing. So later arrivals wait
+# for the in-flight import to complete, then fall through into the
+# normal body, where the now-written sidecar puts them on the cheap
+# "recent"/"existing" path.
+_inflight_lock = threading.Lock()
+_inflight = {}                 # abspath -> threading.Event
+INFLIGHT_WAIT_SECONDS = 120
+
+
+def _await_inflight(pdf_path):
+    """Claim this path, or wait for whoever holds it. Returns the
+    Event to set on completion (None when we were a waiter)."""
+    key = os.path.abspath(pdf_path)
+    while True:
+        with _inflight_lock:
+            ev = _inflight.get(key)
+            if ev is None:
+                ev = threading.Event()
+                _inflight[key] = ev
+                return ev
+        # Someone else is importing this path — let them finish.
+        ev.wait(timeout=INFLIGHT_WAIT_SECONDS)
+        with _inflight_lock:
+            if _inflight.get(key) is ev:
+                # Owner died without clearing; take over rather than
+                # spinning.
+                del _inflight[key]
+        return None
+
+
+def _release_inflight(pdf_path, ev):
+    if ev is None:
+        return
+    key = os.path.abspath(pdf_path)
+    with _inflight_lock:
+        if _inflight.get(key) is ev:
+            del _inflight[key]
+    ev.set()
+
+
 def import_pdf(conn, pdf_path):
     """Make sure pdf_path has sidecar + thumbnail, and upsert the index row.
 
@@ -349,6 +399,14 @@ def import_pdf(conn, pdf_path):
         For 'duplicate', rec is the *existing* row's dict (so the caller
         can report which file it duplicates).
     """
+    ev = _await_inflight(pdf_path)
+    try:
+        return _import_pdf_locked(conn, pdf_path)
+    finally:
+        _release_inflight(pdf_path, ev)
+
+
+def _import_pdf_locked(conn, pdf_path):
     sc_path = sidecar.sidecar_path_for(pdf_path)
     th_path = sidecar.thumb_path_for(pdf_path)
 

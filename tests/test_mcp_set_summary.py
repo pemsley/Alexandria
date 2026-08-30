@@ -125,6 +125,31 @@ def test_refuses_in_readonly_mode(library, monkeypatch):
               model="m", source="pdf")
 
 
+def test_refuses_to_overwrite_a_hand_written_summary(library):
+    """A person's own summary is curation, like hand_edited: a
+    connected client must not replace it silently."""
+    rec = sidecar.read(library["sidecar"])
+    rec["summary"] = {"text": "Mine, written by hand.",
+                      "author": "Paul Emsley",
+                      "generated_at": "2026-08-30T09:00:00Z"}
+    sidecar.write(library["sidecar"], rec)
+    with pytest.raises(ValueError):
+        _call(paper_id=library["paper_id"], summary="Machine text",
+              model="claude-opus-5", source="jats")
+    after = sidecar.read(library["sidecar"])["summary"]
+    assert after["text"] == "Mine, written by hand."
+    assert after["author"] == "Paul Emsley"
+
+
+def test_replaces_its_own_earlier_machine_summary(library):
+    _call(paper_id=library["paper_id"], summary="First",
+          model="claude-opus-5", source="pdf")
+    out = _call(paper_id=library["paper_id"], summary="Second",
+                model="claude-opus-5", source="jats")
+    assert out["status"] == "ok"
+    assert sidecar.read(library["sidecar"])["summary"]["text"] == "Second"
+
+
 def test_index_row_refreshed_after_write(library):
     """The DB caches sidecar_mtime; a stale value would make the
     GUI's reconcile think the sidecar hadn't changed."""

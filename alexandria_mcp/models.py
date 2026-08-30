@@ -22,6 +22,10 @@ class PaperSummary:
     doi: Optional[str]
     citations: Optional[int]
     is_ghost: bool
+    # Whether a summary (machine- or hand-written) is stored in the
+    # sidecar. Cheap to compute and the thing callers most often
+    # want to filter on; the block itself is on PaperDetail.
+    has_summary: bool = False
 
 
 @dataclass
@@ -56,6 +60,7 @@ class PaperDetail:
     doi: Optional[str]
     citations: Optional[int]
     is_ghost: bool
+    has_summary: bool = False
     # Extended fields.
     authors: list[str] = field(default_factory=list)
     abstract: Optional[str] = None
@@ -70,3 +75,6 @@ class PaperDetail:
     citations_by_year: list[dict[str, Any]] = field(default_factory=list)
     funders: list[str] = field(default_factory=list)
     grants: list[dict[str, Any]] = field(default_factory=list)
+    # The sidecar's summary block — {text, generated_at} plus either
+    # `model` + `source` (machine-written) or `author` (a person).
+    summary: Optional[dict[str, Any]] = None

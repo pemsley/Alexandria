@@ -78,6 +78,22 @@ def _normalize_doi(s: str) -> str:
     return v.strip().lower()
 
 
+def _sidecar_summary(sidecar_path):
+    """The sidecar's summary block, or None. Tolerant: an
+    unreadable sidecar reports 'no summary' rather than failing the
+    whole call."""
+    if not sidecar_path:
+        return None
+    try:
+        rec = sidecar.read(sidecar_path)
+    except Exception:
+        return None
+    block = rec.get("summary")
+    if block and (block.get("text") or "").strip():
+        return block
+    return None
+
+
 def _row_to_summary(row) -> PaperSummary:
     return PaperSummary(
         id=row["id"],
@@ -89,6 +105,7 @@ def _row_to_summary(row) -> PaperSummary:
         doi=row["doi"],
         citations=row["citations"],
         is_ghost=sidecar.is_ghost_path(row["pdf_path"]),
+        has_summary=_sidecar_summary(row["sidecar_path"]) is not None,
     )
 
 
@@ -123,6 +140,7 @@ def _safe_json_list(s: Optional[str]) -> list:
 
 def _row_to_detail(row) -> PaperDetail:
     is_oa_raw = row["is_oa"]
+    summary_block = _sidecar_summary(row["sidecar_path"])
     return PaperDetail(
         id=row["id"],
         title=row["title"],
@@ -133,6 +151,8 @@ def _row_to_detail(row) -> PaperDetail:
         doi=row["doi"],
         citations=row["citations"],
         is_ghost=sidecar.is_ghost_path(row["pdf_path"]),
+        has_summary=summary_block is not None,
+        summary=summary_block,
         authors=_safe_json_list(row["authors_json"]),
         abstract=row["abstract"],
         tags=_safe_json_list(row["tags_json"]),
@@ -531,6 +551,59 @@ SUMMARY_SOURCES = ("jats", "pdf", "abstract")
 
 
 @mcp.tool()
+def summary_overview(missing_limit: int = 20) -> dict:
+    """How much of the library has been summarised.
+
+    Answers "how many of these papers have summaries?" — which
+    per-paper tools can't, since the block lives in each sidecar
+    and `get_sidecars` is capped at 50 IDs.
+
+    Returns papers, with_summary, without_summary, machine_written,
+    hand_written, by_source (counts per 'jats' / 'pdf' / 'abstract'
+    tier), by_model, and `missing_ids`: up to `missing_limit` IDs
+    with no summary yet, oldest-added first, ready to hand to
+    `get_pdf_texts` and then `set_summary`.
+
+    Ghost (BibTeX-only) entries are counted too — they have
+    sidecars, and an abstract-tier summary is possible for them.
+    """
+    conn = db.get_ro_connection()
+    rows = conn.execute(
+        "SELECT id, sidecar_path FROM papers "
+        "ORDER BY added_date, id").fetchall()
+    out = {
+        "papers": len(rows),
+        "with_summary": 0,
+        "without_summary": 0,
+        "machine_written": 0,
+        "hand_written": 0,
+        "by_source": {},
+        "by_model": {},
+        "missing_ids": [],
+    }
+    for row in rows:
+        block = _sidecar_summary(row["sidecar_path"])
+        if block is None:
+            out["without_summary"] += 1
+            if len(out["missing_ids"]) < max(0, int(missing_limit)):
+                out["missing_ids"].append(row["id"])
+            continue
+        out["with_summary"] += 1
+        if block.get("author"):
+            out["hand_written"] += 1
+        else:
+            out["machine_written"] += 1
+            model = block.get("model")
+            if model:
+                out["by_model"][model] = (
+                    out["by_model"].get(model, 0) + 1)
+        src = block.get("source")
+        if src:
+            out["by_source"][src] = out["by_source"].get(src, 0) + 1
+    return out
+
+
+@mcp.tool()
 def set_summary(paper_id: int, summary: str, model: str,
                 source: str) -> dict:
     """Store your summary of a paper in its sidecar.
@@ -553,7 +626,12 @@ def set_summary(paper_id: int, summary: str, model: str,
     Args:
         paper_id: the library ID (from `search_library`,
             `recently_added`, …).
-        summary: the summary text, at most 8000 characters.
+        summary: the summary text in **Markdown**, at most 8000
+            characters. A subset is rendered: `**bold**`,
+            `*italic*` / `_italic_`, `` `code` ``, `#` headings and
+            `-` / `*` bullets, with blank lines separating
+            paragraphs. Anything richer (tables, links, nested
+            lists) is shown as literal text, so keep to that set.
         model: the model writing it, e.g. "claude-opus-5".
         source: what you read — "jats", "pdf", or "abstract".
 
@@ -594,6 +672,15 @@ def set_summary(paper_id: int, summary: str, model: str,
     except Exception as e:
         raise ValueError(
             "could not read sidecar {}: {}".format(sc_path, e))
+
+    existing = rec.get("summary") or {}
+    if existing.get("author"):
+        raise ValueError(
+            "paper {} already has a summary written by {} — a "
+            "hand-written summary is the user's own curation and is "
+            "not replaced from here. Ask them to clear it first if "
+            "they want yours instead.".format(
+                paper_id, existing["author"]))
 
     block = {
         "text": text,

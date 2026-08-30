@@ -12,12 +12,33 @@ protocol is in place."""
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 from dataclasses import asdict
 from typing import Optional
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except ImportError:                                  # pragma: no cover
+    # The `mcp` package only needs to be present where the server
+    # actually runs (bin/alexandria-mcp's venv). A stub keeps this
+    # module importable — and its tool functions testable — from a
+    # plain interpreter; every tool stays reachable as `.fn`, the
+    # same attribute FastMCP exposes.
+    class FastMCP:                                   # type: ignore
+        def __init__(self, name):
+            self.name = name
+
+        def tool(self, *a, **k):
+            def deco(fn):
+                fn.fn = fn
+                return fn
+            return deco
+
+        def run(self, *a, **k):
+            raise RuntimeError(
+                "the 'mcp' package is required to run the server")
 
 import re
 import tempfile
@@ -34,6 +55,13 @@ mcp = FastMCP("Alexandria")
 
 
 # ---- helpers --------------------------------------------------------
+
+def _utc_now_iso() -> str:
+    """Current UTC time as '2026-08-29T21:30:00Z'."""
+    return (datetime.datetime.now(datetime.timezone.utc)
+            .replace(microsecond=0)
+            .strftime("%Y-%m-%dT%H:%M:%SZ"))
+
 
 def _normalize_doi(s: str) -> str:
     """Strip the URL prefix CrossRef and OpenAlex add to DOIs, plus
@@ -496,6 +524,100 @@ def get_sidecars(paper_ids: list[int]) -> list[dict]:
             out.append({"_error": "sidecar read failed: {}".format(e),
                         "_sidecar_path": by_id[pid]})
     return out
+
+
+MAX_SUMMARY_CHARS = 8000
+SUMMARY_SOURCES = ("jats", "pdf", "abstract")
+
+
+@mcp.tool()
+def set_summary(paper_id: int, summary: str, model: str,
+                source: str) -> dict:
+    """Store your summary of a paper in its sidecar.
+
+    Write this *after* you have actually read the paper — via
+    `get_pdf_texts`, or the JATS XML stored beside the PDF when the
+    paper has one. Summarising from the abstract alone is allowed
+    but must be declared honestly as `source="abstract"`.
+
+    The summary is stored attributed and machine-marked: Alexandria
+    displays it with the model name, the source tier and the date,
+    and never lets it pass for the author's abstract. Be accurate
+    about `model` — name the model actually writing the summary
+    (e.g. "claude-opus-5"); it is what the user will see when they
+    decide whether to trust the text.
+
+    Writing again for the same paper replaces the previous summary.
+    Every other sidecar field is left untouched.
+
+    Args:
+        paper_id: the library ID (from `search_library`,
+            `recently_added`, …).
+        summary: the summary text, at most 8000 characters.
+        model: the model writing it, e.g. "claude-opus-5".
+        source: what you read — "jats", "pdf", or "abstract".
+
+    Returns: status, paper_id, and the stored summary block.
+
+    Refuses if the server is in read-only mode
+    (ALEXANDRIA_READONLY).
+    """
+    if config.readonly():
+        raise ValueError("server is in read-only mode")
+    text = (summary or "").strip()
+    if not text:
+        raise ValueError("summary must be a non-empty string")
+    if len(text) > MAX_SUMMARY_CHARS:
+        raise ValueError(
+            "summary too long: {} chars (max {})".format(
+                len(text), MAX_SUMMARY_CHARS))
+    model_name = (model or "").strip()
+    if not model_name:
+        raise ValueError(
+            "model must name the model writing the summary — it is "
+            "shown to the user as the summary's attribution")
+    src = (source or "").strip().lower()
+    if src not in SUMMARY_SOURCES:
+        raise ValueError(
+            "source must be one of {} ({!r} given)".format(
+                ", ".join(SUMMARY_SOURCES), source))
+
+    conn = db.get_ro_connection()
+    row = conn.execute(
+        "SELECT id, pdf_path, sidecar_path, thumb_path "
+        "FROM papers WHERE id = ?", (paper_id,)).fetchone()
+    if row is None:
+        raise ValueError("unknown paper_id {}".format(paper_id))
+    sc_path = row["sidecar_path"]
+    try:
+        rec = sidecar.read(sc_path)
+    except Exception as e:
+        raise ValueError(
+            "could not read sidecar {}: {}".format(sc_path, e))
+
+    block = {
+        "text": text,
+        "model": model_name,
+        "source": src,
+        # Stamped here, not by the caller: the client cannot be
+        # trusted to date its own work, and a wrong date makes a
+        # stale summary look fresh.
+        "generated_at": _utc_now_iso(),
+    }
+    rec["summary"] = block
+    sidecar.write(sc_path, rec)
+
+    # Re-index so the GUI's mtime-based reconcile sees the change
+    # (the sidecar is the source of truth, but papers.sidecar_mtime
+    # is what tells the app to re-read it).
+    rw_conn = index.open_db(config.db_path())
+    try:
+        index.upsert(rw_conn, row["pdf_path"], sc_path,
+                     row["thumb_path"], rec,
+                     os.path.getmtime(sc_path))
+    finally:
+        rw_conn.close()
+    return {"status": "ok", "paper_id": paper_id, "summary": block}
 
 
 @mcp.tool()

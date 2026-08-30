@@ -58,6 +58,40 @@ def _pad_inline_tags(text):
 # Pango has no <scp> tag, but renders small-caps via
 # <span variant="smallcaps">…</span>. Translate to that, done before
 # the whitelist capture below so the span is protected from escaping.
+# Crossref and OpenAlex hand back abstracts as namespaced JATS
+# fragments: "<jats:p>The Gly/N-degron pathway …<jats:italic>Oryza
+# sativa</jats:italic>…". Map the inline ones onto their Pango
+# equivalents, turn paragraph breaks into blank lines, and drop
+# every other jats: tag while keeping its text — a reader wants the
+# prose, not the schema.
+_JATS_INLINE = {
+    "italic": "i", "bold": "b", "sub": "sub", "sup": "sup",
+    "monospace": "tt", "underline": "u", "strike": "s",
+    "sc": "scp",            # small-caps: handed to _translate_scp
+}
+_JATS_TAG_RE = re.compile(r"</?jats:([a-z-]+)\s*/?>", re.IGNORECASE)
+_JATS_P_CLOSE_RE = re.compile(r"</jats:p>\s*(?=<jats:p>)",
+                              re.IGNORECASE)
+
+
+def _translate_jats(text):
+    if "jats:" not in text.lower():
+        return text
+    # Paragraph boundaries first, so consecutive <jats:p> blocks
+    # don't run together once the tags are gone.
+    text = _JATS_P_CLOSE_RE.sub("\n\n", text)
+
+    def _one(m):
+        name = m.group(1).lower()
+        mapped = _JATS_INLINE.get(name)
+        if mapped is None:
+            return ""                      # keep the text, drop the tag
+        closing = m.group(0).startswith("</")
+        return "</{}>".format(mapped) if closing else "<{}>".format(mapped)
+
+    return _JATS_TAG_RE.sub(_one, text)
+
+
 _SCP_PAIR_RE = re.compile(r"<scp>(.*?)</scp>", re.IGNORECASE | re.DOTALL)
 _SCP_ANY_RE = re.compile(r"</?scp\s*>", re.IGNORECASE)
 
@@ -113,6 +147,7 @@ def safe_pango_markup(text):
     # The whole string is re-escaped afterwards, so this is safe.
     text = (text.replace("&lt;", "<").replace("&gt;", ">")
                 .replace("&quot;", '"').replace("&amp;", "&"))
+    text = _translate_jats(text)
     text = _translate_scp(text)
     text = _pad_inline_tags(text)
     placeholders = []

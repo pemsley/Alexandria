@@ -28,6 +28,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk, Pango
 
 from . import feed, index, opener
+from .markup import safe_pango_markup
 
 
 def open_window(parent, conn):
@@ -520,8 +521,10 @@ class FeedWindow(Adw.Window):
                             spacing=6)
         title = Gtk.Label(xalign=0.0)
         t = art.get("title") or "(untitled)"
-        title.set_markup("<b>{}</b>".format(
-            GLib.markup_escape_text(t)))
+        # Publisher titles carry inline markup — <sup>ZER1</sup>,
+        # <scp>L</scp>-galactose, JATS tags from Crossref — which
+        # escaping showed as literal tags.
+        title.set_markup("<b>{}</b>".format(safe_pango_markup(t)))
         title.set_wrap(True)
         title.set_xalign(0.0)
         title.set_hexpand(True)
@@ -615,9 +618,14 @@ class FeedWindow(Adw.Window):
             text = art["abstract"]
             if len(text) > 360:
                 text = text[:357] + "…"
+            # Crossref abstracts are namespaced JATS fragments;
+            # safe_pango_markup renders the inline formatting and
+            # drops the rest of the schema. Truncating first is
+            # deliberate — it can sever a tag, and the helper's
+            # fallback then shows plain text rather than breaking.
             abst.set_markup(
                 "<span size='small' alpha='80%'>{}</span>".format(
-                    GLib.markup_escape_text(text)))
+                    safe_pango_markup(text)))
             abst.set_wrap(True)
             abst.set_xalign(0.0)
             outer.append(abst)

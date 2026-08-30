@@ -103,12 +103,17 @@ def new_record(pdf_path):
         # published version: {doi, title, journal, year, openalex_id,
         # checked}. None for non-preprints or when no match was found.
         "published_version": None,
-        # Machine-written summary (via the MCP server; the model
-        # lives in the connected client, never in the app):
-        # {text, model, source, generated_at}. `model` and `source`
-        # ('jats' / 'pdf' / 'abstract') are not optional — a summary
-        # is a dated machine opinion and the UI must never let it
-        # pass for the abstract. None until one is written.
+        # A summary of the paper — {text, generated_at} plus its
+        # provenance, which decides how the UI presents it:
+        #   machine-written: `model` (e.g. "claude-opus-5") and
+        #     `source` ('jats' / 'pdf' / 'abstract'), written via the
+        #     MCP server — the model lives in the connected client,
+        #     never in the app. Shown as "AI summary".
+        #   hand-written: `author` (a person's name). Shown as plain
+        #     "Summary"; a person who signs a machine draft carries
+        #     both fields and takes responsibility for it.
+        # One of the two is always required: an unattributed summary
+        # must never pass for the author's abstract.
         "summary": None,
         # User highlights / comments from the built-in viewer. Each entry:
         #   {"id": uuid, "page": int (0-based),

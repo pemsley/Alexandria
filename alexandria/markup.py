@@ -137,18 +137,83 @@ def safe_pango_markup(text):
     return result
 
 
+def summary_chip_label(summary):
+    """"AI summary" for a machine-written one, plain "Summary"
+    otherwise. A bare "AI" badge sitting among PRE / CC-BY / Gold OA
+    reads as a topic tag — "this paper is about AI" — which in a
+    library of machine-learning papers is the likelier reading."""
+    if summary and summary.get("author"):
+        return "Summary"
+    if summary and summary.get("model"):
+        return "AI summary"
+    return "Summary"
+
+
 def summary_attribution(summary):
-    """One-line provenance for a machine-written sidecar summary —
-    "claude-opus-5 · from jats · 2026-08-29". Always returns at
-    least "AI-generated" so the UI can never show an unattributed
-    machine summary as if it were the abstract."""
+    """One-line provenance for a sidecar summary:
+
+        "Paul Emsley · 2026-08-30"                     (hand-written)
+        "claude-opus-5 · from jats · 2026-08-30"       (machine)
+
+    A person who signs a machine draft takes responsibility for it,
+    so `author` leads — but the model is still disclosed rather than
+    hidden. Always returns something, so the UI can never present an
+    unattributed summary as if it were the author's abstract."""
     if not summary:
-        return "AI-generated"
+        return "Unattributed"
     bits = []
-    if summary.get("model"):
-        bits.append(str(summary["model"]))
-    if summary.get("source"):
-        bits.append("from {}".format(summary["source"]))
+    author = summary.get("author")
+    model = summary.get("model")
+    if author:
+        bits.append(str(author))
+        if model:
+            bits.append("edited from {}".format(model))
+    elif model:
+        bits.append(str(model))
+        if summary.get("source"):
+            bits.append("from {}".format(summary["source"]))
     if summary.get("generated_at"):
         bits.append(str(summary["generated_at"])[:10])
-    return " · ".join(bits) if bits else "AI-generated"
+    return " · ".join(bits) if bits else "Unattributed"
+
+
+# Markdown subset for summaries. Anything richer (tables, links,
+# nested lists) is left as literal text rather than half-rendered:
+# a summary is a few paragraphs, and a wrong tag is worse than a
+# visible asterisk.
+_MD_BOLD_RE = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", re.S)
+_MD_ITALIC_RE = re.compile(
+    r"(?<![\w*])[*_](?=\S)([^*_\n]+?)(?<=\S)[*_](?![\w*])")
+_MD_CODE_RE = re.compile(r"`([^`\n]+)`")
+_MD_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.*\S)\s*$")
+_MD_BULLET_RE = re.compile(r"^(\s*)[-*+]\s+(?=\S)")
+
+
+def markdown_to_pango(text):
+    """Render the Markdown subset summaries are written in as Pango
+    markup: **bold**, *italic* / _italic_, `code`, `#` headings and
+    `-` / `*` bullets. Everything else is escaped literal text.
+
+    Escaping happens first, so a stray `<script>` in the source can
+    never become a tag; the markers we act on survive escaping
+    untouched. Output that Pango still rejects degrades to fully
+    escaped plain text — never a crash, never a stray tag."""
+    if not text:
+        return ""
+    out_lines = []
+    for line in GLib.markup_escape_text(text).split("\n"):
+        heading = _MD_HEADING_RE.match(line)
+        if heading:
+            out_lines.append("<b>{}</b>".format(heading.group(1)))
+            continue
+        # Bullets first: a leading "* " is a list marker, not the
+        # opening of an emphasis span.
+        line = _MD_BULLET_RE.sub(r"\1• ", line)
+        line = _MD_CODE_RE.sub(r"<tt>\1</tt>", line)
+        line = _MD_BOLD_RE.sub(r"<b>\1</b>", line)
+        line = _MD_ITALIC_RE.sub(r"<i>\1</i>", line)
+        out_lines.append(line)
+    result = "\n".join(out_lines)
+    if not _markup_parses(result):
+        return GLib.markup_escape_text(text)
+    return result

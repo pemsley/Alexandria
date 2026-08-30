@@ -35,8 +35,11 @@ def test_attribution_full():
 
 
 def test_attribution_degrades_when_fields_missing():
-    assert markup.summary_attribution({"text": "t"}) == "AI-generated"
-    assert markup.summary_attribution(None) == "AI-generated"
+    # "Unattributed", not "AI-generated": a summary with no model
+    # may be a hand-written one that lost its author field, and
+    # claiming a machine wrote it would be a guess.
+    assert markup.summary_attribution({"text": "t"}) == "Unattributed"
+    assert markup.summary_attribution(None) == "Unattributed"
 
 
 def test_refresh_preserves_summary(tmp_path, monkeypatch):

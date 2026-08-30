@@ -65,7 +65,8 @@ display_auto_keywords = False
 
 
 from .markup import (safe_pango_markup,  # noqa: E402,F401  (re-export)
-                     summary_attribution)
+                     markdown_to_pango, summary_attribution,
+                     summary_chip_label)
 
 
 def _wlog(tag, msg):
@@ -564,25 +565,92 @@ def _sidecar_summary(sidecar_path):
     return None
 
 
+_SUMMARY_SOURCE_PHRASE = {
+    "jats": "from the full text (JATS)",
+    "pdf": "from the PDF text",
+    "abstract": "from the abstract only",
+}
+
+
 def make_summary_chip(summary):
-    """Small purple 'AI' chip for a machine-written summary; the
-    text lives in the tooltip with its attribution line, clearly
-    marked so it cannot pass for the abstract."""
-    frame = Gtk.Frame()
-    frame.set_valign(Gtk.Align.CENTER)
+    """Button opening the paper's summary in a popover.
+
+    Framed and cursor-pointered rather than flat: a flat chip among
+    PRE / CC-BY / Gold OA reads as a label describing the paper, not
+    as something to click. The label says whether a machine or a
+    person wrote it — see markup.summary_chip_label."""
+    btn = Gtk.MenuButton()
+    btn.set_valign(Gtk.Align.CENTER)
+    label = summary_chip_label(summary)
+    is_ai = label == "AI summary"
     lbl = Gtk.Label()
     lbl.set_markup(
-        '<span foreground="#9141ac" weight="bold"><small>AI</small>'
-        '</span>')
-    lbl.set_margin_start(5)
-    lbl.set_margin_end(5)
-    lbl.set_margin_top(1)
-    lbl.set_margin_bottom(1)
-    lbl.set_tooltip_text("{}\n\n— {}".format(
-        summary["text"].strip(),
+        '<span foreground="{}" weight="bold"><small>{}</small>'
+        '</span>'.format("#9141ac" if is_ai else "#3584e4",
+                         GLib.markup_escape_text(label)))
+    btn.set_child(lbl)
+    btn.set_tooltip_text("{} — click to read".format(
         summary_attribution(summary)))
-    frame.set_child(lbl)
-    return frame
+    btn.set_cursor(Gdk.Cursor.new_from_name("pointer"))
+
+    pop = Gtk.Popover()
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    box.set_margin_start(12)
+    box.set_margin_end(12)
+    box.set_margin_top(10)
+    box.set_margin_bottom(10)
+
+    head = Gtk.Label(xalign=0.0)
+    tier = _SUMMARY_SOURCE_PHRASE.get(summary.get("source"))
+    head.set_markup(
+        "<b>{}</b>{}".format(
+            GLib.markup_escape_text(label),
+            "  <span size='small' alpha='65%'>{}</span>".format(
+                GLib.markup_escape_text(tier)) if tier else ""))
+    box.append(head)
+
+    body = Gtk.Label(xalign=0.0)
+    body.set_wrap(True)
+    body.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+    body.set_max_width_chars(78)
+    body.set_selectable(True)
+    # Summaries are written in Markdown; render the subset
+    # markdown_to_pango handles and leave the rest as literal text.
+    body.set_markup(markdown_to_pango(
+        (summary.get("text") or "").strip()))
+    scroll = Gtk.ScrolledWindow()
+    scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+    scroll.set_propagate_natural_height(True)
+    scroll.set_max_content_height(320)
+    # Wide enough for comfortable prose: a summary is paragraphs,
+    # not a tooltip, and a narrow column makes it feel cramped.
+    scroll.set_min_content_width(540)
+    scroll.set_child(body)
+    box.append(scroll)
+
+    foot_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+    foot = Gtk.Label(xalign=0.0)
+    foot.set_hexpand(True)
+    foot.set_wrap(True)
+    foot.set_max_width_chars(64)
+    foot.set_markup(
+        "<span size='small' alpha='70%'>— {}</span>".format(
+            GLib.markup_escape_text(summary_attribution(summary))))
+    foot_row.append(foot)
+    copy_btn = Gtk.Button(label="Copy")
+    copy_btn.add_css_class("flat")
+    copy_btn.set_valign(Gtk.Align.CENTER)
+    copy_btn.set_tooltip_text("Copy the summary text")
+    copy_btn.connect(
+        "clicked",
+        lambda b, t=(summary.get("text") or "").strip():
+            b.get_clipboard().set(t))
+    foot_row.append(copy_btn)
+    box.append(foot_row)
+
+    pop.set_child(box)
+    btn.set_popover(pop)
+    return btn
 
 
 def _pdf_comment_count(sidecar_path):

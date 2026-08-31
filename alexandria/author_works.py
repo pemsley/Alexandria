@@ -503,8 +503,11 @@ class AuthorPage(Gtk.Box):
 
         # Author photo — silhouette/initials disc until an image is
         # set. Click for fetch/choose/remove; also a drop target for
-        # files and browser-dragged images.
-        self.avatar = Adw.Avatar.new(72, name or None, True)
+        # files and browser-dragged images. Circular, which is
+        # Adw.Avatar's whole shape and the platform convention; the
+        # stored image is up to 512px on its long side
+        # (author_image.MAX_SIDE), so there is headroom to grow this.
+        self.avatar = Adw.Avatar.new(80, name or None, True)
         # Top-anchored, not centred: profile data arriving later
         # (wrapped institution, citing-impact line, the +N button)
         # can grow the header, and a centred avatar visibly slides

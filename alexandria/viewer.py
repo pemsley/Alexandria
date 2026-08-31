@@ -1179,8 +1179,16 @@ class PdfViewerWindow(Gtk.Window):
         # Idle-add so layout has scrolled before we anchor — popover
         # positioning uses current widget coordinates.
         if ref_n is not None:
+            # "How did *this* paper characterise the work it's citing?"
+            # — the sentence around the marker just clicked. Computed
+            # here, while we still know which rect was hit; the
+            # popover only knows the reference number, and a shared
+            # citation like "(6, 7)" would otherwise be ambiguous.
+            context = references_pdf.citation_context(
+                self.doc.get_page(page_idx), _rect)
             GLib.idle_add(
-                self._show_reference_popover, ref_n, target_page, target_top)
+                self._show_reference_popover, ref_n, target_page,
+                target_top, context)
         return True
 
     def _attach_link_motion_controller(self, da, page_idx):
@@ -1228,7 +1236,8 @@ class PdfViewerWindow(Gtk.Window):
             entries = []
         self._bibliography_by_n = {e["n"]: e for e in entries}
 
-    def _show_reference_popover(self, ref_n, target_page, target_top):
+    def _show_reference_popover(self, ref_n, target_page, target_top,
+                                context=None):
         """Toolbar-anchored popover for the citation the user just
         jumped to. Shows the parsed entry text immediately, kicks
         off OpenAlex resolution in a background thread, and once
@@ -1236,7 +1245,11 @@ class PdfViewerWindow(Gtk.Window):
 
         target_page / target_top are accepted for signature stability
         (they're how the click handler tells us which entry); the
-        popover itself anchors to `self.ref_btn` in the toolbar."""
+        popover itself anchors to `self.ref_btn` in the toolbar.
+
+        `context` is the sentence the citation appeared in, or None
+        when it couldn't be recovered — see
+        `references_pdf.citation_context`."""
         del target_page, target_top
         self._ensure_bibliography_parsed()
         entry = self._bibliography_by_n.get(ref_n) or {
@@ -1286,6 +1299,20 @@ class PdfViewerWindow(Gtk.Window):
         entry_lbl.set_selectable(True)
         entry_lbl.set_text(entry["text"])
         outer.append(entry_lbl)
+
+        # The citing sentence, above the network-dependent part: it
+        # comes from the page we're already looking at, so it should
+        # be readable immediately rather than after a lookup.
+        if context:
+            cited_as = Gtk.Label(xalign=0.0)
+            cited_as.set_wrap(True)
+            cited_as.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            cited_as.set_max_width_chars(58)
+            cited_as.set_selectable(True)
+            cited_as.set_markup(
+                "<small>Cited here as:</small>\n<i>“{}”</i>".format(
+                    GLib.markup_escape_text(context)))
+            outer.append(cited_as)
 
         status = Gtk.Label(xalign=0.0)
         status.set_wrap(True)

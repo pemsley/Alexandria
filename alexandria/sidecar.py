@@ -103,6 +103,12 @@ def new_record(pdf_path):
         # published version: {doi, title, journal, year, openalex_id,
         # checked}. None for non-preprints or when no match was found.
         "published_version": None,
+        # Supporting information: this file is a supplement to an
+        # article, not the article. {doi, title} of the parent —
+        # kept here rather than in `doi`, because an SI file that
+        # claims its parent's DOI then blocks the paper itself from
+        # importing as a duplicate. None for ordinary papers.
+        "si_of": None,
         # Metadata provenance, set by the importer's DOI-first
         # enrichment and rendered as a chip on the card:
         #   metadata_conflict: the DOI's record was taken but

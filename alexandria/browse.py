@@ -365,6 +365,28 @@ def make_preprint_badge():
     return frame
 
 
+def make_supplement_badge(si_of):
+    """An 'SI' chip for a supporting-information file, naming its
+    parent article. Sibling of the PRE badge."""
+    frame = Gtk.Frame()
+    frame.set_valign(Gtk.Align.CENTER)
+    lbl = Gtk.Label()
+    lbl.set_markup(
+        '<span foreground="#7a5aa0" weight="bold"><small>SI</small>'
+        '</span>')
+    lbl.set_margin_start(5)
+    lbl.set_margin_end(5)
+    lbl.set_margin_top(1)
+    lbl.set_margin_bottom(1)
+    parent = (si_of or {}).get("title") or (si_of or {}).get("doi")
+    lbl.set_tooltip_text(
+        "Supporting information for:\n{}".format(parent)
+        if parent else
+        "Supporting information (parent article not identified)")
+    frame.set_child(lbl)
+    return frame
+
+
 def _published_in_library(conn, doi):
     """Return the indexed row whose `doi` matches (case-insensitive),
     or None."""
@@ -1043,6 +1065,12 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None,
     for ft_chip in make_fulltext_chips(row["pdf_path"]):
         ft_chip.set_valign(Gtk.Align.START)
         title_row.append(ft_chip)
+    si_of = (card_record or {}).get("si_of")
+    if si_of:
+        si_badge = make_supplement_badge(si_of)
+        si_badge.set_valign(Gtk.Align.START)
+        title_row.append(si_badge)
+
     meta_chip = make_metadata_chip(
         card_record, parent_window,
         row["pdf_path"], row["sidecar_path"], on_saved)
@@ -1055,6 +1083,26 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None,
         s_chip.set_valign(Gtk.Align.START)
         title_row.append(s_chip)
     text.append(title_row)
+
+    # "Supplement to: <parent>" — a supporting-information file's
+    # own metadata says little, so name the article it belongs to
+    # and make it one click away.
+    if si_of and (si_of.get("title") or si_of.get("doi")):
+        parent_lbl = Gtk.Label(xalign=0.0)
+        parent_lbl.set_wrap(True)
+        parent_lbl.set_max_width_chars(70)
+        parent_lbl.set_markup(
+            "<span size='small' alpha='75%'>Supplement to:</span> "
+            "<a href='alex:si-parent'>{}</a>".format(
+                safe_pango_markup(
+                    si_of.get("title") or si_of.get("doi"))))
+        if parent_window is not None and si_of.get("doi"):
+            parent_lbl.connect(
+                "activate-link",
+                lambda _l, _u, d=si_of["doi"]: (
+                    parent_window._navigate_to_doi(d), True)[1])
+        parent_lbl.set_tooltip_text(si_of.get("doi") or "")
+        text.append(parent_lbl)
 
     # Authors row: clickable, opens a popover with the full list and
     # per-author actions. Styled as a "link" so the user sees it's

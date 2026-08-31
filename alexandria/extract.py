@@ -608,7 +608,8 @@ def _scrape_doi(text):
 # DOI, which must not be used to label the supplement as that paper
 # (see the BACKLOG item on SI handling).
 _SI_MARKER_RE = re.compile(
-    r"(_MOESM\d+_ESM|_si_\d+|\.sapp|[-_]suppl?(ementary)?[-_.])",
+    r"(_MOESM\d+_ESM|_si_\d+|\.sapp|sup\d+$"
+    r"|[-_]suppl?(ementary)?([-_.]|$))",
     re.IGNORECASE)
 
 # Elsevier PII: S + 4 + 4 + (2-digit year) + 5 + check char.
@@ -642,6 +643,59 @@ _FILENAME_DOI_RULES = (
     (re.compile(r"^(\d{4}\.\d{4,5})(?:v\d+)?$"),
      lambda m: "10.48550/arxiv." + m.group(1)),
 )
+
+
+# Supporting information: a supplement to an article, not the
+# article. Its PDF text usually carries the *parent's* DOI, so
+# without this it imports as that paper — and then occupies the DOI,
+# so the paper itself is refused as a duplicate (observed with
+# acs.jcim.4c02293 on 2026-08-30).
+_SI_TITLE_RE = re.compile(
+    r"^\s*(supplementary|supplemental|supporting)\s+"
+    r"(information|material|data|methods|figures?|tables?)\s*$",
+    re.IGNORECASE)
+
+
+def is_supplementary(path, title=None):
+    """Is this file supporting information rather than a paper?
+
+    Recognised from the publisher's filename conventions, and from
+    an extracted title that says so outright (Springer's SI files
+    extract as literally "Supplementary Information")."""
+    if title and _SI_TITLE_RE.match(title.strip()):
+        return True
+    if not path:
+        return False
+    stem = re.sub(r"\.pdf$", "", os.path.basename(str(path)),
+                  flags=re.IGNORECASE)
+    return bool(_SI_MARKER_RE.search(stem))
+
+
+# Springer/BMC/Nature SI filenames encode the parent article:
+# 13321_2020_429_MOESM2_ESM -> 10.1186/s13321-020-00429<check>.
+# The check character isn't in the name, so this yields a *prefix*
+# to match against, not a whole DOI.
+_MOESM_RE = re.compile(r"^(\d{4,5})_(\d{4})_(\d{1,6})_MOESM", re.I)
+_SAPP_RE = re.compile(r"^(pnas\.\d{7,})\.sapp$", re.I)
+
+
+def supplementary_parent_doi_prefix(path):
+    """The parent article's DOI (or a DOI prefix to match on) from a
+    supporting-information filename, or None when undecodable."""
+    if not path:
+        return None
+    stem = re.sub(r"\.pdf$", "", os.path.basename(str(path)),
+                  flags=re.IGNORECASE)
+    m = _SAPP_RE.match(stem)
+    if m:
+        return "10.1073/" + m.group(1).lower()
+    m = _MOESM_RE.match(stem)
+    if m:
+        journal, year, article = m.groups()
+        prefix = "10.1038/" if journal.startswith("4") else "10.1186/"
+        return "{}s{}-{}-{:05d}".format(
+            prefix, journal, year[1:], int(article))
+    return None
 
 
 def doi_from_filename(path):

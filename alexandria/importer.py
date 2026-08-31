@@ -202,6 +202,32 @@ def _record_is_a_paper(record):
     return bool(record and record.get("authors"))
 
 
+def _mark_as_supplement(conn, rec, pdf_path):
+    """Turn `rec` into a supplement record: move whatever DOI was
+    found into `si_of` (it is the parent's), and name the parent
+    from the library when it is there."""
+    parent_doi = rec.get("doi") or extract.supplementary_parent_doi_prefix(
+        pdf_path)
+    rec["doi"] = None
+    rec["si_of"] = {"doi": parent_doi, "title": None}
+    if not parent_doi:
+        return
+    try:
+        # Exclude this file: a supplement being repaired still has
+        # a row holding the parent's DOI — the very fault we are
+        # fixing — and would otherwise adopt its own wrong title.
+        row = conn.execute(
+            "SELECT doi, title FROM papers "
+            "WHERE (lower(doi) = ? OR lower(doi) LIKE ?) "
+            "AND pdf_path != ? LIMIT 1",
+            (parent_doi.lower(), parent_doi.lower() + "%",
+             pdf_path)).fetchone()
+    except Exception:
+        row = None
+    if row is not None:
+        rec["si_of"] = {"doi": row["doi"], "title": row["title"]}
+
+
 def _enrich_from_openalex(rec, pdf_path):
     """Fill `rec` from OpenAlex, choosing between the DOI the PDF
     claims and the one its download filename encodes.
@@ -655,6 +681,24 @@ def _import_pdf_locked(conn, pdf_path):
     with _extract_gate:
         rec = _build_record(pdf_path)
     rec["sha256"] = sha
+
+    # Supporting information is a supplement, not the paper. Its text
+    # carries the parent's DOI, so left alone it imports *as* that
+    # paper and then holds the DOI, refusing the paper itself as a
+    # duplicate. Handled before the DOI dedup below, or a supplement
+    # whose parent is already here would be swallowed by it.
+    if extract.is_supplementary(pdf_path, rec.get("title")):
+        _mark_as_supplement(conn, rec, pdf_path)
+        sidecar.write(sc_path, rec)
+        thumbnail.make_thumbnail(pdf_path, th_path,
+                                 title=rec.get("title"))
+        mtime = os.path.getmtime(sc_path)
+        index.upsert(conn, pdf_path, sc_path,
+                     th_path if os.path.isfile(th_path) else None,
+                     rec, mtime)
+        _schedule_pdb_indexing(conn, pdf_path)
+        return rec, "new"
+
     dup = index.find_duplicate(conn, doi=rec.get("doi"),
                                exclude_path=pdf_path)
     if dup:

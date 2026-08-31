@@ -20,10 +20,12 @@ Europe PMC needs no API key or registration.
 import datetime
 import json
 import os
+import re
 import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from xml.etree import ElementTree
 
 JATS_SUFFIX = ".jats.xml"
 
@@ -149,6 +151,141 @@ def should_attempt(record, pdf_path):
     # Never tried, previous transport error, or "stored" with the
     # file gone from disk (the isfile gate above) — all worth a try.
     return True
+
+
+def _local(tag):
+    """Strip any XML namespace from a tag name. Europe PMC serves
+    some articles with a default JATS namespace and some without."""
+    return tag.rsplit("}", 1)[-1]
+
+
+def _find(elem, name):
+    for child in elem.iter():
+        if _local(child.tag) == name:
+            return child
+    return None
+
+
+def _text_of(elem):
+    """All text under `elem`, tags dropped, whitespace tidied — the
+    JATS equivalent of what the reader sees."""
+    if elem is None:
+        return ""
+    return " ".join("".join(elem.itertext()).split())
+
+
+def _first_surname(ref):
+    for child in ref.iter():
+        if _local(child.tag) == "surname":
+            return _text_of(child) or None
+    return None
+
+
+def _year_of(ref):
+    for child in ref.iter():
+        if _local(child.tag) == "year":
+            txt = _text_of(child)
+            digits = "".join(c for c in txt if c.isdigit())[:4]
+            if len(digits) == 4:
+                return int(digits)
+    return None
+
+
+# Publishers put a reference's DOI in three different places:
+# <pub-id pub-id-type="doi"> (Springer/Nature), an
+# <ext-link ext-link-type="doi"> whose xlink:href holds it (BMC/PMC
+# — reading only <pub-id> lost every DOI on those papers), or
+# nowhere but the printed citation string.
+_DOI_IN_TEXT_RE = re.compile(
+    r"\b(10\.\d{4,9}/[^\s\"<>,;)\]]+)", re.IGNORECASE)
+_XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
+
+
+def _clean_doi(value):
+    if not value:
+        return None
+    doi = str(value).strip().rstrip(".,;")
+    return doi or None
+
+
+def _doi_of(ref):
+    for child in ref.iter():
+        tag = _local(child.tag)
+        if (tag == "pub-id"
+                and (child.get("pub-id-type") or "").lower() == "doi"):
+            got = _clean_doi(_text_of(child) or child.get(_XLINK_HREF))
+            if got:
+                return got
+        if (tag == "ext-link"
+                and (child.get("ext-link-type") or "").lower() == "doi"):
+            got = _clean_doi(child.get(_XLINK_HREF) or _text_of(child))
+            if got:
+                return got
+    m = _DOI_IN_TEXT_RE.search(_text_of(ref))
+    return _clean_doi(m.group(1)) if m else None
+
+
+def _tagged_text(ref, name):
+    for child in ref.iter():
+        if _local(child.tag) == name:
+            return _text_of(child) or None
+    return None
+
+
+def parse_ref_list(xml_path):
+    """Bibliography entries from a stored JATS file, in the shape the
+    viewer's reference popover consumes:
+    `{n, text, doi, surname, year, journal}`.
+
+    This is the point of storing JATS. Everything
+    `references_pdf.parse_bibliography` reconstructs from the PDF —
+    where the reference section starts, which line begins entry 7,
+    whether a number is a year or a page — the publisher marked up
+    and then threw away when rendering. Here the entries are
+    delimited, and the DOI is data rather than a search result.
+
+    Returns [] for a missing, unreadable or reference-less file:
+    callers fall back to parsing the PDF."""
+    try:
+        tree = ElementTree.parse(xml_path)
+    except Exception:
+        return []
+    root = tree.getroot()
+    out = []
+    for elem in root.iter():
+        if _local(elem.tag) != "ref":
+            continue
+        label = _tagged_text(elem, "label") or ""
+        digits = "".join(c for c in label if c.isdigit())
+        n = int(digits) if digits else len(out) + 1
+        # <mixed-citation> is the publisher's own rendering of the
+        # entry; prefer it over anything we reassemble.
+        mixed = None
+        for child in elem.iter():
+            if _local(child.tag) == "mixed-citation":
+                mixed = _text_of(child)
+                break
+        if mixed:
+            text = mixed
+        else:
+            bits = [b for b in (
+                _tagged_text(elem, "article-title"),
+                _tagged_text(elem, "source"),
+                str(_year_of(elem)) if _year_of(elem) else None)
+                if b]
+            surname = _first_surname(elem)
+            if surname:
+                bits.insert(0, surname)
+            text = ". ".join(bits)
+        out.append({
+            "n": n,
+            "text": text,
+            "doi": _doi_of(elem),
+            "surname": _first_surname(elem),
+            "year": _year_of(elem),
+            "journal": _tagged_text(elem, "source"),
+        })
+    return out
 
 
 def backfill(conn, on_progress=None, stop=None):

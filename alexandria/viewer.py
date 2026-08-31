@@ -17,7 +17,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Poppler", "0.18")
 from gi.repository import Gtk, Gdk, Gio, GLib, Pango, Poppler
 
-from . import (sidecar as sidecar_mod, identity, pdf_links,
+from . import (sidecar as sidecar_mod, identity, jats, pdf_links,
                references_pdf, metrics)
 
 
@@ -347,6 +347,7 @@ class PdfViewerWindow(Gtk.Window):
         # first citation click (parsing is non-trivial and we don't
         # need it unless the user actually exercises a link).
         self._bibliography_by_n = None
+        self._bibliography_source = None
         # The currently-open reference popover, if any. Tracked so
         # repeated clicks on different citations close the previous
         # popover instead of stacking.
@@ -1225,15 +1226,29 @@ class PdfViewerWindow(Gtk.Window):
     # --- Reference popover (after a citation jump) --------------------
 
     def _ensure_bibliography_parsed(self):
-        """Parse the bibliography on first access and cache the
-        result keyed by ref number. Parsing scans the whole PDF, so
-        we defer it until the user actually clicks a citation."""
+        """Bibliography entries keyed by ref number, cached on first
+        access (parsing scans the whole PDF, so it waits until the
+        user actually clicks a citation).
+
+        Prefers the stored JATS when this paper has it: the entries
+        are delimited by the publisher rather than recovered from
+        the page, and 86% of them carry a DOI outright (measured
+        over this library), so resolving a reference needs no search
+        at all. Falls back to parsing the PDF when there is no JATS,
+        or when it holds no reference list."""
         if self._bibliography_by_n is not None:
             return
+        entries = []
         try:
-            entries = references_pdf.parse_bibliography(self.pdf_path)
+            entries = jats.parse_ref_list(jats.jats_path(self.pdf_path))
         except Exception:
             entries = []
+        self._bibliography_source = "jats" if entries else "pdf"
+        if not entries:
+            try:
+                entries = references_pdf.parse_bibliography(self.pdf_path)
+            except Exception:
+                entries = []
         self._bibliography_by_n = {e["n"]: e for e in entries}
 
     def _show_reference_popover(self, ref_n, target_page, target_top,

@@ -12,6 +12,7 @@ import re
 import threading
 import uuid
 
+import cairo
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Poppler", "0.18")
@@ -25,6 +26,86 @@ _ZOOM_STEP = 1.25
 _ZOOM_MIN = 0.25
 _ZOOM_MAX = 8.0
 _PAGE_SPACING = 8     # pixels between pages in continuous scroll
+
+# How far beyond the viewport a page is still worth rendering, so that
+# a small scroll lands on paper rather than on blank.
+_RENDER_MARGIN_PX = 900
+
+# Rendered pages kept in memory. An A4 page at 100% is about 2 MB of
+# ARGB32 and more at higher zoom, so this cannot be unbounded on a
+# long paper.
+_PAGE_CACHE_MAX = 8
+
+
+def page_is_near(page_top, page_height, view_top, view_height, margin):
+    """Is this page close enough to the viewport to be worth drawing?
+
+    All arguments are in document pixels at the current zoom. Pages
+    that fail this are not rendered at all: on a forty-page paper
+    that is the difference between a window in a second and a window
+    in twenty."""
+    lo = view_top - margin
+    hi = view_top + view_height + margin
+    return page_top < hi and page_top + page_height > lo
+
+
+def next_page_to_render(pending, current_page):
+    """Of the pages waiting to be rendered, the one to do next: the
+    nearest to the page being read, so a jump to page 24 does not sit
+    behind the four pages queued before it. Ties go to the earlier
+    page. None if nothing is waiting."""
+    if not pending:
+        return None
+    return min(pending, key=lambda i: (abs(i - current_page), i))
+
+
+def pages_to_keep(cached, current_page, limit):
+    """Which of `cached` to hold on to — the `limit` pages nearest the
+    one being read, so scrolling back a page or two is instant."""
+    if len(cached) <= limit:
+        return set(cached)
+    ordered = sorted(cached, key=lambda i: (abs(i - current_page), i))
+    return set(ordered[:limit])
+
+
+def open_document(pdf_path):
+    """A Poppler document handle, or None if the file cannot be read.
+
+    Each caller gets its own: Poppler documents are not safe to use
+    from two threads at once, so the render thread opens the file
+    itself rather than borrowing the window's handle."""
+    try:
+        return Poppler.Document.new_from_gfile(
+            Gio.File.new_for_path(pdf_path), None, None)
+    except Exception:
+        return None
+
+
+def render_page_surface(doc, page_idx, zoom):
+    """Render one page to an image surface at `zoom`, on white.
+
+    GTK-free and slow, so it runs on the render thread. Returns None
+    rather than raising, because a page that will not render should
+    stay blank, not take the window down."""
+    if doc is None:
+        return None
+    try:
+        if page_idx < 0 or page_idx >= doc.get_n_pages():
+            return None
+        page = doc.get_page(page_idx)
+        pw_pt, ph_pt = page.get_size()
+        width = max(1, int(pw_pt * zoom))
+        height = max(1, int(ph_pt * zoom))
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+        cr = cairo.Context(surf)
+        cr.set_source_rgb(1, 1, 1)
+        cr.paint()
+        cr.scale(zoom, zoom)
+        page.render(cr)
+        surf.flush()
+        return surf
+    except Exception:
+        return None
 
 
 _HIGHLIGHT_FILL = (1.0, 0.95, 0.0, 0.35)   # yellow, translucent
@@ -337,6 +418,22 @@ class PdfViewerWindow(Gtk.Window):
         # Cumulative y-offset of each page's top edge in the stacked layout.
         self.page_y = [0] * self.n_pages
         self.page_h = [0] * self.n_pages
+
+        # Rendered pages, and the thread that renders them. Drawing a
+        # page inline used to render every page in the document before
+        # the window could appear — 20 s for a forty-page paper of
+        # micrographs, against a flat 0.5 s for GNOME Papers on the
+        # same file (measured 2026-08-31). Now a page renders off the
+        # main thread and only when it is near the viewport; until it
+        # arrives the page shows blank, and once rendered it is kept.
+        self._page_cache = {}          # page_idx -> (zoom, surface)
+        self._pending = {}             # page_idx -> zoom it was asked for
+        self._pending_ev = threading.Event()
+        self._render_lock = threading.Lock()
+        self._render_stop = threading.Event()
+        threading.Thread(target=self._render_worker, args=(pdf_path,),
+                         daemon=True).start()
+        self.connect("close-request", self._stop_rendering)
         # Find-in-page state: list of (page_idx, Poppler.Rectangle); index into it.
         self.find_results = []
         self.find_idx = -1
@@ -583,14 +680,97 @@ class PdfViewerWindow(Gtk.Window):
         self.page_total_lbl.set_text(" / {}".format(self.n_pages))
         self.zoom_lbl.set_text(" {:.0f}%".format(self.zoom * 100))
 
+    # --- Page rendering -----------------------------------------------
+
+    def _render_worker(self, pdf_path):
+        """Render requested pages, one at a time, off the main thread.
+
+        One thread, not one per page: a fleet of render threads would
+        contend for the interpreter and for poppler exactly as the
+        PDB indexer's did. It opens its own document handle, because
+        two threads must not use one Poppler document."""
+        doc = open_document(pdf_path)
+        while not self._render_stop.is_set():
+            if not self._pending_ev.wait(0.5):
+                continue
+            with self._render_lock:
+                page_idx = next_page_to_render(self._pending,
+                                               self.current_page)
+                if page_idx is None:
+                    self._pending_ev.clear()
+                    continue
+                zoom = self._pending.pop(page_idx)
+                if not self._pending:
+                    self._pending_ev.clear()
+            if abs(zoom - self.zoom) > 1e-6:
+                # The reader zoomed while this waited. Redraw rather
+                # than drop it: the draw is what asks for a render, so
+                # a silently discarded job leaves the page blank for
+                # good.
+                GLib.idle_add(self._redraw_page, page_idx)
+                continue
+            surf = render_page_surface(doc, page_idx, zoom)
+            GLib.idle_add(self._page_rendered, page_idx, zoom, surf)
+
+    def _stop_rendering(self, *_a):
+        self._render_stop.set()
+        self._pending_ev.set()
+        return False
+
+    def _redraw_page(self, page_idx):
+        if 0 <= page_idx < len(self.page_widgets):
+            self.page_widgets[page_idx].queue_draw()
+        return False
+
+    def _page_rendered(self, page_idx, zoom, surf):
+        if surf is None or abs(zoom - self.zoom) > 1e-6:
+            return self._redraw_page(page_idx)
+        self._page_cache[page_idx] = (zoom, surf)
+        keep = pages_to_keep(set(self._page_cache), self.current_page,
+                             _PAGE_CACHE_MAX)
+        for stale in set(self._page_cache) - keep:
+            del self._page_cache[stale]
+        return self._redraw_page(page_idx)
+
+    def _request_render(self, page_idx):
+        with self._render_lock:
+            if abs(self._pending.get(page_idx, -1) - self.zoom) < 1e-6:
+                return                      # already waiting, same zoom
+            self._pending[page_idx] = self.zoom
+        self._pending_ev.set()
+
+    def _cached_surface(self, page_idx):
+        got = self._page_cache.get(page_idx)
+        if got is None:
+            return None
+        zoom, surf = got
+        return surf if abs(zoom - self.zoom) < 1e-6 else None
+
+    def _page_near_viewport(self, page_idx):
+        adj = self.scrolled.get_vadjustment()
+        return page_is_near(self.page_y[page_idx], self.page_h[page_idx],
+                            adj.get_value(), adj.get_page_size(),
+                            _RENDER_MARGIN_PX)
+
     def _draw_one_page(self, _area, cr, _w, _h, page_idx):
         page = self.doc.get_page(page_idx)
         pw, ph = page.get_size()
-        cr.scale(self.zoom, self.zoom)
+
+        # The sheet of paper, always — a page whose render has not
+        # arrived shows blank rather than showing through.
+        cr.save()
         cr.set_source_rgb(1, 1, 1)
-        cr.rectangle(0, 0, pw, ph)
+        cr.rectangle(0, 0, pw * self.zoom, ph * self.zoom)
         cr.fill()
-        page.render(cr)
+        surf = self._cached_surface(page_idx)
+        if surf is not None:
+            cr.set_source_surface(surf, 0, 0)
+            cr.paint()
+        elif self._page_near_viewport(page_idx):
+            self._request_render(page_idx)
+        cr.restore()
+
+        cr.scale(self.zoom, self.zoom)
 
         # Saved highlights (annotation layer). Stored quads are in PDF
         # points with y-down-from-top, so they render directly under
@@ -690,6 +870,17 @@ class PdfViewerWindow(Gtk.Window):
         if new_page != self.current_page:
             self.current_page = new_page
             self._update_page_indicator()
+        self._draw_pages_coming_into_view()
+
+    def _draw_pages_coming_into_view(self):
+        """Ask GTK to redraw pages that have scrolled close enough to
+        be worth rendering. Scrolling only translates render nodes it
+        already has, so without this a page that was culled when it
+        was off-screen would stay blank for ever."""
+        for i in range(self.n_pages):
+            if (self._cached_surface(i) is None
+                    and self._page_near_viewport(i)):
+                self.page_widgets[i].queue_draw()
 
     def _page_for_y(self, y):
         # Linear scan; n_pages is typically tens, so this is fine.
@@ -722,6 +913,8 @@ class PdfViewerWindow(Gtk.Window):
                 / max(1.0, self.page_h[anchor_page]))
 
         self.zoom = z
+        # Every cached surface was rendered for the old zoom.
+        self._page_cache.clear()
         self._refresh_sizes()
 
         new_y = (self.page_y[anchor_page]

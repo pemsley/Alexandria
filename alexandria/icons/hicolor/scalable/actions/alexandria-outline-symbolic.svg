@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Table of contents: a heading, its sub-entries indented, a
+     second heading. Drawn for Alexandria; same licence as the
+     application. -->
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="16px" height="16px" viewBox="0 0 16 16">
+  <g style="fill:#2e3436;fill-opacity:1">
+    <rect x="1" y="1.5"  width="14" height="2" rx="0.6"/>
+    <rect x="5" y="5.5"  width="10" height="2" rx="0.6"/>
+    <rect x="5" y="9.5"  width="10" height="2" rx="0.6"/>
+    <rect x="1" y="13.5" width="14" height="2" rx="0.6"/>
+  </g>
+</svg>

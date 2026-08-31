@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A highlighter drawn over a stroke of colour. Drawn for
+     Alexandria; same licence as the application. -->
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="16px" height="16px" viewBox="0 0 16 16">
+  <g style="fill:#2e3436;fill-opacity:1">
+    <!-- barrel, running from lower-left to upper-right -->
+    <path d="M 10.6 1.2 L 14.8 5.4 L 7.9 12.3 L 3.7 8.1 Z
+             M 10.6 3.3 L 5.8 8.1 L 7.9 10.2 L 12.7 5.4 Z"/>
+    <!-- chisel tip -->
+    <path d="M 3.0 8.8 L 7.2 13.0 L 4.6 14.4 L 1.6 11.4 Z"/>
+    <!-- the stroke it leaves -->
+    <rect x="8.4" y="13" width="6.6" height="2" rx="0.9"/>
+  </g>
+</svg>

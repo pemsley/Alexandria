@@ -15,8 +15,9 @@ import uuid
 import cairo
 import gi
 gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
 gi.require_version("Poppler", "0.18")
-from gi.repository import Gtk, Gdk, Gio, GLib, Pango, Poppler
+from gi.repository import Adw, Gtk, Gdk, Gio, GLib, Pango, Poppler
 
 from . import (sidecar as sidecar_mod, identity, jats, pdf_links,
                references_pdf, metrics)
@@ -47,6 +48,163 @@ def page_is_near(page_top, page_height, view_top, view_height, margin):
     lo = view_top - margin
     hi = view_top + view_height + margin
     return page_top < hi and page_top + page_height > lo
+
+
+def _scroller(child):
+    """A sidebar list in a vertically-scrolling frame."""
+    sw = Gtk.ScrolledWindow()
+    sw.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+    sw.set_vexpand(True)
+    sw.set_child(child)
+    return sw
+
+
+def initial_sidebar_mode(has_outline, has_highlights):
+    """Which mode to open on. Contents is the more useful of the two
+    and so wins, but opening on an empty list to tell the reader
+    there is nothing there is a poor greeting — so fall through to
+    highlights when this PDF carries no table of contents."""
+    if has_outline:
+        return "outline"
+    return "highlights" if has_highlights else "outline"
+
+
+_BUNDLED_ICONS_ADDED = False
+
+
+def ensure_bundled_icons():
+    """Put our own symbolic icons on the icon theme's search path.
+
+    The glyphs a document sidebar wants — a table of contents, a
+    highlighter — are not in the system theme; GNOME Papers ships its
+    own for the same reason. Ours travel inside the package, so they
+    work from a source tree as well as from an installed copy. Safe
+    to call repeatedly."""
+    global _BUNDLED_ICONS_ADDED
+    if _BUNDLED_ICONS_ADDED:
+        return
+    try:
+        theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
+        theme.add_search_path(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "icons"))
+        _BUNDLED_ICONS_ADDED = True
+    except Exception:
+        pass
+
+
+def _theme_has_icon(name):
+    """Whether the running icon theme actually has `name`. An icon it
+    does not have renders as a broken-image square, so a mode button
+    is better off falling back to its title."""
+    try:
+        theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
+        return bool(theme.has_icon(name))
+    except Exception:
+        return False
+
+
+def _add_mode(stack, child, name, title, icon):
+    """Add one sidebar mode. `add_titled_with_icon` only arrived in a
+    later GTK than we target, so the icon goes on the page object —
+    and only if the theme has it, otherwise the switcher shows the
+    title instead of a broken square."""
+    stack.add_titled(child, name, title)
+    page = stack.get_page(child)
+    if page is not None and _theme_has_icon(icon):
+        page.set_property("icon-name", icon)
+
+
+def _sidebar_placeholder(text):
+    lbl = Gtk.Label(label=text)
+    lbl.add_css_class("dim-label")
+    lbl.set_wrap(True)
+    lbl.set_margin_top(18)
+    lbl.set_margin_bottom(18)
+    lbl.set_margin_start(12)
+    lbl.set_margin_end(12)
+    return lbl
+
+
+def _highlight_order(h):
+    """Reading order: down the page, then across. Highlights are
+    stored in the order they were made, which is not how anyone wants
+    to see them listed."""
+    quads = h.get("quads") or []
+    tops = [q[1] for q in quads if len(q) >= 4]
+    return (h.get("page", 0), min(tops) if tops else 0.0)
+
+
+def dest_page_index(page_num, n_pages):
+    """Poppler destinations count pages from 1; page_widgets counts
+    from 0. Returns None for anything outside the document, so a
+    malformed outline cannot ask the viewer to scroll off the end."""
+    if not page_num:
+        return None
+    page = page_num - 1
+    return page if 0 <= page < n_pages else None
+
+
+def outline_entries(doc):
+    """The PDF's own table of contents, flattened into document order:
+    `[{title, page, depth}, ...]`, where `page` is a zero-based page
+    index or None for an entry that points nowhere.
+
+    Publishers put this in the file and we were ignoring it. Poppler
+    has one sharp edge here: for a document with no outline
+    `IndexIter.new` raises rather than returning None."""
+    if doc is None:
+        return []
+    try:
+        it = Poppler.IndexIter.new(doc)
+    except Exception:
+        return []
+    if it is None:
+        return []
+    n_pages = doc.get_n_pages()
+    out = []
+
+    def page_of(action):
+        try:
+            dest = action.goto_dest.dest
+            if dest is None:
+                return None
+            if dest.type == Poppler.DestType.NAMED:
+                dest = doc.find_dest(dest.named_dest)
+                if dest is None:
+                    return None
+        except Exception:
+            return None
+        return dest_page_index(dest.page_num, n_pages)
+
+    def walk(iter_, depth):
+        while True:
+            try:
+                action = iter_.get_action()
+            except Exception:
+                action = None
+            if action is not None:
+                title = getattr(action.any, "title", None)
+                page = (page_of(action)
+                        if action.type == Poppler.ActionType.GOTO_DEST
+                        else None)
+                if title:
+                    out.append({"title": title, "page": page,
+                                "depth": depth})
+            try:
+                child = iter_.get_child()
+            except Exception:
+                child = None
+            if child is not None:
+                walk(child, depth + 1)
+            if not iter_.next():
+                break
+
+    try:
+        walk(it, 0)
+    except Exception:
+        pass
+    return out
 
 
 def next_page_to_render(pending, current_page):
@@ -444,7 +602,6 @@ class PdfViewerWindow(Gtk.Window):
         # for visual feedback only.
         self.highlights = []
         self._drag_state = {}      # page_idx -> dict(start_x, start_y, cur_x, cur_y)
-        self._highlights_popover = None
         self._load_highlights()
 
         # Citation/cross-reference links, so a click on `[1]` in the
@@ -536,14 +693,12 @@ class PdfViewerWindow(Gtk.Window):
         self.find_count_lbl = Gtk.Label()
 
         sep3 = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
-        # Highlights-sidebar toggle. Only meaningful when a sidecar is
-        # available (otherwise we can't load highlights).
+        # Sidebar toggle: contents and highlights, both being "places
+        # in this document".
         self.sidebar_toggle = Gtk.ToggleButton()
-        self.sidebar_toggle.set_icon_name("view-list-symbolic")
-        self.sidebar_toggle.set_tooltip_text("Show highlights")
+        self.sidebar_toggle.set_icon_name("sidebar-show-symbolic")
+        self.sidebar_toggle.set_tooltip_text("Show sidebar (F9)")
         self.sidebar_toggle.connect("toggled", self._on_sidebar_toggled)
-        if not self.sidecar_path:
-            self.sidebar_toggle.set_sensitive(False)
 
         # Reference popover button. Hidden until the user clicks an
         # in-text citation; from then on it shows "Reference [N]" and
@@ -606,7 +761,18 @@ class PdfViewerWindow(Gtk.Window):
         self.scrolled.set_policy(Gtk.PolicyType.AUTOMATIC,
                                  Gtk.PolicyType.AUTOMATIC)
         self.scrolled.set_child(self.pages_box)
-        outer.append(self.scrolled)
+
+        # Sidebar over the pages rather than beside them: it is
+        # occasional furniture, and the reader should get the width
+        # back when it is closed.
+        self.split = Adw.OverlaySplitView()
+        self.split.set_sidebar(self._build_sidebar())
+        self.split.set_content(self.scrolled)
+        self.split.set_show_sidebar(False)
+        self.split.set_sidebar_width_fraction(0.30)
+        self.split.set_max_sidebar_width(360)
+        self.split.set_vexpand(True)
+        outer.append(self.split)
         self.set_child(outer)
 
         # --- Wire up actions ---
@@ -643,6 +809,7 @@ class PdfViewerWindow(Gtk.Window):
             ("<Control>minus", lambda *_: self._set_zoom(self.zoom / _ZOOM_STEP)),
             ("<Control>0",     lambda *_: self._set_zoom(1.0)),
             ("<Control>f",     lambda *_: self._focus_find()),
+            ("F9",             lambda *_: self._toggle_sidebar()),
             ("F3",             lambda *_: self._find_step(+1)),
             ("<Shift>F3",      lambda *_: self._find_step(-1)),
             ("Escape",         lambda *_: self._clear_find()),
@@ -941,59 +1108,119 @@ class PdfViewerWindow(Gtk.Window):
 
     # --- Highlights index ----------------------------------------------
 
-    def _on_sidebar_toggled(self, btn):
-        """Show or hide a popover listing all highlights for this PDF."""
-        if not btn.get_active():
-            if self._highlights_popover is not None:
-                self._highlights_popover.popdown()
+    # --- Sidebar ------------------------------------------------------
+
+    def _build_sidebar(self):
+        """Contents and highlights, in one sidebar with a mode
+        switcher along the bottom — both answer "where is that bit of
+        this paper?", so they belong in one place rather than in a
+        sidebar and a popover that cannot be open at once."""
+        ensure_bundled_icons()
+        self.sidebar_stack = Gtk.Stack()
+        self.sidebar_stack.set_vexpand(True)
+        self.sidebar_stack.set_transition_type(
+            Gtk.StackTransitionType.CROSSFADE)
+
+        self.outline_list = Gtk.ListBox()
+        self.outline_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.outline_list.add_css_class("navigation-sidebar")
+        _add_mode(self.sidebar_stack, _scroller(self.outline_list),
+                  "outline", "Contents", "alexandria-outline-symbolic")
+
+        self.highlight_list = Gtk.ListBox()
+        self.highlight_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.highlight_list.add_css_class("navigation-sidebar")
+        _add_mode(self.sidebar_stack, _scroller(self.highlight_list),
+                  "highlights", "Highlights",
+                  "alexandria-highlighter-symbolic")
+
+        switcher = Gtk.StackSwitcher()
+        switcher.set_stack(self.sidebar_stack)
+        switcher.set_halign(Gtk.Align.CENTER)
+        switcher.set_margin_top(6)
+        switcher.set_margin_bottom(6)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(self.sidebar_stack)
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        box.append(switcher)
+
+        n_outline = self._fill_outline()
+        self.refresh_sidebar_highlights()
+        self.sidebar_stack.set_visible_child_name(
+            initial_sidebar_mode(bool(n_outline), bool(self.highlights)))
+        return box
+
+    def _fill_outline(self):
+        entries = outline_entries(self.doc)
+        if not entries:
+            self.outline_list.append(_sidebar_placeholder(
+                "This PDF has no table of contents"))
+            return 0
+        for e in entries:
+            self.outline_list.append(self._build_outline_row(e))
+        return len(entries)
+
+    def _build_outline_row(self, entry):
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        row.set_margin_top(6)
+        row.set_margin_bottom(6)
+        row.set_margin_end(6)
+        # Nesting shown by indent. Capped so a deeply nested outline
+        # does not squeeze its own titles into a column of one word.
+        row.set_margin_start(6 + 12 * min(entry["depth"], 4))
+
+        title = Gtk.Label(label=entry["title"])
+        title.set_xalign(0.0)
+        title.set_wrap(True)
+        title.set_hexpand(True)
+        if entry["depth"] == 0:
+            title.add_css_class("heading")
+        row.append(title)
+
+        page = entry["page"]
+        if page is not None:
+            num = Gtk.Label(label=str(page + 1))
+            num.add_css_class("dim-label")
+            num.add_css_class("numeric")
+            num.set_valign(Gtk.Align.START)
+            row.append(num)
+
+            click = Gtk.GestureClick()
+            click.connect("released",
+                          lambda *_a, p=page: self._goto(p + 1))
+            row.add_controller(click)
+            row.set_cursor(Gdk.Cursor.new_from_name("pointer", None))
+        return row
+
+    def refresh_sidebar_highlights(self):
+        """Rebuild the highlights mode. Called whenever a highlight is
+        added, edited or deleted, so the list cannot go stale behind
+        an open sidebar."""
+        if getattr(self, "highlight_list", None) is None:
             return
-
-        pop = Gtk.Popover()
-        pop.set_parent(btn)
-        pop.set_has_arrow(True)
-
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        outer.set_margin_start(10)
-        outer.set_margin_end(10)
-        outer.set_margin_top(10)
-        outer.set_margin_bottom(10)
-
-        header = Gtk.Label()
-        header.set_markup("<b>Highlights</b>  <small>({})</small>".format(
-            len(self.highlights)))
-        header.set_halign(Gtk.Align.START)
-        outer.append(header)
-
+        while True:
+            child = self.highlight_list.get_first_child()
+            if child is None:
+                break
+            self.highlight_list.remove(child)
         if not self.highlights:
-            empty = Gtk.Label(label="(no highlights yet)")
-            empty.set_halign(Gtk.Align.START)
-            empty.add_css_class("dim-label")
-            outer.append(empty)
-        else:
-            scrolled = Gtk.ScrolledWindow()
-            scrolled.set_min_content_width(380)
-            scrolled.set_min_content_height(min(420, 40 + 50 * len(self.highlights)))
-            scrolled.set_policy(Gtk.PolicyType.NEVER,
-                                Gtk.PolicyType.AUTOMATIC)
-            list_box = Gtk.ListBox()
-            list_box.set_selection_mode(Gtk.SelectionMode.NONE)
-            for h in self.highlights:
-                list_box.append(self._build_highlight_row(h, pop))
-            scrolled.set_child(list_box)
-            outer.append(scrolled)
+            self.highlight_list.append(_sidebar_placeholder(
+                "No highlights yet"
+                if self.sidecar_path else
+                "Highlights need a sidecar for this paper"))
+            return
+        for h in sorted(self.highlights, key=_highlight_order):
+            self.highlight_list.append(self._build_highlight_row(h))
 
-        pop.set_child(outer)
-        pop.connect("closed", self._on_highlights_popover_closed)
-        self._highlights_popover = pop
-        pop.popup()
+    def _on_sidebar_toggled(self, btn):
+        self.split.set_show_sidebar(btn.get_active())
 
-    def _on_highlights_popover_closed(self, _pop):
-        self._highlights_popover = None
-        # Sync the toggle so it un-presses when the user clicks outside.
-        if self.sidebar_toggle.get_active():
-            self.sidebar_toggle.set_active(False)
+    def _toggle_sidebar(self):
+        self.sidebar_toggle.set_active(
+            not self.sidebar_toggle.get_active())
 
-    def _build_highlight_row(self, h, pop):
+    def _build_highlight_row(self, h):
         page = h.get("page", 0)
         text = h.get("text") or ""
         comment = h.get("comment") or ""
@@ -1031,11 +1258,11 @@ class PdfViewerWindow(Gtk.Window):
         goto_btn.add_css_class("flat")
         goto_btn.connect(
             "clicked",
-            lambda _b, hh=h: self._scroll_to_highlight(hh, pop))
+            lambda _b, hh=h: self._scroll_to_highlight(hh))
         row.append(goto_btn)
         return row
 
-    def _scroll_to_highlight(self, h, pop=None):
+    def _scroll_to_highlight(self, h):
         page = h.get("page", 0)
         if page < 0 or page >= self.n_pages:
             return
@@ -1051,8 +1278,6 @@ class PdfViewerWindow(Gtk.Window):
         GLib.idle_add(lambda: (adj.set_value(new_y), False)[1])
         self.current_page = page
         self._update_page_indicator()
-        if pop is not None:
-            pop.popdown()
 
     # --- Find in PDF ---------------------------------------------------
 
@@ -1189,6 +1414,7 @@ class PdfViewerWindow(Gtk.Window):
         self.highlights = list(rec.get("highlights") or [])
 
     def _save_highlights(self):
+        self.refresh_sidebar_highlights()
         if not self.sidecar_path:
             return
         try:

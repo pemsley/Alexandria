@@ -60,4 +60,6 @@ exclude = ["tests*"]
 # github.com/citation-style-language/styles) so they're available
 # from `pip install .` and from the Flatpak build.
 [tool.setuptools.package-data]
-alexandria = ["styles/*.csl"]
+# The CSL styles, and our own symbolic icons for the viewer sidebar
+# (the system theme has no table-of-contents or highlighter glyph).
+alexandria = ["styles/*.csl", "icons/hicolor/scalable/actions/*.svg"]

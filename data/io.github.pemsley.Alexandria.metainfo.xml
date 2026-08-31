@@ -22,6 +22,8 @@
       <li>Built-in PDF viewer with highlight and comment annotations,
         and click-through citation links that jump to the reference
         and back again</li>
+      <li>A viewer sidebar with the paper's table of contents, page
+        thumbnails and your highlights</li>
       <li>Structured full text (JATS XML) fetched from Europe PMC and
         stored beside the PDF, giving exact reference lists</li>
       <li>Authors window: a persistent trail of the authors you follow,
@@ -73,6 +75,13 @@
             search</li>
           <li>The viewer shows the sentence a citation was made in,
             and can navigate back after a citation jump</li>
+          <li>A viewer sidebar with three modes: the paper's own
+            table of contents, page thumbnails, and your
+            highlights</li>
+          <li>Opening a paper no longer renders the whole paper
+            first — a forty-page paper of micrographs took twenty
+            seconds, and now takes under a second, whatever its
+            length</li>
           <li>Metadata is DOI-first: a resolved DOI supplies the
             record, and any disagreement with the PDF is flagged on
             the card rather than silently applied</li>

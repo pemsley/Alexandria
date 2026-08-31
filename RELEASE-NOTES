@@ -24,6 +24,14 @@
             Protein Science among them — where there is nothing on
             the page to recognise
 
+ o FEATURE: Viewer: a sidebar (F9) with three modes. Contents is the
+            paper's own table of contents, read from the PDF, with
+            the page each section starts on; Pages is a column of
+            thumbnails, which is how you find a figure you remember
+            the look of rather than the name of; Highlights is the
+            list of your own, in reading order. It opens on
+            thumbnails for the many papers that carry no contents
+
  o FEATURE: DOI-first metadata: a DOI that resolves supplies the
             record even when the PDF's own text disagrees. The
             disagreement is flagged on the card ("Check metadata")
@@ -64,6 +72,15 @@
 
  o CHANGE:  Feed cards render publisher markup (italics, super- and
             subscripts, small caps) instead of showing the tags
+
+ o BUG-FIX: Opening a paper no longer renders the whole paper first.
+            Every page was drawn before the window could appear, so
+            the wait grew with the document: a forty-page paper of
+            micrographs took twenty seconds. Pages are now rendered
+            off the main thread, and only near where you are
+            reading. Opening is flat at about two thirds of a second
+            whatever the paper, and pages already seen are kept, so
+            scrolling back is immediate
 
  o BUG-FIX: Bulk import no longer freezes the window. Importing a
             folder of 185 PDFs went from multi-minute stalls — the

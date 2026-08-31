@@ -60,6 +60,17 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.4.1" date="2026-08-31">
+      <url type="details">https://github.com/pemsley/Alexandria/blob/main/RELEASE-NOTES</url>
+      <description>
+        <p>
+          A packaging fix. The AppStream metainfo file shipped with
+          0.4.0 was malformed and listed one of its releases twice,
+          so software centres could not read it. No change to the
+          application itself.
+        </p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-08-31">
       <url type="details">https://github.com/pemsley/Alexandria/blob/main/RELEASE-NOTES</url>
       <description>

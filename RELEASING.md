@@ -37,5 +37,13 @@ Then:
   eunos-1128) pins a tag/commit, update it to the new tag.
 
 Quick audit before tagging:
-`grep -rn "X\.Y\.Zold" alexandria/__init__.py pyproject.toml data/ make-app.sh`
-should return nothing.
+
+    grep -rn "X\.Y\.Zold" alexandria/__init__.py pyproject.toml make-app.sh
+
+should return nothing. **Not `data/`** — the metainfo keeps an entry
+for every past release, so the old version legitimately appears there
+and including it makes the audit cry wolf every time (it would have
+fired on the 0.3.0 entry during the 0.4.0 bump, and on 0.4.0 during
+0.4.1). Audit that file with `appstreamcli validate` instead, as
+step 3 says: it catches a duplicated version, a missing entry and a
+mistyped tag, which grep cannot.

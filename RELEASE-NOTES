@@ -1,4 +1,15 @@
 
+  Release Notes for 0.4.1
+
+ o BUG-FIX: The AppStream metainfo file shipped with 0.4.0 was
+            malformed — an unterminated closing tag — and listed
+            0.2.0 a second time as 0.4.0, losing the
+            first-public-release history. Software centres could
+            not read it and a Flathub build would have failed on
+            it. No change to the application itself
+
+-----
+
   Release Notes for 0.4.0
 
  o FEATURE: Structured full text: where a paper is open access, its

@@ -30,7 +30,46 @@ Pending features, roughly grouped. Newest at the top of each section.
 
 ## Import / ingestion
 
-- "Drag and drop" papers/references/cards into claude.
+- **Telling Claude which paper you mean.** ("Drag and drop"
+  papers/references/cards into claude.) Designed 2026-08-31: in the
+  embedded terminal there is no way to point at a paper, so you
+  type a title fragment and hope `search_library` disambiguates —
+  wordy, and worse when a sentence names two papers ("compare X
+  with Y"). Three approaches, not exclusive:
+
+    1. **Drag a card into the terminal.** A `Gtk.DragSource` on the
+       card offering `text/plain` (the idiom is already used for
+       PDB chips), a `Gtk.DropTarget` on the VTE widget, and
+       `Vte.Terminal.feed_child()` to insert at the cursor —
+       verified present in this build. Precise, composable
+       mid-sentence, unambiguous.
+       - **What to insert:** the DOI when there is one, else
+         `paper:<id>`; both resolve through existing MCP tools
+         (`find_by_dois`, `get_papers`). DOI-first because it is
+         portable and greppable — but 28 of 172 papers here have
+         none, so the id fallback is not optional.
+       - A modifier-drag could insert the **PDF path** instead:
+         Claude Code reads PDFs directly, so "this file" and "this
+         paper's identity" are genuinely different requests.
+    2. **A shared "what I'm looking at" channel.** The GUI already
+       tracks card focus (`_mark_focus`) and knows what the viewer
+       has open. Record it in a small table and expose an MCP tool
+       (`current_papers()`), and "summarise this paper" works with
+       no typing or dragging at all. Fits the architecture — both
+       sides already share the database, so no new IPC.
+       - **The catch is staleness:** "this" means something else if
+         the GUI was last touched an hour ago. Return the
+         timestamp so Claude can confirm ("the radiation-damage
+         paper, selected three minutes ago?") rather than assume.
+    3. **A "Copy reference for Claude" context-menu item.** Ten
+       minutes' work, keyboard-friendly, and the fallback when
+       dragging is awkward (second monitor, tiling WM). Falls out
+       of (1) for free.
+
+  **Order:** (1) first — the complaint is about naming a
+  *particular* paper, sometimes more than one, and dragging is
+  unambiguous in a way that "this" never is. Then (2) for the
+  common case of "the one I'm reading".
 
 - **GUI goes laggy/unresponsive during bulk import — measure, then
   restructure.** Observed 2026-08-29 importing a ~180-PDF folder;
@@ -1499,6 +1538,39 @@ via `extract.CROSSREF_USER_AGENT`.
   folder).
 
 ## UI
+
+- **Right-click the JATS chip → "Summarise with <agent>".** Noted
+  2026-08-31: right-clicking the JATS chip pops the *"Cite this
+  paper as…"* menu, because the chip has no gesture of its own and
+  the event bubbles to the card's right-click handler
+  (`browse.py`, `cite_click`). Sensible menu, startling place to
+  meet it. Each chip that means something specific should carry its
+  own context menu — the JATS chip's obvious one being **generate a
+  summary from this stored full text**.
+
+  **Why this is a nicer route than the MCP summaries design.** That
+  entry (under "Prompted by Paperlib") is blocked on MCP
+  *sampling*: the server cannot ask the client for a completion, so
+  Alexandria can never initiate a summary and the flow has to start
+  in Claude. But a **configured agent command** sidesteps it
+  entirely: a Preferences entry holding something like
+  `claude -p` (or any command reading a prompt on stdin and
+  writing prose on stdout), invoked as a subprocess with the JATS
+  text piped in. The model still lives outside the app — no API
+  keys, no model dependency, offline-first intact — and the user
+  chooses the agent. On return, write it via the same path
+  `set_summary` uses so provenance is recorded identically
+  (`model` = the configured command, `source` = "jats").
+
+  Details worth settling when building:
+    - Run it off the main thread with a timeout and a visible
+      "summarising…" state; a local model can take minutes.
+    - Offer it only where there is something to summarise — the
+      chip is already the "we hold the full text" signal.
+    - Same guard as the MCP tool: never overwrite a hand-written
+      summary.
+    - The PDF-text tier gives the same affordance for papers with
+      no JATS; the chip is just the most natural first home.
 
 - **The Edit-metadata dialog should not be modal.** Reported
   2026-08-30: with a PDF open in the viewer, opening Edit metadata

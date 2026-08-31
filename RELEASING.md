@@ -12,6 +12,16 @@ Fix it as part of the next bump.)
 3. `data/io.github.pemsley.Alexandria.metainfo.xml` — add a new
    `<release version="X.Y.Z" date="YYYY-MM-DD">` entry (AppStream
    wants newest first; keep the old entries).
+   **Check first whether the entry is already there.** The release
+   notes are usually written before the bump, and writing them adds
+   this entry too. In 0.4.0 this step was then applied a second
+   time and landed on the *oldest* entry, relabelling 0.2.0 as a
+   duplicate 0.4.0 and losing the first-public-release history
+   (fixed in the commit after `0a05a70`).
+   Verify with `appstreamcli validate data/*.metainfo.xml` before
+   committing — it catches both a duplicate version and a
+   mistyped tag, and should report only the pedantic
+   `cid-contains-uppercase-letter` note.
 4. `make-app.sh` — both macOS plist strings:
    `CFBundleVersion` and `CFBundleShortVersionString`.
 

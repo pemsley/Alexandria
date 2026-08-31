@@ -114,10 +114,10 @@
         </ul>
       </description>
     </release>
-    <release version="0.4.0" date="2026-08-31">
+    <release version="0.2.0" date="2026-07-13">
       <url type="details">https://github.com/pemsley/Alexandria/blob/main/RELEASE-NOTES</url>
       <description>
-        <p>Download and use JATS</p>
+        <p>First public release.</p>
         <ul>
           <li>PDB accession codes on cards, linked to PDBe, with
             "Open in Coot" and drag-and-drop into Coot</li>
@@ -133,4 +133,5 @@
       </description>
     </release>
   </releases>
-</component
+</component>
+

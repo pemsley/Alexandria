@@ -953,6 +953,14 @@ class PdfViewerWindow(Gtk.Window):
         # Hover cursors are cached per page against the old (empty)
         # map; drop the cache so links become clickable immediately.
         self._cursor_over_link = {}
+        # The page widgets were built before this map existed, and
+        # _attach_link_motion_controller skips pages with no links —
+        # so at build time every page was skipped. Attach them now
+        # that we know which pages have any.
+        for page_idx in self.citation_links:
+            if 0 <= page_idx < len(self.page_widgets):
+                self._attach_link_motion_controller(
+                    self.page_widgets[page_idx], page_idx)
         return False
 
     def _load_highlights(self):

@@ -1,0 +1,197 @@
+
+  Release Notes for 0.4.0
+
+ o FEATURE: Structured full text: where a paper is open access, its
+            JATS XML is fetched from Europe PMC and stored beside the
+            PDF. A "JATS" chip on the card shows which papers have it,
+            and a menu item backfills the whole library
+
+ o FEATURE: Reference lists now come from the stored JATS rather than
+            being recovered from the page — exact entries, and a DOI
+            for most of them, so following a citation needs no search
+
+ o FEATURE: Viewer: the sentence a citation was made in is shown in
+            the reference popover ("Cited here as:")
+
+ o FEATURE: Viewer: back-navigation after a citation jump, and
+            text-based citation links for PDFs whose publisher left
+            no link annotations
+
+ o FEATURE: Viewer: where a paper has JATS, its citations are found
+            from the publisher's own markup rather than recognised
+            on the page. This is what makes citations clickable in
+            papers that print them as bare superscript numerals —
+            Protein Science among them — where there is nothing on
+            the page to recognise
+
+ o FEATURE: DOI-first metadata: a DOI that resolves supplies the
+            record even when the PDF's own text disagrees. The
+            disagreement is flagged on the card ("Check metadata")
+            rather than silently applied, and papers whose DOI could
+            not be confirmed are marked "Unverified"
+
+ o FEATURE: DOIs derived from publisher download filenames — Elsevier
+            PII, arXiv, bioRxiv, Nature/BMC/Springer, RSC, ACS, PNAS
+            and Science
+
+ o FEATURE: "Find metadata" in the metadata editor: type a citation
+            you can read off the paper ("Jones et al., JMB, 1995")
+            and pick from a ranked list of candidates. For older
+            papers whose PDFs carry no usable metadata
+
+ o FEATURE: Supporting information is recognised as a supplement and
+            linked to its parent paper, with an "SI" chip, rather
+            than impersonating the paper and occupying its DOI
+
+ o FEATURE: Papers can carry a summary, written by hand or by an AI
+            assistant through the MCP server. Always shown with the
+            person or model that wrote it, and never mistakable for
+            the abstract
+
+ o FEATURE: MCP: set_summary and summary_overview tools, and summary
+            fields on the read tools, so a connected assistant can
+            see what has been summarised and write summaries back
+
+ o FEATURE: Subscriptions flag articles written by authors you have
+            looked up before, matched on ORCID or OpenAlex ID
+
+ o FEATURE: The Authors window opens from the main menu, uses a
+            navigation split view, and opens papers you already hold
+
+ o CHANGE:  Clicking an author's name on a card opens them in the
+            Authors window; filtering the library by that author
+            moved to its own icon
+
+ o CHANGE:  Feed cards render publisher markup (italics, super- and
+            subscripts, small caps) instead of showing the tags
+
+ o BUG-FIX: Bulk import no longer freezes the window. Importing a
+            folder of 185 PDFs went from multi-minute stalls — the
+            worst measured at nine minutes — to a worst case of a few
+            seconds. Six separate faults: a database connection
+            shared across threads, background sweepers rebuilding the
+            card list directly, unbounded rebuild frequency,
+            redundant per-card work, and concurrent PDF extractions
+            competing for the interpreter
+
+ o BUG-FIX: The weekly refresh of the PDB accession-code list no
+            longer freezes an import: 57 MB was downloaded and parsed
+            inline. It now runs in the background and streams
+
+ o BUG-FIX: One import notification per file, rather than one per
+            filesystem event
+
+ o BUG-FIX: macOS AppleDouble files (._*) are no longer imported as
+            if they were PDFs
+
+ o BUG-FIX: Applying a filter reveals the search bar, so a narrowed
+            list is explained and can be cleared
+
+ o BUG-FIX: Embedded terminal: readable text in light mode, and it
+            follows a light/dark switch
+
+-----
+
+  Release Notes for 0.3.0
+
+ o FEATURE: Authors window: one window with a persistent, reorderable
+            trail of authors down the side and a page per author,
+            replacing the previous window-per-author
+
+ o FEATURE: The author trail survives restarts, stored in the library
+            database
+
+ o FEATURE: Author photos: fetched from Wikidata, chosen from a file,
+            or dragged in from a web page. Shown in the page header
+            and beside each name in the trail
+
+ o FEATURE: "Search the web for a photo" opens an image search for
+            the author, and the chosen picture can be dragged
+            straight onto the avatar
+
+ o FEATURE: Collaborator cartouches: likely PI and group-member
+            relationships inferred from shared publications, with
+            single-vote inferences greyed to show they are weak
+
+ o FEATURE: OpenAlex API-key support, for the daily quota introduced
+            in February 2026
+
+ o CHANGE:  PI inference prefers corresponding-author status over
+            author position
+
+ o CHANGE:  Card end-margin widened clear of the overlay scrollbar
+
+ o BUG-FIX: Reference lookup made more robust
+
+ o BUG-FIX: The sidebar's institution line is backfilled once the
+            author profile arrives
+
+ o BUG-FIX: A dropped image URL that points at a web page rather than
+            an image now resolves through the page's og:image
+
+ o BUG-FIX: The avatar menu opens on either mouse button
+
+-----
+
+  Release Notes for 0.2.0
+
+ o FEATURE: PDB accession codes mentioned in a paper are shown on its
+            card, linked to PDBe, with "Open in Coot" on right-click
+            and drag-and-drop into Coot
+
+ o FEATURE: Discover: find a paper by PDB accession code
+
+ o FEATURE: Import from DOI: paste a DOI, fetch the metadata, and
+            fetch the open-access PDF where there is one
+
+ o FEATURE: MCP server, so an AI assistant you already use can search
+            and read the library: search, find by DOI, paper records,
+            sidecars, PDF text, recently added, and a one-hop
+            citation neighbourhood
+
+ o FEATURE: Embedded terminal pane (hamburger → Toggle terminal),
+            with the library's environment already set
+
+ o FEATURE: "Funded by" line on each card, from OpenAlex funders and
+            awards, with a per-grant popover
+
+ o FEATURE: Multiple catalogues: separate libraries with their own
+            directories and databases
+
+ o FEATURE: Licence and open-access chips on cards, from CrossRef,
+            with an OpenAlex fallback
+
+ o FEATURE: Crossmark chip flagging publisher-deposited corrections
+            and retractions
+
+ o FEATURE: Preprint chips, and a link to the published version when
+            OpenAlex knows of one
+
+ o FEATURE: Citation sparklines on cards, and Citation Classic stars
+
+ o FEATURE: About dialog, application icon, and a desktop-file
+            installer
+
+ o FEATURE: macOS application bundle, so the Dock shows the icon
+
+ o CHANGE:  The Python package and environment variables were renamed
+            from pdforg to alexandria
+
+ o CHANGE:  Sidecars renamed to <paper>.pdf.alexandria, with existing
+            libraries migrated in place on first run
+
+ o CHANGE:  Small-caps in titles rendered properly, rather than shown
+            as markup
+
+ o BUG-FIX: Background workers each open their own database
+            connection, fixing the intermittent "another row
+            available" failures and a crash on macOS
+
+ o BUG-FIX: The database filename is per-host, so a shared home
+            directory on NFS cannot collide
+
+ o BUG-FIX: CrossRef rate-limit headers are honoured before a refusal
+            rather than after
+
+ o BUG-FIX: Sidecars that appear from outside the application are
+            reported rather than imported blindly

@@ -19,11 +19,21 @@
     <ul>
       <li>Full-text search across title, authors, abstract, DOI and journal</li>
       <li>Citation counts and per-year sparklines from OpenAlex</li>
-      <li>Built-in PDF viewer with highlight and comment annotations</li>
-      <li>BibTeX import and export</li>
+      <li>Built-in PDF viewer with highlight and comment annotations,
+        and click-through citation links that jump to the reference
+        and back again</li>
+      <li>Structured full text (JATS XML) fetched from Europe PMC and
+        stored beside the PDF, giving exact reference lists</li>
+      <li>Authors window: a persistent trail of the authors you follow,
+        with their works, collaborators and affiliation history</li>
+      <li>Journal and topic subscriptions, flagging new papers by
+        authors you have looked up before</li>
+      <li>BibTeX, RIS and CSL export; BibTeX and DOI import</li>
       <li>Preprint detection (arXiv, bioRxiv, chemRxiv and more)</li>
-      <li>Author follow — see what authors you track have published recently</li>
-      <li>Duplicate detection by DOI and file hash</li>
+      <li>Duplicate detection by DOI and file hash, with supporting
+        information recognised as belonging to its parent paper</li>
+      <li>An MCP server, so an AI assistant you already use can search
+        and read your library — no model or API key inside the app</li>
       <li>Sidecar JSON metadata lives next to each PDF, never inside it</li>
     </ul>
   </description>
@@ -48,22 +58,69 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
-    <release version="0.3.0" date="2026-08-10">
+    <release version="0.4.0" date="2026-08-31">
+      <url type="details">https://github.com/pemsley/Alexandria/blob/main/RELEASE-NOTES</url>
       <description>
         <p>
-          New Authors window: a persistent, reorderable trail of
-          authors with one page per author, replacing per-author
-          windows. Collaborator relationship cartouches (likely PI /
-          group member) inferred from shared publications. Author
-          photos: Wikidata portrait fetch, web search, and
-          drag-and-drop, shown in the header and sidebar. Reference
-          lookup fixes and OpenAlex API-key support.
+          Alexandria now reads the publisher's own structured full
+          text where a paper is open access, rather than recovering
+          everything from the printed page.
         </p>
+        <ul>
+          <li>JATS full text fetched from Europe PMC and stored
+            beside the PDF, giving exact reference lists — and a DOI
+            for most references, so following a citation needs no
+            search</li>
+          <li>The viewer shows the sentence a citation was made in,
+            and can navigate back after a citation jump</li>
+          <li>Metadata is DOI-first: a resolved DOI supplies the
+            record, and any disagreement with the PDF is flagged on
+            the card rather than silently applied</li>
+          <li>"Find metadata" identifies older papers from a citation
+            you can read off the page</li>
+          <li>Supporting information is linked to its parent paper
+            instead of impersonating it</li>
+          <li>Papers can carry a summary, written by hand or by an AI
+            assistant, always shown with its author or model</li>
+          <li>Subscriptions flag new papers by authors you follow</li>
+          <li>Bulk import no longer freezes the window: a folder of
+            185 PDFs went from multi-minute stalls to a few
+            seconds</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.3.0" date="2026-08-10">
+      <url type="details">https://github.com/pemsley/Alexandria/blob/main/RELEASE-NOTES</url>
+      <description>
+        <ul>
+          <li>Authors window: one window with a persistent,
+            reorderable trail of authors and a page for each,
+            replacing the previous window-per-author</li>
+          <li>Author photos from Wikidata, a file, or dragged in from
+            a web page</li>
+          <li>Collaborator cartouches: likely PI and group-member
+            relationships inferred from shared publications</li>
+          <li>OpenAlex API-key support</li>
+          <li>Reference-lookup fixes</li>
+        </ul>
       </description>
     </release>
     <release version="0.2.0" date="2026-07-13">
+      <url type="details">https://github.com/pemsley/Alexandria/blob/main/RELEASE-NOTES</url>
       <description>
-        <p>Initial release.</p>
+        <p>First public release.</p>
+        <ul>
+          <li>PDB accession codes on cards, linked to PDBe, with
+            "Open in Coot" and drag-and-drop into Coot</li>
+          <li>Import from DOI, and a Discover tab that finds papers
+            by PDB code</li>
+          <li>An MCP server, so an AI assistant you already use can
+            search and read the library</li>
+          <li>Embedded terminal pane</li>
+          <li>Funding, licence, open-access and Crossmark information
+            on cards</li>
+          <li>Multiple catalogues</li>
+        </ul>
       </description>
     </release>
   </releases>

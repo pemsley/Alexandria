@@ -2138,6 +2138,27 @@ sober "do we actually want this?" — before any work happens.
   - Resolved: Not a bug. Frank von Delft is the last author of those
     papers.
 
+  Opening the viewer's sidebar prints, about eleven times:
+  `gtk_widget_size_allocate(): attempt to allocate AdwBin widget
+  with width -2147482828 and height 922`.
+  - Resolved: Not our bug, and harmless. Investigated 2026-08-31 on
+    libadwaita 1.9.3. A `G_DEBUG=fatal-warnings` backtrace under gdb
+    puts the bad width in libadwaita itself — frame 4 is
+    `gtk_widget_allocate` emitting the warning, frame 5 is
+    libadwaita (`AdwOverlaySplitView` allocating its own `AdwBin`
+    child), frame 6 is `gtk_widget_allocate` again. Our code never
+    allocates that widget. `-2147482828` is `G_MININT + 820`, the
+    window width minus something near `G_MAXINT` — an internal
+    underflow. It fires only during the sidebar's *open animation*:
+    zero warnings with `gtk-enable-animations` off, or if the
+    sidebar is shown before `present()`. Nothing renders wrongly.
+    Ruled out, by substituting plain labels and stubs for each in
+    turn: our sidebar content, our page content, our scroll
+    handlers, the render worker.
+  - **Do not re-investigate.** Left in place deliberately: a GLib
+    log handler narrow enough to swallow this message would also
+    mask real allocation bugs later. Worth filing upstream.
+
 ## alexandria-firefox-extension issues:
 
   https://onlinelibrary.wiley.com/doi/pdfdirect/10.1002/pro.4391

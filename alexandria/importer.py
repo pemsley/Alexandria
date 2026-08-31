@@ -206,8 +206,12 @@ def _mark_as_supplement(conn, rec, pdf_path):
     """Turn `rec` into a supplement record: move whatever DOI was
     found into `si_of` (it is the parent's), and name the parent
     from the library when it is there."""
-    parent_doi = rec.get("doi") or extract.supplementary_parent_doi_prefix(
-        pdf_path)
+    # A record already marked as a supplement has no `doi` of its
+    # own, and its filename may carry no decodable identifier, so
+    # the parent it already names is the third place to look.
+    parent_doi = (rec.get("doi")
+                  or extract.supplementary_parent_doi_prefix(pdf_path)
+                  or (rec.get("si_of") or {}).get("doi"))
     rec["doi"] = None
     rec["si_of"] = {"doi": parent_doi, "title": None}
     if not parent_doi:
@@ -217,15 +221,32 @@ def _mark_as_supplement(conn, rec, pdf_path):
         # a row holding the parent's DOI — the very fault we are
         # fixing — and would otherwise adopt its own wrong title.
         row = conn.execute(
-            "SELECT doi, title FROM papers "
+            "SELECT doi, title, authors_json, year, journal "
+            "FROM papers "
             "WHERE (lower(doi) = ? OR lower(doi) LIKE ?) "
             "AND pdf_path != ? LIMIT 1",
             (parent_doi.lower(), parent_doi.lower() + "%",
              pdf_path)).fetchone()
     except Exception:
         row = None
-    if row is not None:
-        rec["si_of"] = {"doi": row["doi"], "title": row["title"]}
+    if row is None:
+        return
+    rec["si_of"] = {"doi": row["doi"], "title": row["title"]}
+    # A supplement's authors *are* the paper's authors, and its own
+    # metadata is usually whatever the production pipeline left
+    # behind — gm5104sup1.pdf offered ["staff"], the account name of
+    # whoever ran the distiller. Take the parent's bibliographic
+    # identity, which we have and know to be right.
+    try:
+        parent_authors = json.loads(row["authors_json"] or "[]")
+    except (TypeError, ValueError):
+        parent_authors = []
+    if parent_authors:
+        rec["authors"] = parent_authors
+    if row["year"]:
+        rec["year"] = row["year"]
+    if row["journal"]:
+        rec["journal"] = row["journal"]
 
 
 def _enrich_from_openalex(rec, pdf_path):

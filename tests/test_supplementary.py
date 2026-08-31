@@ -191,3 +191,68 @@ def test_the_supplement_is_not_its_own_parent(tmp_path, monkeypatch):
     importer._mark_as_supplement(conn, rec, si)
     assert rec["si_of"]["title"] != "Wrongly claimed title"
     assert rec["si_of"]["title"] is None
+
+
+# ---- a supplement inherits its parent's bibliographic identity -----
+
+def test_supplement_takes_authors_and_year_from_its_parent(
+        tmp_path, monkeypatch):
+    """A supplement's authors *are* the paper's authors. Left to its
+    own metadata, gm5104sup1.pdf offered ["staff"] — the account
+    name of whoever ran the distiller on IUCr's production server.
+    """
+    conn = index.open_db(str(tmp_path / "lib.db"))
+    parent = _pdf(tmp_path, "gm5104.pdf")
+    prec = sidecar.new_record(parent)
+    prec.update({"title": "High-confidence placement of fragments",
+                 "authors": ["Shumeng Ma", "Matthew W. Bowler"],
+                 "year": 2024,
+                 "journal": "Acta Crystallographica Section D",
+                 "doi": "10.1107/S2059798324004480"})
+    sc = sidecar.sidecar_path_for(parent)
+    sidecar.write(sc, prec)
+    index.upsert(conn, parent, sc, None, prec, os.path.getmtime(sc))
+
+    rec = {"title": "supplement", "authors": ["staff"], "year": None,
+           "journal": None, "doi": "10.1107/S2059798324004480"}
+    importer._mark_as_supplement(
+        conn, rec, _pdf(tmp_path, "gm5104sup1.pdf"))
+
+    assert rec["authors"] == ["Shumeng Ma", "Matthew W. Bowler"]
+    assert rec["year"] == 2024
+    assert rec["journal"] == "Acta Crystallographica Section D"
+    assert rec["doi"] is None, "still must not claim the DOI"
+
+
+def test_an_unknown_parent_leaves_the_supplement_alone(
+        tmp_path, monkeypatch):
+    conn = index.open_db(str(tmp_path / "lib.db"))
+    rec = {"title": "supplement", "authors": ["staff"], "year": 2024,
+           "journal": None, "doi": "10.1/absent"}
+    importer._mark_as_supplement(
+        conn, rec, _pdf(tmp_path, "x_si_001.pdf"))
+    assert rec["authors"] == ["staff"]
+    assert rec["si_of"]["doi"] == "10.1/absent"
+
+
+def test_remarking_uses_the_parent_already_recorded(tmp_path):
+    """Idempotence: a record already marked as a supplement has no
+    `doi` of its own (that is the point), and its filename may carry
+    no decodable identifier — gm5104sup1.pdf is IUCr's. The parent
+    it already names is the thing to look it up by."""
+    conn = index.open_db(str(tmp_path / "lib.db"))
+    parent = _pdf(tmp_path, "gm5104.pdf")
+    prec = sidecar.new_record(parent)
+    prec.update({"title": "High-confidence placement",
+                 "authors": ["Shumeng Ma"], "year": 2024,
+                 "doi": "10.1107/S2059798324004480"})
+    sc = sidecar.sidecar_path_for(parent)
+    sidecar.write(sc, prec)
+    index.upsert(conn, parent, sc, None, prec, os.path.getmtime(sc))
+
+    rec = {"title": "supplement", "authors": ["staff"], "doi": None,
+           "si_of": {"doi": "10.1107/S2059798324004480",
+                     "title": "High-confidence placement"}}
+    importer._mark_as_supplement(
+        conn, rec, _pdf(tmp_path, "gm5104sup1.pdf"))
+    assert rec["authors"] == ["Shumeng Ma"]

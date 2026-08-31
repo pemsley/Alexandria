@@ -242,6 +242,11 @@ def build_citation_links(pdf_path):
     A and B have nothing to chew on. Only when nothing above
     produced a resolvable link, so PDFs that already work via
     publisher links are left exactly as they were.
+    Path E: where we hold the JATS, the publisher's own markup says
+    where every citation is and what it points at. Last, because it
+    is only needed when the page gives nothing to recognise —
+    citations printed as bare superscript numerals, which D cannot
+    see because it requires brackets.
     """
     try:
         links = pdf_links.read_citation_links(pdf_path)
@@ -277,9 +282,27 @@ def build_citation_links(pdf_path):
                 pdf_path, ay_bib)
         except Exception:
             num_links = {}
+        if not num_links:
+            num_links = _jats_citation_links(pdf_path, ay_bib)
         for pi, plinks in num_links.items():
             links.setdefault(pi, []).extend(plinks)
     return links
+
+
+def _jats_citation_links(pdf_path, bib_entries):
+    """Path E — see `build_citation_links`. Nothing to do, and no
+    cost beyond a stat, for a paper with no stored JATS."""
+    try:
+        xml = jats.jats_path(pdf_path)
+        if not os.path.exists(xml):
+            return {}
+        xrefs = jats.parse_xrefs(xml)
+        if not xrefs:
+            return {}
+        return references_pdf.find_jats_citations(
+            pdf_path, bib_entries, xrefs)
+    except Exception:
+        return {}
 
 
 def open_viewer(parent, pdf_path, sidecar_path=None):

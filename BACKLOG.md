@@ -1750,6 +1750,32 @@ structure the publisher *had* and threw away. Worth writing down while
 the evidence is fresh, because it argues for a different source rather
 than more heuristics.
 
+- **JATS v3: find the reference *entries* on the page too.**
+  Path E (2026-08-31) uses the JATS to find where the citations are;
+  the complement is using it to find where the reference list is.
+  Measured over the 71 papers that have JATS: Path E was reached by
+  7 of them (the other 64 already had links from paths A–D) and
+  fixed 1. The remaining 6 all fail for the same reason —
+  `parse_bibliography` finds *nothing* in the PDF, so there is no
+  target to jump to and Path E cannot help. Anchoring each
+  `parse_ref_list` entry's text on the page would supply those
+  positions. A quick probe says it depends on the publisher: Protein
+  Science `pro.70321.pdf` anchors 74 of 79 entries on the first 48
+  characters, but RSC (`c8sc05372c.pdf`) prints "M. H. S. Segler"
+  where the XML has "Segler M. H. S." — different word order, no
+  common prefix — and Frontiers (`fmolb-09-861491.pdf`) runs the
+  authors together without spaces. So it needs an
+  order-insensitive anchor (surname + year + a distinctive title
+  word, say) rather than a prefix match.
+
+- **Path E limitation: collapsed ranges.** Where the XML enumerates
+  `16,17,18,19,20` and the page prints "16–20", the endpoints link
+  and the interior numbers do not — those digits are not on the
+  page. On the Casañal paper that is 4 of the 8 remaining misses
+  (56 of 64 citations link). Clicking "16–20" goes to reference 16,
+  which is the reasonable outcome; recording it so it is not
+  rediscovered as a bug.
+
 **What we actually built to make `[7]` clickable.** Three fallback
 paths: publisher-specific destination names (Springer `CR<N>`, OUP
 `-B<N>`, an InDesign export embedding the whole reference string behind

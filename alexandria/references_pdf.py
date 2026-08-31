@@ -1159,6 +1159,247 @@ def find_numeric_citations(pdf_path, bib_entries):
     return out
 
 
+# ---- citations anchored on the JATS --------------------------------
+
+# Typography that differs between the publisher's XML and the glyphs
+# poppler reports for the same words. The dashes fold to "-" and are
+# then dropped; the rest are ordinary substitutions.
+_ANCHOR_FOLD = {
+    "‐": "-", "‑": "-", "‒": "-", "–": "-",
+    "—": "-", "―": "-", "−": "-",
+    "“": '"', "”": '"', "„": '"', "‟": '"',
+    "″": '"', "«": '"', "»": '"',
+    "‘": "'", "’": "'", "‚": "'", "‛": "'",
+    "′": "'", "ʼ": "'",
+    "ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl",
+    "ﬃ": "ffi", "ﬄ": "ffl", "ﬅ": "ft", "ﬆ": "st",
+}
+
+
+def _normalise_indexed(s):
+    """Fold `s` for anchor matching and return `(text, offsets)`,
+    where `offsets[i]` is the index in `s` that produced `text[i]`.
+
+    Whitespace and hyphens are dropped outright rather than folded.
+    The printed page breaks words across lines — "reconstruc- tions",
+    "functio- nality" — where the publisher's XML has them whole, and
+    no folding makes those two strings equal. Deleting both from each
+    side does, without having to decide which hyphens are real:
+    "cryo-EM" and "cryo- EM" both become "cryoem".
+
+    The offsets are the point of the rest: the rectangle for a
+    citation comes from indexing poppler's per-character rects, so a
+    fold that silently shifted positions would put the clickable box
+    on the wrong glyphs."""
+    out = []
+    idx = []
+    for i, ch in enumerate(s):
+        if ch in _ZERO_WIDTH or ch.isspace():
+            continue
+        ch = _ANCHOR_FOLD.get(ch, ch)
+        if ch == "-":
+            continue
+        for c in ch.lower():
+            out.append(c)
+            idx.append(i)
+    return "".join(out), idx
+
+
+def _normalise_for_anchor(s):
+    """The folded text alone — see `_normalise_indexed`."""
+    return _normalise_indexed(s)[0]
+
+
+# How far past the anchor the marker glyphs may sit. Enough to step
+# over an earlier marker of the same citation group and the
+# punctuation joining them, not enough to reach the next word.
+_MARKER_WINDOW = 16
+
+# What may lie between the anchor and the marker: other markers and
+# the punctuation that joins them. A letter ends the search, so a
+# marker is never found inside the following word.
+_MARKER_GAP_RE = re.compile(r"^[\d.,;:()\[\]/]*$")
+
+
+def _find_marker(text, marker, from_pos):
+    """Locate `marker` just after `from_pos` in `text`, allowing only
+    other citation glyphs in between. Returns `(start, end)` or
+    None."""
+    limit = min(len(text), from_pos + _MARKER_WINDOW + len(marker))
+    pos = from_pos
+    while True:
+        at = text.find(marker, pos, limit)
+        if at < 0:
+            return None
+        if _MARKER_GAP_RE.match(text[from_pos:at]):
+            return at, at + len(marker)
+        pos = at + 1
+
+
+# An anchor shorter than this is not distinctive enough to trust,
+# even with the cursor keeping the search moving forwards.
+_MIN_ANCHOR = 10
+
+# Anchor lengths to fall back through, longest first.
+_ANCHOR_TAILS = (40, 30, 22, 16, _MIN_ANCHOR)
+
+
+def _anchor_variants(context):
+    """The prose to look for, longest first.
+
+    Two things make the full context miss. The XML drops the earlier
+    markers the page prints — "RNA tools4 and RCrane" against "RNA
+    Tools and RCrane" — and it carries text the typesetter replaced,
+    such as a video link that prints as "(Video 5)". Both spoil the
+    front of the anchor while leaving its tail intact, so shorter and
+    shorter tails are tried. Each is also offered with its trailing
+    punctuation dropped: the JATS writes
+    `<xref>3</xref>&#8211;<xref>5</xref>`, so the second marker's
+    context ends in a dash the page prints *after* the first
+    marker."""
+    out = []
+    for length in (len(context),) + _ANCHOR_TAILS:
+        if length > len(context):
+            continue
+        tail = context[-length:]
+        for v in (tail, tail.rstrip(".,;:")):
+            if len(v) >= _MIN_ANCHOR and v not in out:
+                out.append(v)
+    return out
+
+
+def find_jats_citations(pdf_path, bib_entries, xrefs):
+    """Find in-text citations using the publisher's own markup.
+
+    `xrefs` is `jats.parse_xrefs` output: for every citation in the
+    article, the reference number it points at, the marker text as
+    printed, and the prose that immediately precedes it. That prose
+    is the anchor — found in the page's text layout, it says where on
+    the page the marker glyphs are, and the JATS says where they
+    point. Nothing is inferred from the shape of the text, which is
+    why this works on papers whose citations are bare superscript
+    numerals with no brackets and no link annotations — the case that
+    defeats `find_numeric_citations`.
+
+    Returns `{page_idx: [(rect, target_page, target_top, ref_n)]}`,
+    the same shape as `pdf_links.read_citation_links`."""
+    if not xrefs or not bib_entries:
+        return {}
+    by_n = {}
+    for e in bib_entries:
+        n = e.get("n")
+        if n is not None and e.get("page") is not None \
+                and e.get("y_top_poppler") is not None:
+            by_n[n] = e
+    if not by_n:
+        return {}
+    bib_pages = {e.get("page") for e in bib_entries}
+
+    try:
+        doc = _open_doc(pdf_path)
+    except Exception:
+        return {}
+
+    pages = _jats_page_texts(doc, bib_pages)
+    if not pages:
+        return {}
+
+    out = {}
+    # Citations run in document order and so do the pages, so the
+    # search only ever moves forwards. That is what keeps a short or
+    # repeated anchor ("as described above") from matching back at
+    # the top of the paper.
+    cursor_page, cursor_at = 0, 0
+    for x in xrefs:
+        entry = by_n.get(x.get("n"))
+        if entry is None:
+            continue
+        hit = _locate_marker(pages, x, cursor_page, cursor_at)
+        if hit is None:
+            continue
+        pi, start, end, cursor_page, cursor_at = hit
+        page = pages[pi]
+        rect = _spans_to_rect(page["rects"], page["idx"][start],
+                              page["idx"][end - 1] + 1, page["height"])
+        if rect is None:
+            continue
+        try:
+            _, target_h = doc.get_page(entry["page"]).get_size()
+        except Exception:
+            continue
+        target_top = target_h - entry["y_top_poppler"]
+        out.setdefault(page["page_idx"], []).append(
+            (rect, entry["page"], target_top, x["n"]))
+    return out
+
+
+def _jats_page_texts(doc, bib_pages):
+    """Folded text, per-character rects and the index map for every
+    body page, in reading order. Pages that hold the bibliography are
+    left out — the entries themselves would otherwise anchor."""
+    pages = []
+    for pi in range(doc.get_n_pages()):
+        if pi in bib_pages:
+            continue
+        page = doc.get_page(pi)
+        text = page.get_text() or ""
+        if not text:
+            continue
+        res = page.get_text_layout()
+        if isinstance(res, tuple):
+            ok, rects = res
+        else:
+            rects = res
+            ok = rects is not None
+        if not ok or rects is None:
+            continue
+        if len(rects) != len(text):
+            no_nl = text.replace("\n", "")
+            if len(rects) != len(no_nl):
+                continue
+            text = no_nl
+        folded, idx = _normalise_indexed(text)
+        _, page_h = page.get_size()
+        pages.append({"page_idx": pi, "text": folded, "idx": idx,
+                      "rects": rects, "height": page_h})
+    return pages
+
+
+def _locate_marker(pages, xref, from_page, from_at):
+    """Find one citation's marker glyphs at or after
+    `(from_page, from_at)`. Returns `(page, start, end, next_page,
+    next_at)` in folded-text offsets, or None if the anchor is not on
+    any remaining page.
+
+    It is the *marker* that has to lie past the cursor, not the
+    anchor: consecutive citations share their preceding prose, so
+    after linking the "1" of "ligands.1,2" the anchor for the "2" is
+    already behind us."""
+    marker = _normalise_for_anchor(xref.get("marker") or "")
+    if not marker:
+        return None
+    for variant in _anchor_variants(
+            _normalise_for_anchor(xref.get("context") or "")):
+        if len(variant) < _MIN_ANCHOR:
+            continue
+        for pi in range(from_page, len(pages)):
+            text = pages[pi]["text"]
+            start = 0
+            if pi == from_page:
+                start = max(0, from_at - len(variant) - _MARKER_WINDOW)
+            at = text.find(variant, start)
+            while at >= 0:
+                after = at + len(variant)
+                if pi > from_page or after + _MARKER_WINDOW >= from_at:
+                    span = _find_marker(
+                        text, marker,
+                        after if pi > from_page else max(after, from_at))
+                    if span is not None:
+                        return pi, span[0], span[1], pi, span[1]
+                at = text.find(variant, at + 1)
+    return None
+
+
 # Sentence-boundary punctuation followed by whitespace. The
 # lookbehind keeps initials ("J. Smith") and abbreviations from
 # ending a sentence — a single capital before the dot is far more

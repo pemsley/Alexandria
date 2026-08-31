@@ -288,6 +288,88 @@ def parse_ref_list(xml_path):
     return out
 
 
+CONTEXT_CHARS = 60
+
+
+def _ref_numbers_by_id(root):
+    """{ref element id: reference number}. Numbered from <label>
+    where present, else by position, matching parse_ref_list."""
+    out = {}
+    seen = 0
+    for elem in root.iter():
+        if _local(elem.tag) != "ref":
+            continue
+        seen += 1
+        label = _tagged_text(elem, "label") or ""
+        digits = "".join(c for c in label if c.isdigit())
+        rid = elem.get("id")
+        if rid:
+            out[rid] = int(digits) if digits else seen
+    return out
+
+
+def parse_xrefs(xml_path):
+    """In-text citation markers from a stored JATS file:
+    `[{n, marker, context}, ...]` in document order.
+
+    `context` is the prose immediately before the marker, which is
+    what lets the caller find the citation in the PDF — some
+    journals set citations as bare superscript numerals with no
+    brackets and no link annotations, so there is nothing in the
+    page text to recognise them by. Other markers inside the
+    context are dropped, since the PDF renders those as superscripts
+    too and they are not part of the prose.
+
+    Only `ref-type="bibr"` markers count — figure and table
+    cross-references are not citations — and a marker pointing at a
+    reference we cannot number is discarded rather than guessed."""
+    try:
+        tree = ElementTree.parse(xml_path)
+    except Exception:
+        return []
+    root = tree.getroot()
+    numbers = _ref_numbers_by_id(root)
+    if not numbers:
+        return []
+
+    # Walk the body in document order, keeping the running prose so
+    # each marker knows the words in front of it.
+    out = []
+    prose = []
+
+    def _walk(elem):
+        for child in list(elem):
+            tag = _local(child.tag)
+            if tag == "xref":
+                if (child.get("ref-type") or "").lower() == "bibr":
+                    n = numbers.get(child.get("rid"))
+                    if n is not None:
+                        ctx = " ".join("".join(prose).split())
+                        out.append({
+                            "n": n,
+                            "marker": _text_of(child),
+                            "context": ctx[-CONTEXT_CHARS:],
+                        })
+                # The marker itself is not prose: skip its text so
+                # it cannot end up inside a later context.
+                if child.tail:
+                    prose.append(child.tail)
+                continue
+            if child.text:
+                prose.append(child.text)
+            _walk(child)
+            if child.tail:
+                prose.append(child.tail)
+
+    for elem in root.iter():
+        if _local(elem.tag) == "body":
+            if elem.text:
+                prose.append(elem.text)
+            _walk(elem)
+            break
+    return out
+
+
 def backfill(conn, on_progress=None, stop=None):
     """Walk every DOI-bearing paper, fetch-and-store JATS where an
     attempt is due, and record the outcome in each sidecar.

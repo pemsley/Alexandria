@@ -142,20 +142,14 @@ def test_a_page_beyond_the_document_is_dropped():
 # ---- which mode the sidebar opens on -------------------------------
 
 def test_contents_is_the_default_mode():
-    assert viewer.initial_sidebar_mode(True, False) == "outline"
-    assert viewer.initial_sidebar_mode(True, True) == "outline"
+    assert viewer.initial_sidebar_mode(True) == "outline"
 
 
-def test_a_pdf_with_no_contents_opens_on_its_highlights():
-    """Half the library has no table of contents. Greeting those
-    papers with an empty list is a poor welcome when there is
-    something to show in the other mode."""
-    assert viewer.initial_sidebar_mode(False, True) == "highlights"
-
-
-def test_with_nothing_to_show_it_still_opens_somewhere():
-    assert viewer.initial_sidebar_mode(False, False) in ("outline",
-                                                         "highlights")
+def test_a_pdf_with_no_contents_opens_on_its_pages():
+    """99 of 192 PDFs in a real library have no table of contents.
+    Greeting those with an empty list is a poor welcome, and every
+    document has pages to show."""
+    assert viewer.initial_sidebar_mode(False) == "thumbnails"
 
 
 if __name__ == "__main__":

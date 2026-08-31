@@ -37,6 +37,12 @@ _RENDER_MARGIN_PX = 900
 # long paper.
 _PAGE_CACHE_MAX = 8
 
+# Sidebar thumbnails. These do not change with the viewer's zoom, so
+# once rendered they are never invalidated — but a thousand-page
+# document still needs a ceiling.
+_THUMB_WIDTH = 120
+_THUMB_CACHE_MAX = 80
+
 
 def page_is_near(page_top, page_height, view_top, view_height, margin):
     """Is this page close enough to the viewport to be worth drawing?
@@ -59,14 +65,12 @@ def _scroller(child):
     return sw
 
 
-def initial_sidebar_mode(has_outline, has_highlights):
-    """Which mode to open on. Contents is the more useful of the two
-    and so wins, but opening on an empty list to tell the reader
-    there is nothing there is a poor greeting — so fall through to
-    highlights when this PDF carries no table of contents."""
-    if has_outline:
-        return "outline"
-    return "highlights" if has_highlights else "outline"
+def initial_sidebar_mode(has_outline):
+    """Which mode to open on. Contents says most about a paper in the
+    least space and so wins — but 99 of the 192 PDFs in a real
+    library have no outline at all, and greeting those with an empty
+    list is a poor welcome. Every document has pages."""
+    return "outline" if has_outline else "thumbnails"
 
 
 _BUNDLED_ICONS_ADDED = False
@@ -119,6 +123,9 @@ def _sidebar_placeholder(text):
     lbl = Gtk.Label(label=text)
     lbl.add_css_class("dim-label")
     lbl.set_wrap(True)
+    lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+    lbl.set_max_width_chars(22)
+    lbl.set_justify(Gtk.Justification.CENTER)
     lbl.set_margin_top(18)
     lbl.set_margin_bottom(18)
     lbl.set_margin_start(12)
@@ -207,14 +214,30 @@ def outline_entries(doc):
     return out
 
 
-def next_page_to_render(pending, current_page):
-    """Of the pages waiting to be rendered, the one to do next: the
-    nearest to the page being read, so a jump to page 24 does not sit
-    behind the four pages queued before it. Ties go to the earlier
-    page. None if nothing is waiting."""
+# Rendering jobs are ("page", idx) for a page in the viewer and
+# ("thumb", idx) for its thumbnail in the sidebar. Both come off one
+# worker, so both need one ordering.
+_JOB_PRIORITY = {"page": 0, "thumb": 1}
+
+
+def next_render_job(pending, current_page):
+    """Of the renders waiting, the one to do next: nearest to the page
+    being read, and for the same page the full page before its
+    thumbnail — the page fills the window, the thumbnail is a 120px
+    aside. Ties go to the earlier page. None if nothing is waiting."""
     if not pending:
         return None
-    return min(pending, key=lambda i: (abs(i - current_page), i))
+    return min(pending,
+               key=lambda job: (abs(job[1] - current_page),
+                                _JOB_PRIORITY.get(job[0], 9), job[1]))
+
+
+def thumbnail_zoom(page_width_pt, target_width):
+    """Scale that renders a page `target_width` pixels wide, so that
+    a landscape page and a portrait one line up in the sidebar."""
+    if not page_width_pt or page_width_pt <= 0:
+        return 0.2
+    return target_width / float(page_width_pt)
 
 
 def pages_to_keep(cached, current_page, limit):
@@ -585,7 +608,8 @@ class PdfViewerWindow(Gtk.Window):
         # main thread and only when it is near the viewport; until it
         # arrives the page shows blank, and once rendered it is kept.
         self._page_cache = {}          # page_idx -> (zoom, surface)
-        self._pending = {}             # page_idx -> zoom it was asked for
+        self._thumb_cache = {}         # page_idx -> surface
+        self._pending = {}             # (kind, page_idx) -> zoom
         self._pending_ev = threading.Event()
         self._render_lock = threading.Lock()
         self._render_stop = threading.Event()
@@ -861,14 +885,18 @@ class PdfViewerWindow(Gtk.Window):
             if not self._pending_ev.wait(0.5):
                 continue
             with self._render_lock:
-                page_idx = next_page_to_render(self._pending,
-                                               self.current_page)
-                if page_idx is None:
+                job = next_render_job(self._pending, self.current_page)
+                if job is None:
                     self._pending_ev.clear()
                     continue
-                zoom = self._pending.pop(page_idx)
+                zoom = self._pending.pop(job)
                 if not self._pending:
                     self._pending_ev.clear()
+            kind, page_idx = job
+            if kind == "thumb":
+                surf = render_page_surface(doc, page_idx, zoom)
+                GLib.idle_add(self._thumb_rendered, page_idx, surf)
+                continue
             if abs(zoom - self.zoom) > 1e-6:
                 # The reader zoomed while this waited. Redraw rather
                 # than drop it: the draw is what asks for a render, so
@@ -899,12 +927,28 @@ class PdfViewerWindow(Gtk.Window):
             del self._page_cache[stale]
         return self._redraw_page(page_idx)
 
-    def _request_render(self, page_idx):
+    def _request_render(self, page_idx, kind="page", zoom=None):
+        if zoom is None:
+            zoom = self.zoom
+        job = (kind, page_idx)
         with self._render_lock:
-            if abs(self._pending.get(page_idx, -1) - self.zoom) < 1e-6:
+            if abs(self._pending.get(job, -1) - zoom) < 1e-6:
                 return                      # already waiting, same zoom
-            self._pending[page_idx] = self.zoom
+            self._pending[job] = zoom
         self._pending_ev.set()
+
+    def _thumb_rendered(self, page_idx, surf):
+        if surf is None:
+            return False
+        self._thumb_cache[page_idx] = surf
+        keep = pages_to_keep(set(self._thumb_cache), self.current_page,
+                             _THUMB_CACHE_MAX)
+        for stale in set(self._thumb_cache) - keep:
+            del self._thumb_cache[stale]
+        area = self.thumb_widgets.get(page_idx)
+        if area is not None:
+            area.queue_draw()
+        return False
 
     def _cached_surface(self, page_idx):
         got = self._page_cache.get(page_idx)
@@ -1121,6 +1165,17 @@ class PdfViewerWindow(Gtk.Window):
         self.sidebar_stack.set_transition_type(
             Gtk.StackTransitionType.CROSSFADE)
 
+        self.thumb_widgets = {}
+        self.thumb_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                                 spacing=10)
+        self.thumb_box.set_margin_top(10)
+        self.thumb_box.set_margin_bottom(10)
+        self.thumb_scroller = _scroller(self.thumb_box)
+        self.thumb_scroller.get_vadjustment().connect(
+            "value-changed", lambda _a: self._draw_thumbs_coming_into_view())
+        _add_mode(self.sidebar_stack, self.thumb_scroller, "thumbnails",
+                  "Pages", "view-grid-symbolic")
+
         self.outline_list = Gtk.ListBox()
         self.outline_list.set_selection_mode(Gtk.SelectionMode.NONE)
         self.outline_list.add_css_class("navigation-sidebar")
@@ -1145,11 +1200,79 @@ class PdfViewerWindow(Gtk.Window):
         box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         box.append(switcher)
 
+        self._fill_thumbnails()
         n_outline = self._fill_outline()
         self.refresh_sidebar_highlights()
         self.sidebar_stack.set_visible_child_name(
-            initial_sidebar_mode(bool(n_outline), bool(self.highlights)))
+            initial_sidebar_mode(bool(n_outline)))
+        self.sidebar_stack.connect(
+            "notify::visible-child",
+            lambda *_a: self._draw_thumbs_coming_into_view())
         return box
+
+    def _fill_thumbnails(self):
+        """One small page image each, for the half of a library whose
+        PDFs carry no table of contents — and for finding a figure you
+        remember the look of rather than the name of."""
+        for i in range(self.n_pages):
+            pw_pt, ph_pt = self.doc.get_page(i).get_size()
+            zoom = thumbnail_zoom(pw_pt, _THUMB_WIDTH)
+            area = Gtk.DrawingArea()
+            area.set_content_width(_THUMB_WIDTH)
+            area.set_content_height(max(1, int(ph_pt * zoom)))
+            area.set_draw_func(self._draw_thumb, i)
+            area.set_halign(Gtk.Align.CENTER)
+            area.add_css_class("card")
+            self.thumb_widgets[i] = area
+
+            num = Gtk.Label(label=str(i + 1))
+            num.add_css_class("dim-label")
+            num.add_css_class("numeric")
+
+            cell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+            cell.append(area)
+            cell.append(num)
+            click = Gtk.GestureClick()
+            click.connect("released", lambda *_a, p=i: self._goto(p + 1))
+            cell.add_controller(click)
+            cell.set_cursor(Gdk.Cursor.new_from_name("pointer", None))
+            self.thumb_box.append(cell)
+
+    def _draw_thumb(self, _area, cr, w, h, page_idx):
+        cr.set_source_rgb(1, 1, 1)
+        cr.rectangle(0, 0, w, h)
+        cr.fill()
+        surf = self._thumb_cache.get(page_idx)
+        if surf is not None:
+            cr.set_source_surface(surf, 0, 0)
+            cr.paint()
+        elif self._thumb_near_viewport(page_idx):
+            pw_pt, _ph = self.doc.get_page(page_idx).get_size()
+            self._request_render(page_idx, kind="thumb",
+                                 zoom=thumbnail_zoom(pw_pt, _THUMB_WIDTH))
+
+    def _thumb_near_viewport(self, page_idx):
+        """Only ask for thumbnails the reader can nearly see, and only
+        while the thumbnails mode is showing — otherwise opening a
+        56-page paper would quietly render 56 images nobody asked
+        for."""
+        if self.sidebar_stack.get_visible_child_name() != "thumbnails":
+            return False
+        area = self.thumb_widgets.get(page_idx)
+        if area is None:
+            return False
+        ok, rect = area.compute_bounds(self.thumb_box)
+        if not ok:
+            return False
+        adj = self.thumb_scroller.get_vadjustment()
+        return page_is_near(rect.origin.y, rect.size.height,
+                            adj.get_value(), adj.get_page_size(),
+                            _RENDER_MARGIN_PX)
+
+    def _draw_thumbs_coming_into_view(self):
+        for i, area in self.thumb_widgets.items():
+            if i not in self._thumb_cache and self._thumb_near_viewport(i):
+                area.queue_draw()
 
     def _fill_outline(self):
         entries = outline_entries(self.doc)
@@ -1173,6 +1296,12 @@ class PdfViewerWindow(Gtk.Window):
         title = Gtk.Label(label=entry["title"])
         title.set_xalign(0.0)
         title.set_wrap(True)
+        title.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        # A wrapping label reports whatever width its longest line
+        # wants, which in a fixed-width sidebar overflows the
+        # allocation arithmetic outright — GTK complained about
+        # allocating a negative width. Capping it is the fix.
+        title.set_max_width_chars(24)
         title.set_hexpand(True)
         if entry["depth"] == 0:
             title.add_css_class("heading")
@@ -1241,7 +1370,8 @@ class PdfViewerWindow(Gtk.Window):
                 page + 1, GLib.markup_escape_text(snippet)))
         head.set_xalign(0.0)
         head.set_wrap(True)
-        head.set_max_width_chars(60)
+        head.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        head.set_max_width_chars(26)
         info.append(head)
         if comment:
             cmt = Gtk.Label()
@@ -1249,7 +1379,8 @@ class PdfViewerWindow(Gtk.Window):
                 GLib.markup_escape_text(_truncate(comment, 200))))
             cmt.set_xalign(0.0)
             cmt.set_wrap(True)
-            cmt.set_max_width_chars(60)
+            cmt.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            cmt.set_max_width_chars(26)
             info.append(cmt)
         row.append(info)
 

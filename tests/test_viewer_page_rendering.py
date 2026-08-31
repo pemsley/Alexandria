@@ -162,24 +162,64 @@ def test_render_of_a_page_that_does_not_exist_is_none(tmp_path):
     assert viewer.render_page_surface(None, 0, 1.0) is None
 
 
-# ---- which waiting page to render next -----------------------------
+# ---- which waiting job to render next ------------------------------
 
 def test_the_page_being_read_renders_first():
     """A jump to page 24 must not sit behind the pages queued while
     page 1 was on screen."""
-    assert viewer.next_page_to_render({0, 1, 2, 23, 24}, 24) == 24
+    assert viewer.next_render_job(
+        {("page", 0), ("page", 1), ("page", 23), ("page", 24)}, 24) == \
+        ("page", 24)
 
 
 def test_the_nearest_waiting_page_wins():
-    assert viewer.next_page_to_render({0, 1, 2, 30}, 24) == 30
+    assert viewer.next_render_job(
+        {("page", 0), ("page", 30)}, 24) == ("page", 30)
+
+
+# ---- thumbnails ----------------------------------------------------
+
+def test_thumbnail_zoom_hits_the_target_width():
+    """Thumbnails are sized by width, not by a fixed zoom: a
+    landscape page and a portrait page should end up the same width
+    in the sidebar."""
+    assert viewer.thumbnail_zoom(595.0, 120) == pytest.approx(120 / 595.0)
+    assert viewer.thumbnail_zoom(842.0, 120) == pytest.approx(120 / 842.0)
+
+
+def test_thumbnail_zoom_survives_a_degenerate_page():
+    assert viewer.thumbnail_zoom(0, 120) > 0
+    assert viewer.thumbnail_zoom(None, 120) > 0
+
+
+def test_the_thumbnail_cache_is_bounded():
+    """A 120px thumbnail is about 80 KB; a thousand-page document
+    would otherwise be worth 80 MB of sidebar."""
+    assert 20 <= viewer._THUMB_CACHE_MAX <= 400
+
+
+# ---- one queue, two kinds of render --------------------------------
+
+def test_the_page_being_read_is_rendered_before_its_thumbnail():
+    """Both come off one worker. The page fills the window; the
+    thumbnail is a 120px aside — the reader waits on the wrong one if
+    these are tied."""
+    job = viewer.next_render_job({("thumb", 4), ("page", 4)}, 4)
+    assert job == ("page", 4)
+
+
+def test_the_nearest_job_still_wins_across_kinds():
+    assert viewer.next_render_job({("thumb", 4), ("page", 30)}, 5) == \
+        ("thumb", 4)
 
 
 def test_ties_go_to_the_earlier_page():
-    assert viewer.next_page_to_render({4, 6}, 5) == 4
+    assert viewer.next_render_job({("page", 6), ("page", 4)}, 5) == \
+        ("page", 4)
 
 
 def test_nothing_waiting():
-    assert viewer.next_page_to_render(set(), 3) is None
+    assert viewer.next_render_job(set(), 3) is None
 
 
 if __name__ == "__main__":

@@ -4,24 +4,18 @@ Pending features, roughly grouped. Newest at the top of each section.
 
 ## Top priority
 
-- **PDB indexer: "another row available" failure.** *(Root cause
-  found and fixed — commit ab347ba; live-storm reproduction still
-  pending.)* Not an independent bug after all: it was the same
-  cross-thread `sqlite3.Connection` sharing that `7bd858d` set out
-  to eliminate, but one instance was missed.
-  `importer._schedule_pdb_indexing` spawned a worker thread that
-  closed over the *caller's* connection — for watcher-driven
-  imports that connection is owned by `watcher._do_import`, which
-  closes it in its `finally` the instant `import_pdf` returns, while
-  the worker is still querying it. Two threads on one connection
-  corrupt cursor state (the "another row available" message) and
-  produce the `database is locked` co-symptom; on Apple's libsqlite3
-  it segfaults. Fixed by having the worker open its own connection
-  via `index.connect_existing()` (the row is already committed by
-  `index.upsert`, so a fresh WAL connection sees it). Still open:
-  the BACKLOG originally called for a cold-import-storm reproduction
-  to *confirm* the message is gone under load — the fix is by
-  inspection, not yet verified against a live storm.
+  Nothing outstanding.
+
+  - *(Closed 2026-08-31: the PDB indexer's "another row available"
+    failure. Root-caused and fixed in `ab347ba` —
+    `importer._schedule_pdb_indexing` closed over the caller's
+    `sqlite3.Connection`, which `watcher._do_import` closes the
+    instant `import_pdf` returns, so two threads shared one
+    connection; the worker now opens its own via
+    `index.connect_existing()`. The item stayed open pending a
+    cold-import storm to confirm it under load. That storm has now
+    happened: a 185-PDF import through the GUI, 172 papers, zero
+    errors, and no such message in the terminal.)*
 
 ## pdb viewer zoom
 
@@ -130,22 +124,18 @@ Pending features, roughly grouped. Newest at the top of each section.
 
   **Still open, in value order:**
     - **`_build_record` is the remaining GIL hog** (1.7 s per PDF
-      of pure-Python pdfx/pypdf work). Fine for one import; a
-      100-PDF first run is 3 minutes of intermittent contention.
-      *Now* the out-of-process worker-pool idea earns its keep —
-      for throughput, and to stop bulk imports competing with the
-      GUI at all.
-    - **`refresh_valid_pdb_id_cache` is a weekly freeze bomb**:
-      downloads wwPDB's 57 MB `entries.idx`, splits ~259 k lines
-      and inserts them, all in Python holding the GIL. Fires every
-      7 days from whatever import happens to trip it (last run
-      2026-08-26). Make it incremental, off the interactive path,
-      or at least chunked.
-    - **`_do_drop_import` uses `self.conn` from a worker thread**
-      (browse.py) — the same cross-thread `sqlite3.Connection`
-      sharing that caused the "another row available" corruption
-      and the macOS segfault fixed in `7bd858d` / `ab347ba`.
-      Hasn't bitten yet; give it its own connection.
+      of pure-Python pdfx/pypdf work). Since 2026-08-30 it runs
+      behind `importer._extract_gate`, a one-permit semaphore, so
+      it is no longer a contention storm — but it is still 1.7 s of
+      held interpreter per PDF, and a 100-PDF first run still pays
+      it serially. The out-of-process worker pool is the fix if
+      throughput ever matters.
+
+    *(The other two entries here — `refresh_valid_pdb_id_cache`'s
+    weekly 57 MB freeze and `_do_drop_import`'s cross-thread
+    connection — were both fixed on 2026-08-30/31 and have been
+    removed. See `pdb_mentions._refresh_worker` /
+    `_parse_entries_idx` and `browse._do_drop_import_with_conn`.)*
     - Incremental card updates / list virtualisation: NOT needed
       for responsiveness on today's evidence. Revisit only if a
       much larger library makes the 0.6 s rebuild matter.
@@ -903,19 +893,6 @@ Pending features, roughly grouped. Newest at the top of each section.
       author's `wikidata` ID against the set; render the highest
       tier found.
 
-- **Show an author's prior institutions in the author dialog.**
-  OpenAlex's author record carries an `affiliations` array of
-  `{institution: {display_name, ...}, years: [...]}` entries — a
-  career timeline of every institution that author has published
-  from. Surface this in the author-works window (`author_works.py`):
-  a small list under the author header, sorted most-recent year
-  first, showing institution name + year range. The list visible
-  on a `curl /authors?search=...` for "Clyde A. Smith" gives a CV
-  at a glance — Stanford SSRL (current), Notre Dame 2007–2010,
-  Vermont 1998–2000, NIH 2023–2024, Penn State 2023–2024. Free
-  data we already pay for; surprisingly informative as a "who is
-  this person" cue when disambiguating.
-
 - **PI funding profile in the author dialog (multi-source).**
   Aggregate an author's grants across their works and enrich them
   from public funder databases so the dialog shows the
@@ -1595,33 +1572,6 @@ via `extract.CROSSREF_USER_AGENT`.
       (it does) and a second editor on the *same* paper should
       raise the first rather than open a duplicate.
 
-- **Open the Authors window directly from the hamburger menu.** Today
-  the only ways in are the author popover on a paper
-  (`browse.py:4793`) and the Discover author tab
-  (`discover.py:291`) — both require finding an author first. That is
-  backwards, because the window keeps a **persistent `author_trail`
-  table** and is a singleton: it accumulates state deliberately meant
-  to survive across sessions, and there is no direct route to it. The
-  trail can only be reached by going somewhere else first.
-
-  Place it with `Discover (OpenAlex)…` and `Subscriptions…` in the
-  existing section — those three are all "browse outward from the
-  library", as against the paper-centric actions elsewhere.
-
-  **The one piece of real work:** `author_works.open_window(parent,
-  conn, authorship)` requires an authorship and pops an alert dialog
-  when it has neither ORCID nor OpenAlex ID. A menu item has no
-  authorship to pass, so it needs a no-argument path — either a
-  default of `authorship=None` that skips the identifier gate, or a
-  separate `open_trail_window()` — opening on the trail with no author
-  selected. The singleton handling already does the right thing:
-  raise the existing window if one is open, create it otherwise.
-
-  **Needs an empty state.** On a fresh library the trail is empty, so
-  the menu item would open a blank window. Say so instead: "No
-  authors yet — click an author's name on a paper, or find one in
-  Discover", ideally with the Discover action right there.
-
 - **"Rename to metadata" button on the paper card.** Rename the
   PDF file so the filename reflects (to some extent) the title,
   author and year — publisher downloads arrive as opaque names
@@ -1859,6 +1809,10 @@ it just means the best-covered papers stop needing them.
     viewer already consumes, or superseding `parse_bibliography` for
     those papers. The rect side still has to come from the PDF,
     since that is where the user is clicking.
+    *(Shipped 2026-08-31: `jats.parse_ref_list` supersedes
+    `parse_bibliography` where the JATS exists, and `parse_xrefs` +
+    `references_pdf.find_jats_citations` supply the rects — the
+    viewer's Path E.)*
   - **v2 — full text.** Section-aware FTS and citation contexts.
 
   *(v0 shipped 2026-08-28: `alexandria/jats.py`, import-time hook,

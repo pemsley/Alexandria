@@ -102,5 +102,29 @@ is a sign of times, not a cause for rejection.
 
 I hope that this can be reviewed - if this is slop then Coot is slop too.
 
+Re: https://github.com/flathub-infra/documentation/blob/main/docs/02-for-app-authors/02-requirements.modules
+
+Generative AI policy
+
+   []
+
+   Applications containing AI-generated or AI-assisted code, documentation, or any other
+   content are not allowed.
+
+   []
+
+   These submissions can be rejected without any further review.
+
+   Exceptions may be granted for mature, well-maintained projects.
+
+I think that the point of this rule is not to waste the time of flatpak team with low effort, "throw it over the wall"
+projects.  This project is not that.
+
+I hope that this project can be regarded as an exception, because it was written by me. Look at *my* (Paul Emsley,
+that is) record. I have maintained the most highly-cited Open Source/Free Software desktop software (Coot) for over
+20 years. If that doesn't say commitment and a reasonablle code quality, then I literally don't know what does.
+
+Flatpak wants a meaningful application, sustained development, and responsible and responsive upsteam. Well, with
+this project, you have it spades.
 
 

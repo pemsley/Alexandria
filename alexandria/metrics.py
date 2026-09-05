@@ -2885,6 +2885,80 @@ def find_citation_candidates(surname, year, journal=None, max_n=10):
     return (None, [])
 
 
+# A title shorter than this identifies nothing — "Coot" matches half
+# of OpenAlex. Two words is the practical floor for a title search.
+_MIN_TITLE_WORDS = 3
+
+# OpenAlex separates filters with commas and OR-values with pipes, so
+# either character inside a value silently splits it into two filters.
+_FILTER_UNSAFE_RE = re.compile(r"[,|]+")
+
+
+def title_search_url(title, year=None, max_n=10):
+    """OpenAlex query for a work by its title, or None when the title
+    is too short to identify anything.
+
+    This is the strongest signal the Edit dialog has: the paper that
+    prompted this returns exactly one hit on its title alone, where
+    searching its first author's *given* name returned the most-cited
+    papers by everyone called Nicholas."""
+    t = _FILTER_UNSAFE_RE.sub(" ", (title or "").strip())
+    t = re.sub(r"\s+", " ", t).strip()
+    if len(t.split()) < _MIN_TITLE_WORDS:
+        return None
+    filt = "title.search:" + t
+    if year:
+        filt += ",publication_year:{}".format(int(year))
+    return ("https://api.openalex.org/works?filter=" +
+            urllib.parse.quote(filt, safe=":.,") +
+            "&per-page={}".format(max_n) +
+            "&select=id,doi,title,publication_year,primary_location,"
+            "authorships,cited_by_count")
+
+
+def describe_metadata_search(rec):
+    """One line saying what a search of `rec` will actually look for,
+    or None when there is not enough to search with.
+
+    The old failure was silent: a query built from one word of an
+    author's name, presented with a confident "top result 2x more
+    cited than next". Saying what was searched is most of the cure."""
+    if title_search_url(rec.get("title")) is None:
+        return None
+    bits = ["title"]
+    if rec.get("year"):
+        bits.append(str(rec["year"]))
+    if rec.get("journal"):
+        bits.append(rec["journal"])
+    return "Searching OpenAlex by " + ", ".join(bits)
+
+
+def find_candidates_by_title(title, year=None, max_n=10, timeout=30):
+    """`(mode, [candidate, ...])` for a title search, shaped exactly
+    like `find_citation_candidates` so the dialog renders it
+    unchanged. `mode` is "title" with a year filter applied, or
+    "title-any-year" once the year has been dropped.
+
+    Falls back to dropping the year: a paper's OpenAlex year can be
+    the online-first one while the record says the issue year, and a
+    title this specific does not need the year to disambiguate."""
+    for mode, y in (("title", year), ("title-any-year", None)):
+        url = title_search_url(title, year=y, max_n=max_n)
+        if url is None:
+            return (None, [])
+        data = _http_get_json(
+            _apply_openalex_key(url),
+            headers={"User-Agent": OPENALEX_UA,
+                     "Accept": "application/json"},
+            timeout=timeout)
+        results = (data or {}).get("results") or []
+        if results:
+            return (mode, [_citation_candidate(w) for w in results])
+        if y is None:
+            break
+    return (None, [])
+
+
 def _citation_candidate(w):
     first = None
     authors = []

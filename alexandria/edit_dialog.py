@@ -209,6 +209,14 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
     find_row.append(find_entry)
     find_row.append(find_btn)
     find_box.append(find_row)
+    # The dialog already holds Title, Year and Journal, correctly
+    # separated — no parsing needed, and the title alone identifies
+    # most papers. The typed box above stays for what it was built
+    # for: a citation read off a printed page, where there are no
+    # fields to draw on.
+    use_meta_btn = Gtk.Button(label="Search using current metadata")
+    use_meta_btn.set_halign(Gtk.Align.START)
+    find_box.append(use_meta_btn)
     find_status = Gtk.Label(xalign=0.0)
     find_status.set_wrap(True)
     # Cap the natural width — a long wrapping label otherwise
@@ -256,7 +264,10 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
             results_scroll.set_visible(False)
             return False
         note = {"exact": "", "minus1": " (year matched ±1)",
-                "none": " (year ignored)"}.get(mode, "")
+                "none": " (year ignored)",
+                "title": " (matched on title)",
+                "title-any-year": " (matched on title, year ignored)"}.get(
+                    mode, "")
         msg = "{} candidate{}{}".format(
             len(cands), "" if len(cands) == 1 else "s", note)
         if (len(cands) >= 2 and cands[1]["cited_by_count"]
@@ -315,6 +326,32 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
             GLib.idle_add(show_results, mode, cands)
         threading.Thread(target=work, daemon=True).start()
 
+    def on_find_by_metadata(_w):
+        current = {"title": title_entry.get_text().strip(),
+                   "year": _parse_year(year_entry.get_text()),
+                   "journal": journal_entry.get_text().strip() or None}
+        described = metrics.describe_metadata_search(current)
+        if described is None:
+            _find_status(
+                "Needs a title of at least three words to search on — "
+                "type a citation above instead.")
+            return
+        _find_status(described + "…")
+        use_meta_btn.set_sensitive(False)
+
+        def work():
+            try:
+                mode, cands = metrics.find_candidates_by_title(
+                    current["title"], current["year"])
+            except Exception as e:
+                GLib.idle_add(_find_status, "Search failed: {}".format(e))
+                GLib.idle_add(use_meta_btn.set_sensitive, True)
+                return
+            GLib.idle_add(show_results, mode, cands)
+            GLib.idle_add(use_meta_btn.set_sensitive, True)
+        threading.Thread(target=work, daemon=True).start()
+
+    use_meta_btn.connect("clicked", on_find_by_metadata)
     find_btn.connect("clicked", on_find)
     find_entry.connect("activate", on_find)
     results_list.connect(

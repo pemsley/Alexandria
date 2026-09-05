@@ -4,4 +4,4 @@ GTK4 desktop application; metadata enrichment via OpenAlex and
 CrossRef; sidecar JSON next to each PDF as the source of truth,
 SQLite index as a regenerated cache."""
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"

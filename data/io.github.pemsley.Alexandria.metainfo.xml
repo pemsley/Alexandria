@@ -60,6 +60,34 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.5.0" date="2026-09-05">
+      <url type="details">https://github.com/pemsley/Alexandria/blob/main/RELEASE-NOTES</url>
+      <description>
+        <p>
+          Bibliographic detail that was being dropped, a search that
+          keeps up with typing, and a privacy fix.
+        </p>
+        <ul>
+          <li>Volume, issue and pages are captured, stored, editable
+            and exported — they were never collected before</li>
+          <li>"Cited most often by" on an author's page: who reads
+            this person, beside who they work with</li>
+          <li>A citation key field, with a Suggest button</li>
+          <li>Import by PubMed or PMC identifier as well as DOI</li>
+          <li>Search OpenAlex from the metadata already in the Edit
+            dialog, rather than a citation you have to type</li>
+          <li>Typing in the search bar no longer runs a query and
+            rebuilds every card per keystroke</li>
+          <li>BibTeX export no longer silently alters what it was
+            given: truncated fields, rewritten page ranges, broken
+            URLs, dropped duplicate keys and mangled corporate
+            authors are all fixed</li>
+          <li>Alexandria no longer identifies its users as its
+            author when calling OpenAlex, CrossRef and Unpaywall —
+            set your own address in Preferences</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.1" date="2026-08-31">
       <url type="details">https://github.com/pemsley/Alexandria/blob/main/RELEASE-NOTES</url>
       <description>

@@ -1,3 +1,87 @@
+  Release Notes for 0.5.0
+
+ o FEATURE: "Cited most often by" on an author's page: who reads
+            this person, as the mirror of who they work with. Names
+            are clickable through to that author. Two OpenAlex calls
+            and about two seconds, cached for a month
+
+ o FEATURE: Volume, issue and pages are captured, stored, editable
+            and exported. They were never collected before, so a
+            178-entry BibTeX export carried not one of them despite
+            146 entries having a DOI. Read from CrossRef, OpenAlex,
+            or the PDF's own PRISM metadata
+
+ o FEATURE: Citation (bibtex) key field in Edit metadata, with a
+            Suggest button. A key is a human artefact — it often has
+            to match one already in a group's .bib — and until now it
+            could only be generated at export time
+
+ o FEATURE: Import by PubMed or PMC identifier alongside DOI. Paste
+            PMC5336473, a bare PubMed ID, or a URL from PubMed, PMC
+            or Europe PMC
+
+ o FEATURE: "Search using current metadata" in Edit metadata: search
+            OpenAlex from the title, year and journal already in the
+            dialog, rather than from a citation fragment you have to
+            type out
+
+ o FEATURE: The viewer's sidebar and the author page's people
+            sections collapse, and remember whether you left them
+            open
+
+ o FEATURE: MCP: get_full_texts reads the publisher's JATS where we
+            hold it, falling back to the PDF and then the abstract,
+            and reports how much of the paper it returned so a
+            summary can say what it actually read
+
+ o CHANGE:  BibTeX-only entries show a drawn "no PDF" page rather
+            than a stock icon that sat badly beside real thumbnails
+
+ o CHANGE:  The author header puts the institution on its own line,
+            with room to breathe
+
+ o BUG-FIX: Alexandria no longer identifies its users as its author.
+            An unconfigured copy sent the maintainer's email address
+            to OpenAlex, CrossRef and Unpaywall, so every user's
+            traffic was attributed to him. Set your own address in
+            Preferences → Online services; without one, Unpaywall is
+            skipped and the others fall back to the common pool
+
+ o BUG-FIX: Typing in the search bar no longer runs a query and
+            rebuilds every card per keystroke. Typing "coot" used to
+            rebuild 331 cards; it now rebuilds five, once
+
+ o BUG-FIX: BibTeX export no longer silently alters what it was
+            given. A per-cent sign truncated its own field and
+            everything after it — two abstracts lost two thirds of
+            their text — page ranges were rewritten, and an "&" in a
+            URL became a space
+
+ o BUG-FIX: A .bib that uses one citation key twice keeps both
+            papers. The second used to be dropped and its URL
+            mangled; it is now re-parsed under a free key, and the
+            rename is reported rather than done quietly
+
+ o BUG-FIX: Corporate authors survive a round trip. "{{Meta
+            Platforms, Inc.}}" was read as a personal name and
+            written back as "Platforms, Inc. Meta"
+
+ o BUG-FIX: An author's page showed the institution from whichever
+            paper you opened them from — so a 2006 paper gave their
+            2006 employer — while the sidebar showed the current one
+
+ o BUG-FIX: The MCP server served one catalogue's records against
+            another catalogue's file paths whenever the current
+            catalogue was not the default. Nothing errored; the
+            answers were simply about the wrong library
+
+ o BUG-FIX: Importing a .bib no longer crashes on completion, so the
+            progress bar comes down and the list refreshes
+
+ o BUG-FIX: The JATS backfill no longer raises one notification per
+            paper
+
+-----
 
   Release Notes for 0.4.1
 

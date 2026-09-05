@@ -96,6 +96,83 @@ def pmcid_for_doi(doi):
     return results[0].get("pmcid") or None
 
 
+# --- Import by PubMed / PMC identifier -------------------------------
+
+# PMCIDs always carry the prefix; PubMed IDs never do. That is what
+# makes a bare number unambiguous — it can only be a PMID.
+_PMCID_RE = re.compile(r"(?:pmcid\s*[:=]?\s*)?pmc[\s:]*?(\d{4,10})",
+                       re.IGNORECASE)
+_PMID_RE = re.compile(r"(?:pmid\s*[:=]?\s*)?(\d{4,9})\s*$",
+                      re.IGNORECASE)
+
+
+def parse_pubmed_identifier(text):
+    """`("pmcid", "PMC…")`, `("pmid", "…")` or None.
+
+    Accepts what a person actually pastes: a bare identifier with or
+    without its prefix, and the URLs that PubMed, PMC and Europe PMC
+    put in the address bar. Returns None for a DOI, so a caller can
+    try DOI first and fall through to here."""
+    s = (text or "").strip()
+    if not s or "10." in s.split("/")[0] or s.lower().startswith("doi"):
+        return None
+    if "doi.org" in s.lower():
+        return None
+    # A URL: take the last meaningful path segment.
+    if "://" in s:
+        parts = [p for p in s.split("?")[0].split("#")[0].split("/") if p]
+        s = parts[-1] if parts else ""
+    m = _PMCID_RE.search(s)
+    if m:
+        return ("pmcid", "PMC" + m.group(1))
+    m = _PMID_RE.match(s.strip())
+    if m:
+        return ("pmid", m.group(1))
+    return None
+
+
+def pubmed_query(kind, ident):
+    """The Europe PMC search query for one identifier.
+
+    Unquoted deliberately: `PMCID:"PMC5336473"` returns nothing while
+    `PMCID:PMC5336473` works — the opposite of the `DOI:"..."` form
+    `pmcid_for_doi` uses, and a silent no-result if "tidied"."""
+    if kind == "pmcid":
+        return "PMCID:{}".format(ident)
+    return "EXT_ID:{} AND SRC:MED".format(ident)
+
+
+def lookup_pubmed_identifier(text):
+    """Resolve a pasted PubMed/PMC identifier to
+    `{doi, pmid, pmcid, title, journal, year}`, or None.
+
+    A PMC identifier means the full text is deposited and open, so a
+    paper imported this way can also get its JATS and stands a good
+    chance of an open-access PDF — see `fetch_and_store`."""
+    parsed = parse_pubmed_identifier(text)
+    if parsed is None:
+        return None
+    query = urllib.parse.quote(pubmed_query(*parsed), safe="")
+    url = ("{}/search?query={}&format=json&pageSize=1&resultType=core"
+           .format(_EPMC_ROOT, query))
+    payload = _get_json(url)
+    results = (payload or {}).get("resultList", {}).get("result", [])
+    if not results:
+        return None
+    r = results[0]
+    year = r.get("pubYear")
+    try:
+        year = int(year) if year else None
+    except (TypeError, ValueError):
+        year = None
+    return {"doi": r.get("doi") or None,
+            "pmid": r.get("pmid") or None,
+            "pmcid": r.get("pmcid") or None,
+            "title": r.get("title") or None,
+            "journal": r.get("journalTitle") or None,
+            "year": year}
+
+
 def fetch_and_store(pdf_path, doi):
     """Try to fetch the JATS full text for `doi` and store it at
     jats_path(pdf_path). Returns the sidecar `jats` block:

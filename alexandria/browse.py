@@ -1761,7 +1761,8 @@ class BrowserWindow(Adw.ApplicationWindow):
         import_section.append("Import Files…",   "win.import-files")
         import_section.append("Import Folder…",  "win.import-folder")
         import_section.append("Import BibTeX…",  "win.import-bibtex")
-        import_section.append("Import from DOI…", "win.import-doi")
+        import_section.append("Import from DOI or PubMed ID…",
+                              "win.import-doi")
         import_menu.append_section(None, import_section)
         export_section = Gio.Menu()
         export_section.append("Export BibTeX…",  "win.export-bibtex")

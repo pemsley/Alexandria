@@ -11,7 +11,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GLib
 
-from . import metrics, bibtex_import
+from . import metrics, bibtex_import, jats
 
 
 def _clean_doi(s):
@@ -35,7 +35,7 @@ def open_doi_import(parent):
     add_reference_from_viewer(br, also_get_pdf, on_done) and
     _toast(message)."""
     win = Gtk.Window(transient_for=parent, modal=True)
-    win.set_title("Import from DOI")
+    win.set_title("Import from DOI or PubMed ID")
     win.set_default_size(440, -1)
 
     outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -44,12 +44,15 @@ def open_doi_import(parent):
     outer.set_margin_top(12)
     outer.set_margin_bottom(12)
 
-    prompt = Gtk.Label(label="Enter a DOI to add to your library:")
+    prompt = Gtk.Label(
+        label="Enter a DOI, PubMed ID or PMC ID to add to "
+              "your library:")
     prompt.set_halign(Gtk.Align.START)
     outer.append(prompt)
 
     entry = Gtk.Entry()
-    entry.set_placeholder_text("10.1107/S2059798320000534")
+    entry.set_placeholder_text(
+        "10.1107/S2059798320000534  ·  PMC5336473  ·  28345007")
     entry.set_hexpand(True)
     outer.append(entry)
 
@@ -118,15 +121,37 @@ def open_doi_import(parent):
         return False
 
     def _do_add(*_a):
-        doi = _clean_doi(entry.get_text())
-        if not doi:
-            _set_busy(False, "Please enter a DOI.")
+        raw = entry.get_text()
+        doi = _clean_doi(raw)
+        pubmed = jats.parse_pubmed_identifier(raw)
+        if not doi and pubmed is None:
+            _set_busy(False, "Please enter a DOI, PubMed ID or PMC ID.")
             return
         also_pdf = pdf_check.get_active()
         _set_busy(True, "Looking up metadata…")
 
         def _worker():
+            nonlocal doi
             try:
+                if pubmed is not None:
+                    # Resolve the identifier to a DOI, then hand off
+                    # to exactly the path a pasted DOI takes — the
+                    # dedup, ghost creation and PDF fetch are all
+                    # keyed on the DOI.
+                    found = jats.lookup_pubmed_identifier(raw)
+                    if found is None:
+                        GLib.idle_add(
+                            _on_resolved, None,
+                            "No Europe PMC record for {}".format(
+                                pubmed[1]), raw, also_pdf)
+                        return
+                    if not found.get("doi"):
+                        GLib.idle_add(
+                            _on_resolved, None,
+                            "{} has no DOI — cannot import it".format(
+                                pubmed[1]), raw, also_pdf)
+                        return
+                    doi = found["doi"]
                 resolved = metrics.resolve_doi(doi)
             except Exception as e:
                 GLib.idle_add(_on_resolved, None, str(e), doi, also_pdf)

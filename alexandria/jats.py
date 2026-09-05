@@ -516,13 +516,24 @@ def parse_xrefs(xml_path):
     return out
 
 
-def backfill(conn, on_progress=None, stop=None):
+def backfill(conn, on_progress=None, stop=None, suppress=None):
     """Walk every DOI-bearing paper, fetch-and-store JATS where an
     attempt is due, and record the outcome in each sidecar.
 
     on_progress(done, total) is called after each candidate
     (skipped ones included); `stop` is an optional threading.Event
-    checked between papers. Returns
+    checked between papers.
+
+    `suppress(path)` — when given, called with each file this is
+    about to write, so a running LibraryWatcher can ignore the
+    resulting events. Needed because `sidecar.write` is atomic
+    (tmp + `os.replace`) and therefore normally invisible to the
+    monitor, but under the write rate of a full backfill macOS
+    coalesces the replace into DELETED + CREATED on the destination
+    — and a CREATED on a `*.alexandria` path is indistinguishable
+    from someone dropping a shared sidecar into the library, so
+    every paper produced an "Ignored an external sidecar change"
+    toast. Returns
     {"stored": n, "absent": n, "errors": n, "skipped": n} —
     "absent" covers both no_pmcid and no_fulltext."""
     from . import index, sidecar
@@ -551,6 +562,11 @@ def backfill(conn, on_progress=None, stop=None):
             if on_progress:
                 on_progress(done, len(rows))
             continue
+        if suppress is not None:
+            # Both files: the sidecar for the reason above, the XML
+            # so its own create/rename events stay quiet too.
+            suppress(jats_path(pdf_path))
+            suppress(sc_path)
         block = fetch_and_store(pdf_path, rec["doi"])
         rec["jats"] = block
         sidecar.write(sc_path, rec)

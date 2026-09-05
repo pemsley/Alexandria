@@ -2430,10 +2430,27 @@ class BrowserWindow(Adw.ApplicationWindow):
             self._toast(msg, timeout=5)
             return False
 
+        # Silence the watcher for each file the backfill writes.
+        # sidecar.write is atomic and normally invisible, but at
+        # backfill write-rates macOS coalesces the replace into
+        # DELETED + CREATED on the destination, and a CREATED on a
+        # `*.alexandria` path reads as an externally-dropped sidecar
+        # — one toast per paper. 60s covers the fetch that follows.
+        w = getattr(self, "library_watcher", None)
+
+        def suppress(path):
+            if w is None:
+                return
+            try:
+                w.suppress(path, 60)
+            except Exception:
+                pass
+
         def work():
             conn = index.connect_existing(self._db_path)
             try:
-                totals = jats.backfill(conn, on_progress=progress)
+                totals = jats.backfill(conn, on_progress=progress,
+                                       suppress=suppress)
             finally:
                 conn.close()
             GLib.idle_add(finish, totals)
@@ -4574,9 +4591,10 @@ class BrowserWindow(Adw.ApplicationWindow):
         except Exception:
             return
         rec.update(updates)
-        if getattr(self, "watcher", None) is not None:
+        w = getattr(self, "library_watcher", None)
+        if w is not None:
             try:
-                self.watcher.suppress(sc_path, 5)
+                w.suppress(sc_path, 5)
             except Exception:
                 pass
         try:

@@ -72,7 +72,7 @@ FULL = ROWS + [
 def test_the_profile_corrects_a_stale_seeded_institution():
     """The bug: opened from a 2006 paper, the header kept saying
     MRC LMB even after OpenAlex said Taizhou."""
-    page = _FakePage(seeded="·  MRC Laboratory of Molecular Biology")
+    page = _FakePage(seeded="MRC Laboratory of Molecular Biology")
     page.populate(ROWS)
     assert "Taizhou University" in page._sub_inst_lbl.markup
     assert "MRC" not in page._sub_inst_lbl.markup
@@ -89,7 +89,7 @@ def test_it_still_fills_an_empty_header():
 
 def test_the_sidebar_is_told_the_same_thing():
     """Header and sidebar row disagreeing is what made this visible."""
-    page = _FakePage(seeded="·  MRC Laboratory of Molecular Biology")
+    page = _FakePage(seeded="MRC Laboratory of Molecular Biology")
     page.populate(ROWS)
     assert page.told_the_sidebar == ["Taizhou University"]
     assert "Taizhou University" in page._sub_inst_lbl.markup
@@ -122,16 +122,16 @@ def test_the_current_institution_is_remembered_for_the_photo_search():
 def test_no_affiliations_leaves_the_seeded_value_alone():
     """OpenAlex knows nothing: the paper's own address is better
     than blanking the line."""
-    page = _FakePage(seeded="·  Some Institute")
+    page = _FakePage(seeded="Some Institute")
     page.populate([])
-    assert page._sub_inst_lbl.markup == "·  Some Institute"
+    assert page._sub_inst_lbl.markup == "Some Institute"
 
 
 def test_a_nameless_affiliation_does_not_blank_the_line():
-    page = _FakePage(seeded="·  Some Institute")
+    page = _FakePage(seeded="Some Institute")
     page.populate([{"display_name": None, "year_min": 2020,
                     "year_max": 2024}])
-    assert page._sub_inst_lbl.markup == "·  Some Institute"
+    assert page._sub_inst_lbl.markup == "Some Institute"
 
 
 if __name__ == "__main__":

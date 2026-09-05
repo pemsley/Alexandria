@@ -127,6 +127,11 @@ def _author_works_cache_is_fresh(cached):
 #
 # `(label, foreground)` tuples — no background fills, no emojis
 # (color emojis crash the user's Cairo/CoreText pipeline on macOS).
+# The institution line. No leading "·" any more: that separated it
+# from the ORCID back when they shared a row.
+_INSTITUTION_MARKUP = "<span size='small' alpha='75%'>{}</span>"
+
+
 def current_affiliation(rows):
     """The row describing where this author is *now*, or None.
 
@@ -625,6 +630,16 @@ class AuthorPage(Gtk.Box):
             self._sub_orcid_lbl.set_visible(True)
         sub_row.append(self._sub_orcid_lbl)
 
+        # The institution gets its own row between the name and the
+        # ORCID, rather than sharing the ORCID's line. Sharing it
+        # left the label a narrow column between the ORCID and the
+        # history button, so "St. Jude Children's Research Hospital"
+        # wrapped into four squashed vertical lines. On its own row
+        # it has the width of the header to flow into.
+        inst_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                           spacing=6)
+        inst_row.set_margin_top(2)
+        inst_row.set_margin_bottom(2)
         self._sub_inst_lbl = Gtk.Label(xalign=0.0)
         self._sub_inst_lbl.set_visible(False)
         # Long affiliations (especially CrossRef's full department +
@@ -633,13 +648,20 @@ class AuthorPage(Gtk.Box):
         # requested width so the line flows to multiple rows instead.
         self._sub_inst_lbl.set_wrap(True)
         self._sub_inst_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
-        self._sub_inst_lbl.set_max_width_chars(60)
+        # Claim the row rather than taking a natural width: without
+        # this the label is allocated close to its longest word and
+        # wraps into a narrow column even with the header's width
+        # going spare. max_width_chars then only bounds what it may
+        # *ask* for, so a very long CrossRef affiliation still cannot
+        # stretch the window.
+        self._sub_inst_lbl.set_hexpand(True)
+        self._sub_inst_lbl.set_max_width_chars(72)
         if self.authorship.get("institution"):
             self._sub_inst_lbl.set_markup(
-                "<span size='small' alpha='75%'>·  {}</span>".format(
+                _INSTITUTION_MARKUP.format(
                     GLib.markup_escape_text(self.authorship["institution"])))
             self._sub_inst_lbl.set_visible(True)
-        sub_row.append(self._sub_inst_lbl)
+        inst_row.append(self._sub_inst_lbl)
 
         # Deliberately not "flat": a flat MenuButton draws no frame
         # until hover, so it reads as a decoration rather than a
@@ -651,12 +673,14 @@ class AuthorPage(Gtk.Box):
         self._aff_history_btn.set_tooltip_text(
             "Show all prior institutions")
         self._aff_history_btn.set_visible(False)
-        sub_row.append(self._aff_history_btn)
+        self._aff_history_btn.set_halign(Gtk.Align.END)
+        inst_row.append(self._aff_history_btn)
 
         # Clear any auto-selection once after present (selectable
         # labels grab focus and select-all by default).
         GLib.idle_add(
             lambda: (self._sub_orcid_lbl.select_region(0, 0), False)[1])
+        hleft.append(inst_row)
         hleft.append(sub_row)
 
         self.stats_lbl = Gtk.Label(xalign=0.0)
@@ -1257,7 +1281,7 @@ class AuthorPage(Gtk.Box):
         # so guarding here just made the two disagree on screen.
         if current.get("display_name"):
             self._sub_inst_lbl.set_markup(
-                "<span size='small' alpha='75%'>·  {}</span>".format(
+                _INSTITUTION_MARKUP.format(
                     GLib.markup_escape_text(current["display_name"])))
             self._sub_inst_lbl.set_visible(True)
 

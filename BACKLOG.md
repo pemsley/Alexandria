@@ -995,6 +995,43 @@ Pending features, roughly grouped. Newest at the top of each section.
   you hold* does — and that is the one thing that should stay
   per-catalogue.
 
+  **The case, walked through (2026-09-04).** Start Alexandria; it
+  opens the catalogue you last used, say `moorhen`. Open `default`
+  from the hamburger menu — a second window. Open the Authors window
+  from *that* one. Now click an author in a popover on a card in the
+  original `moorhen` window. What happens:
+
+    - `author_works._ensure_window` is a module-level singleton and
+      uses its `conn` argument **only when creating** the window. It
+      already exists, so `moorhen_conn` is discarded.
+    - `show_author` calls `index.add_author_trail(self.conn, …)`, so
+      that author joins the **default** catalogue's trail.
+    - The page then resolves everything against default:
+      `_existing_dois(self.conn)` means a paper you hold in moorhen
+      shows as *not* held, "Add to Archive" would import into the
+      default library, and the citing-authors cache writes to the
+      default database.
+    - Avatars are worse, because they do not follow the window at
+      all. `author_image.image_path()` uses
+      `prefs.get_library_root()` — the *globally* current catalogue.
+      Opening the default window called
+      `set_current_catalogue("default")`, so avatars resolve to
+      default's directory even for the moorhen window's own cards.
+      This is why photos appear to "disappear": 16 images under
+      default, 4 under moorhen, and which set you see depends on
+      what you opened last rather than on which window you are in.
+
+  Nothing crashes and nothing is corrupted. Every answer is
+  plausible and silently attributed to the wrong catalogue — the
+  same species as the MCP server serving one catalogue's rows
+  against another's paths (fixed in 084c759): one half follows the
+  catalogue and the other half does not.
+
+  With a shared authors database and a shared image store, every
+  question above stops being ambiguous. There is one trail, one set
+  of photos, and the only per-catalogue thing left is "do I hold
+  this paper" — which is the one question that genuinely differs.
+
   **Tractable, because the coupling is thinner than it looks.** The
   one place the two sides meet is `index.stale_author_score_ids`,
   which picks authors to refresh from the papers in the library —

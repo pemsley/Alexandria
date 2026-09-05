@@ -1816,7 +1816,59 @@ via `extract.CROSSREF_USER_AGENT`.
 - FTS to include mark labels
 
 ## Export
-- BibTeX export (single, filtered, whole library).
+- **The whole library as one file — JSONL, not a concatenation.**
+  Wanted so the library can be handled the way a `.bib` file is: one
+  portable text file, shareable, and reviewable in git the way bibtui
+  does it.
+
+  `cat *.alexandria` cannot work: each sidecar is a **complete
+  pretty-printed JSON document** (198 lines for a typical one), so
+  concatenating produces `}` followed by `{` and no parser accepts it.
+
+  **Note this may already be solved for the interchange case.**
+  `bibtex_export.export_rows_to_file(rows, path)` already writes the
+  whole library as a single `.bib`, and `ris_export` does RIS. If the
+  goal is "consumed by LaTeX / pandoc / Zotero", that is done, and
+  CSL-JSON (`csl.py`, `csl_export.py`) is the JSON-native equivalent.
+  What those cannot carry is the point: sidecars have **32 top-level
+  keys** and BibTeX preserves perhaps eight — highlights, notes,
+  marks, structured `authorships` with ORCIDs and institutions,
+  `citations_by_year`, the `jats` block, `sha256` and the caches all
+  vanish. So this entry is only about the *lossless* case.
+
+  **JSONL — one compact object per line.** It keeps the exact
+  property that made `cat` attractive: `cat a.jsonl b.jsonl` is still
+  valid JSONL. It streams, it appends, and a single changed paper is
+  a **single changed line**, which is what makes it reviewable in git
+  rather than a wall of diff. Measured on the current library:
+  **168 records, 0.86 MB, longest line 30 KB.**
+
+  Alternatives considered: a JSON array is valid but any edit rewrites
+  the file and diffs churn on brackets and commas; an envelope object
+  (`{schema, exported, papers: [...]}`) buys provenance and schema
+  versioning but inherits the same git weakness; SQLite is already
+  there but is neither text nor mergeable.
+
+  It is not literally `cat` — each sidecar must be re-serialised
+  compact, one line each — but that is `json.dumps(rec,
+  separators=(',', ':'))` per file, and the round trip back to
+  individual sidecars is equally trivial, keyed on `pdf_filename`.
+
+  **Drop the regenerable fields by default.** Measured share of the
+  bytes: `raw` alone is **33%** (the PDF's own metadata dict),
+  `authorships` 23%, `abstract` 16%; `raw` + `cited_by_cache` +
+  `references_cache` + `citations_by_year` together are **41%**. All
+  of it is reconstructible, and the caches churn whenever a citation
+  count moves — so excluding them roughly halves the file *and*
+  removes most of the diff noise.
+
+  **Two profiles, because annotations are in there.** A lossless dump
+  carries `highlights`, `notes` and `mark` — the user's own reading,
+  which the Sharing section already says needs a merge/preview flow
+  rather than blind import. Default to omitting those three, with a
+  `--full` profile for backup. Sharing a *library* and sharing *my
+  annotations* are different acts and should not be the same flag.
+
 - **User-supplied CSL styles.** "Cite this paper as…" currently
   ships APA / Vancouver / Nature / Chicago author-date in
   `pdforg/styles/`. Add a Preferences entry that lets users drop

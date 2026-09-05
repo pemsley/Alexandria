@@ -1,0 +1,1295 @@
+
+@article{Michelanglo:Marsden,
+    author = {Ferla, Matteo P and Pagnamenta, Alistair T and Damerell, David and Taylor, Jenny C and Marsden, Brian D},
+    title = "{MichelaNglo: sculpting protein views on web pages without coding}",
+    journal = {Bioinformatics},
+    volume = {36},
+    number = {10},
+    pages = {3268-3270},
+    year = {2020},
+    month = {02},
+    abstract = "{The sharing of macromolecular structural information online by scientists is predominantly performed via 2D static images, since the embedding of interactive 3D structures in webpages is non-trivial. Whilst the technologies to do so exist, they are often only implementable with significant web coding experience.Michelaɴɢʟo is an accessible and open-source web-based application that supports the generation, customization and sharing of interactive 3D macromolecular visualizations for digital media without requiring programming skills. A PyMOL file, PDB file, PDB identifier code or protein/gene name can be provided to form the basis of visualizations using the NGL JavaScript library. Hyperlinks that control the view can be added to text within the page. Protein-coding variants can be highlighted to support interpretation of their potential functional consequences. The resulting visualizations and text can be customized and shared, as well as embedded within existing websites by following instructions and using a self-contained download. Michelaɴɢʟo allows researchers to move away from static images and instead engage, describe and explain their protein to a wider audience in a more interactive fashion.Michelaɴɢʟo is hosted at michelanglo.sgc.ox.ac.uk. The Python code is freely available at https://github.com/thesgc/MichelaNGLo, along with documentations about its implementation.}",
+    issn = {1367-4803},
+    doi = {10.1093/bioinformatics/btaa104},
+    url = {https://doi.org/10.1093/bioinformatics/btaa104},
+    eprint = {https://academic.oup.com/bioinformatics/article-pdf/36/10/3268/48991032/bioinformatics\_36\_10\_3268.pdf},
+}
+
+@article{experiences-protein-ligand-studies:Pearce2022,
+  title={Experiences from developing software for large X-ray crystallography-driven protein-ligand studies},
+  author={Pearce, Nicholas M and Skyner, Rachael and Krojer, Tobias},
+  journal={Frontiers in Molecular Biosciences},
+  volume={9},
+  pages={861491},
+  year={2022},
+  publisher={Frontiers}
+}
+
+@article{Emsley:Coot:2010,
+author = "Emsley, P. and Lohkamp, B. and Scott, W. G. and Cowtan, K.",
+title = "{Features and development of {\it Coot}}",
+journal = "Acta Crystallographica Section D",
+year = "2010",
+volume = "66",
+number = "4",
+pages = "486--501",
+month = "Apr",
+doi = {10.1107/S0907444910007493},
+url = {https://doi.org/10.1107/S0907444910007493},
+abstract = {{\it Coot} is a molecular-graphics application for model building and validation of biological macromolecules. The program displays electron-density maps and atomic models and allows model manipulations such as idealization, real-space refinement, manual rotation/translation, rigid-body fitting, ligand search, solvation, mutations, rotamers and Ramachandran idealization. Furthermore, tools are provided for model validation as well as interfaces to external programs for refinement, validation and graphics. The software is designed to be easy to learn for novice users, which is achieved by ensuring that tools for common tasks are `discoverable' through familiar user-interface elements (menus and toolbars) or by intuitive behaviour (mouse controls). Recent developments have focused on providing tools for expert users, with~customisable key bindings, extensions and an extensive scripting interface. The software is under rapid development, but has already achieved very widespread use within the crystallographic community. The current state of the software is presented, with a description of the facilities available and of some of the underlying methods employed.},
+keywords = {Coot, model building},
+}
+
+@article{Agirre:CCP4:2023,
+author = "Agirre, Jon and Atanasova, Mihaela and Bagdonas, Haroldas and Ballard, Charles B. and Basl{\'{e}}, Arnaud and Beilsten-Edmands, James and Borges, Rafael J. and Brown, David G. and Burgos-M{\'{a}}rmol, J. Javier and Berrisford, John M. and Bond, Paul S. and Caballero, Iracema and Catapano, Lucrezia and Chojnowski, Grzegorz and Cook, Atlanta G. and Cowtan, Kevin D. and Croll, Tristan I. and Debreczeni, Judit {\'{E}}. and Devenish, Nicholas E. and Dodson, Eleanor J. and Drevon, Tarik R. and Emsley, Paul and Evans, Gwyndaf and Evans, Phil R. and Fando, Maria and Foadi, James and Fuentes-Montero, Luis and Garman, Elspeth F. and Gerstel, Markus and Gildea, Richard J. and Hatti, Kaushik and Hekkelman, Maarten L. and Heuser, Philipp and Hoh, Soon Wen and Hough, Michael A. and Jenkins, Huw T. and Jim{\'{e}}nez, Elisabet and Joosten, Robbie P. and Keegan, Ronan M. and Keep, Nicholas and Krissinel, Eugene B. and Kolenko, Petr and Kovalevskiy, Oleg and Lamzin, Victor S. and Lawson, David M. and Lebedev, Andrey A. and Leslie, Andrew G. W. and Lohkamp, Bernhard and Long, Fei and Mal{\'{y}}, Martin and McCoy, Airlie J. and McNicholas, Stuart J. and Medina, Ana and Mill{\'{a}}n, Claudia and Murray, James W. and Murshudov, Garib N. and Nicholls, Robert A. and Noble, Martin E. M. and Oeffner, Robert and Pannu, Navraj S. and Parkhurst, James M. and Pearce, Nicholas and Pereira, Joana and Perrakis, Anastassis and Powell, Harold R. and Read, Randy J. and Rigden, Daniel J. and Rochira, William and Sammito, Massimo and S{\'{a}}nchez Rodr{\'\i}guez, Filomeno and Sheldrick, George M. and Shelley, Kathryn L. and Simkovic, Felix and Simpkin, Adam J. and Skubak, Pavol and Sobolev, Egor and Steiner, Roberto A. and Stevenson, Kyle and Tews, Ivo and Thomas, Jens M. H. and Thorn, Andrea and Valls, Josep Trivi{\~{n}}o and Uski, Ville and Us{\'{o}}n, Isabel and Vagin, Alexei and Velankar, Sameer and Vollmar, Melanie and Walden, Helen and Waterman, David and Wilson, Keith S. and Winn, Martyn D. and Winter, Graeme and Wojdyr, Marcin and Yamashita, Keitaro",
+title = "{The {\it CCP}4 suite: integrative software for macromolecular crystallography}",
+journal = "Acta Crystallographica Section D",
+year = "2023",
+volume = "79",
+number = "6",
+pages = "449--461",
+month = "Jun",
+doi = {10.1107/S2059798323003595},
+url = {https://doi.org/10.1107/S2059798323003595},
+abstract = {The Collaborative Computational Project No. 4 (CCP4) is a UK-led international collective with a mission to develop, test, distribute and promote software for macromolecular crystallography. The {\it CCP}4 suite is a multiplatform collection of programs brought together by familiar execution routines, a set of common libraries and graphical interfaces. The {\it CCP}4 suite has experienced several considerable changes since its last reference article, involving new infrastructure, original programs and graphical interfaces. This article, which is intended as a general literature citation for the use of the {\it CCP}4 software suite in~structure determination, will guide the reader through such transformations, offering a general overview of the new features and outlining future developments. As such, it aims to highlight the individual programs that comprise the suite and to provide the latest references to them for perusal by crystallographers around the world.},
+keywords = {Collaborative Computational Project No. 4, CCP4, crystallography software, macromolecular crystallography},
+}
+
+@article{McNicholas:CCP4MG:2011,
+author = "McNicholas, S. and Potterton, E. and Wilson, K. S. and Noble, M. E. M.",
+title = "{Presenting your structures: the {\it CCP}4{\it mg} molecular-graphics software}",
+journal = "Acta Crystallographica Section D",
+year = "2011",
+volume = "67",
+number = "4",
+pages = "386--394",
+month = "Apr",
+doi = {10.1107/S0907444911007281},
+url = {https://doi.org/10.1107/S0907444911007281},
+abstract = {{\it CCP}4{\it mg} is a molecular-graphics program that is designed to give rapid access to both straightforward and complex static and dynamic representations of macromolecular structures. It has recently been updated with a new interface that provides more sophisticated atom-selection options and a wizard to facilitate the generation of complex scenes. These scenes may contain a mixture of coordinate-derived and abstract graphical objects, including text objects, arbitrary vectors, geometric objects and imported images, which can enhance a picture and eliminate the need for subsequent editing. Scene descriptions can be saved to file and transferred to other molecules. Here, the substantially enhanced version 2 of the program, with a new underlying GUI toolkit, is described. A built-in rendering module produces publication-quality images.},
+keywords = {CCP4mg, molecular graphics, movies, crystallographic software},
+}
+
+@article{Sehnal:2021:Molstar,
+  title={Mol* Viewer: modern web app for 3D visualization and analysis of large biomolecular structures},
+  author={Sehnal, David and Bittrich, Sebastian and Deshpande, Mandar and Svobodov{\'a}, Radka and Berka, Karel and Bazgier, V{\'a}clav and Velankar, Sameer and Burley, Stephen K and Ko{\v{c}}a, Jaroslav and Rose, Alexander S},
+  journal={Nucleic acids research},
+  volume={49},
+  number={W1},
+  pages={W431--W437},
+  year={2021},
+  publisher={Oxford University Press}
+}
+
+@article{Wojdyr:GEMMI:2022,
+  doi = {10.21105/joss.04200},
+  url = {https://doi.org/10.21105/joss.04200},
+  year = {2022}, publisher = {The Open Journal},
+  volume = {7},
+  number = {73},
+  pages = {4200},
+  author = {Marcin Wojdyr},
+  title = {GEMMI: A library for structural biology},
+  journal = {Journal of Open Source Software}
+}
+
+@ARTICLE{Krissinel2012-ri,
+  title    = "Enhanced fold recognition using efficient short fragment
+              clustering",
+  author   = "Krissinel, Evgeny",
+  abstract = "The main structure aligner in the CCP4 Software Suite, SSM
+              (Secondary Structure Matching) has a limited applicability on the
+              intermediate stages of the structure solution process, when the
+              secondary structure cannot be reliably computed due to structural
+              incompleteness or a fragmented mainchain. In this study, we
+              describe a new algorithm for the alignment and comparison of
+              protein structures in CCP4, which was designed to overcome SSM's
+              limitations but retain its quality and speed. The new algorithm,
+              named GESAMT (General Efficient Structural Alignment of
+              Macromolecular Targets), employs the old idea of deriving the
+              global structure similarity from a promising set of locally
+              similar short fragments, but uses a few technical solutions that
+              make it considerably faster. A comparative sensitivity and
+              selectivity analysis revealed an unexpected significant
+              improvement in the fold recognition properties of the new
+              algorithm, which also makes it useful for applications in the
+              structural bioinformatics domain. The new tool is included in the
+              CCP4 Software Suite starting from version 6.3.",
+  journal  = "J. Mol. Biochem.",
+  volume   =  1,
+  number   =  2,
+  pages    = "76--85",
+  month    =  jun,
+  year     =  2012,
+  language = "en"
+}
+
+@article{Agirre:2015:Privateer,
+  title    = "Privateer: software for the conformational validation of carbohydrate structures",
+  author   = "Agirre, J., Iglesias-Fernández, J., Rovira, C., Davies, G.J., Wilson, K.S. and Cowtan, K.D.",
+  journal  = "Beilstein Journal of Organic Chemistry",
+  volume   =  16,
+  number   =  1,
+  pages    = "2523--2533",
+  year     =  2015,
+  language = "en"
+}
+
+@article{Agirre:2020:Privateer,
+  title    = "Leveraging glycomics data in glycoprotein 3D structure validation with Privateer",
+  author   = {H. Bagdonas and D. Ungar and J. Agirre},
+  journal  = "Nature Structural and Molecular Biology",
+  volume   =  22,
+  number   =  11,
+  pages    = "2523--2533",
+  year     =  2020,
+  language = "en"
+}
+
+@article{Cowtan:2003:Clipper,
+  title    = "The Clipper C++ libraries for X‐ray crystallography",
+  author   = "K. Cowtan",
+  journal  = "IUCr Comput. Comm. Newslett.",
+  volume   =  2,
+  pages    = "4--9",
+  year     =  2003,
+  language = "en"
+}
+
+@article{Krissinel:MMDB,
+author = "Krissinel, E. B. and Winn, M. D. and Ballard, C. C. and Ashton, A. W. and Patel, P. and Potterton, E. A. and
+   McNicholas, S. J. and Cowtan, K. D. and Emsley, P.",
+title = "{The new {\it CCP}4 Coordinate Library as a toolkit for the design of coordinate-related applications in
+   protein crystallography}",
+journal = "Acta Crystallographica Section D",
+year = "2004",
+volume = "60",
+number = "12 Part 1",
+pages = "2250--2255",
+month = "Dec",
+doi = {10.1107/S0907444904027167},
+url = {https://doi.org/10.1107/S0907444904027167},
+abstract = {The new {\it CCP}4 Coordinate Library is a development aiming to provide a common layer of coordinate-related functionality to the existing applications in the {\it CCP}4 suite, as well as a variety of tools that can simplify the design of new applications where they relate to atomic coordinates. The Library comprises a wide spectrum of useful functions, ranging from parsing coordinate formats and elementary editing operations on the coordinate hierarchy of biomolecules, to high-level functionality such as calculation of secondary structure, interatomic bonds, atomic contacts, symmetry transformations, structure superposition and many others. Most of the functions are available in a C++ object interface; however, a Fortran interface is provided for compatibility with older {\it CCP}4 applications. The paper describes the general principles of the Library design and the most important functionality. The Library, together with documentation, is available under the LGPL license from the {\it CCP}4 suite version 5.0 and higher.},
+keywords = {CCP4 Coordinate Library},
+}
+
+@article{Nicholls2014:ProSMART,
+  title   = {Conformation-independent structural comparison of macromolecules withProSMART},
+  author  = {Nicholls, Robert A. and Fischer, Marcus and McNicholas, Stuart and Murshudov, Garib N.},
+  year    = {2014},
+  journal = {Acta Crystallographica Section D Biological Crystallography},
+  doi     = {10.1107/S1399004714016241},
+  file    = {:/home/paule/Documents/Alexandria/moorhen/nicholls2014conformation-independent-1.pdf:pdf}
+}
+
+@article{Frigo:2005:FFTW,
+  title    = "The Design and Implementation of FFTW3.",
+  author   = "Frigo, Matteo and Johnson, Steven G.",
+  journal  = "Proceedings of the IEEE",
+  volume   =  93,
+  number   =  2,
+  pages    = "216--231",
+  year     =  2005,
+  language = "en"
+}
+
+@book{gsl,
+  author = "M. Galassi and others",
+  title = {GNU Scientific Library Reference Manual (3rd Ed.), ISBN 0954612078},
+  year = {2009},
+  publisher = {Network Theory Limited}
+}
+
+@online{react,
+  author = {Facebook},
+  title = {React: The library for web and native user interfaces},
+  url = {https://react.dev/},
+  year = 2025,
+  urldate = {2024-05-15}
+}
+
+@online{Boost,
+  title = {Boost C++ libraries version 1.89.0},
+  url = {https://www.boost.org/},
+  urldate = {2025-08-06},
+  year = {2025}
+}
+
+@misc{rdkit,
+  author = {Greg Landrum},
+  title = {RDKit: Open-source cheminformatics, Release 2025.09.1},
+  url = {https://www.rdkit.org/},
+  urldate = {2025-09-30},
+  year = {2025}
+}
+
+@misc{eigen,
+  author = {Karsten Ahnert and Mario Mulansky},
+  title = {eigen C++ Template for Linear Algebra version 3.4},
+  url = {https://eigen.tuxfamily.org/},
+  urldate = {2024-05-15},
+  year = {2021}
+}
+
+@report{WebAssemblyCoreSpecification1,
+  title = {{WebAssembly Core Specification}},
+  version = {1.0},
+  editor = {Rossberg, Andreas},
+  date = {2019-12-05},
+  institution = {{W3C}},
+  url = {https://www.w3.org/TR/wasm-core-1/},
+  langid = {english}
+}
+
+@report{WebAssemblyCoreSpecification2,
+  title = {{WebAssembly Core Specification}},
+  version = {2.0},
+  editor = {Rossberg, Andreas},
+  date = {2022-04-19},
+  institution = {{W3C}},
+  url = {https://www.w3.org/TR/wasm-core-2/},
+  langid = {english},
+  note = {https://webassembly.github.io/spec/core/_download/WebAssembly.pdf}
+}
+
+@Article{VHELIBS,
+author="Cereto-Massagu{\'e}, Adri{\`a}
+and Ojeda, Mar{\'i}a Jos{\'e}
+and Joosten, Robbie P.
+and Valls, Cristina
+and Mulero, Miquel
+and Salvado, M. Josepa
+and Arola-Arnal, Anna
+and Arola, Llu{\'i}s
+and Garcia-Vallv{\'e}, Santiago
+and Pujadas, Gerard",
+title="The good, the bad and the dubious: VHELIBS, a validation helper for ligands and binding sites",
+journal="Journal of Cheminformatics",
+year="2013",
+volume="5",
+number="1",
+pages="1--9",
+abstract="Many Protein Data Bank (PDB) users assume that the deposited structural models are of high quality but forget that these models are derived from the interpretation of experimental data. The accuracy of atom coordinates is not homogeneous between models or throughout the same model. To avoid basing a research project on a flawed model, we present a tool for assessing the quality of ligands and binding sites in crystallographic models from the PDB.",
+issn="1758-2946",
+doi="10.1186/1758-2946-5-36",
+url="http://dx.doi.org/10.1186/1758-2946-5-36"
+}
+
+@article{Krissinel:CCP4Cloud,
+author = "Krissinel, Eugene and Lebedev, Andrey A. and Uski, Ville and Ballard, Charles B. and Keegan, Ronan M. and Kovalevskiy, Oleg and Nicholls, Robert A. and Pannu, Navraj S. and Skub{\'{a}}k, Pavol and Berrisford, John and Fando, Maria and Lohkamp, Bernhard and Wojdyr, Marcin and Simpkin, Adam J. and Thomas, Jens M. H. and Oliver, Christopher and Vonrhein, Clemens and Chojnowski, Grzegorz and Basle, Arnaud and Purkiss, Andrew and Isupov, Michail N. and McNicholas, Stuart and Lowe, Edward and Trivi{\~{n}}o, Josep and Cowtan, Kevin and Agirre, Jon and Rigden, Daniel J. and Uson, Isabel and Lamzin, Victor and Tews, Ivo and Bricogne, Gerard and Leslie, Andrew G. W. and Brown, David G.",
+title = "{{\it CCP}4 Cloud for structure determination and project management in macromolecular crystallography}",
+journal = "Acta Crystallographica Section D",
+year = "2022",
+volume = "78",
+number = "9",
+pages = "1079--1089",
+month = "Sep",
+doi = {10.1107/S2059798322007987},
+url = {https://doi.org/10.1107/S2059798322007987},
+abstract = {Nowadays, progress in the determination of three-dimensional macromolecular structures from diffraction images is achieved partly at the cost of increasing data volumes. This is due to the deployment of modern high-speed, high-resolution detectors, the increased complexity and variety of crystallographic software, the use of extensive databases and high-performance computing. This limits what can be accomplished with personal, offline, computing equipment in terms of both productivity and maintainability. There is also an issue of long-term data maintenance and availability of structure-solution projects as the links between experimental observations and the final results deposited in the PDB. In this article, {\it CCP}4 Cloud, a new front-end of the {\it CCP}4 software suite, is presented which mitigates these effects by providing an online, cloud-based environment for crystallographic computation. {\it CCP}4 Cloud was developed for the efficient delivery of computing power, database services and seamless integration with web resources. It provides a rich graphical user interface that allows project sharing and long-term storage for structure-solution projects, and can be linked to data-producing facilities. The system is distributed with the {\it CCP}4 software suite version 7.1 and higher, and an online publicly available instance of {\it CCP}4 Cloud is provided by CCP4.},
+keywords = {CCP4, CCP4 Cloud, macromolecular crystallography, distributed computing, data management, project management},
+}
+
+@misc{pybind11,
+   author = {W. Jakob and J. Rhinelander and D. Moldovan},
+   year = 2017,
+   url = {https://github.com/pybind/pybind11},
+   title = {pybind11 -- Seamless operability between C++11 and Python}
+}
+
+@article{Winn:dz5219,
+author = "Winn, Martyn D. and Ballard, Charles C. and Cowtan, Kevin D. and Dodson, Eleanor J. and Emsley, Paul and Evans, Phil R. and Keegan, Ronan M. and Krissinel, Eugene B. and Leslie, Andrew G. W. and McCoy, Airlie and McNicholas, Stuart J. and Murshudov, Garib N. and Pannu, Navraj S. and Potterton, Elizabeth A. and Powell, Harold R. and Read, Randy J. and Vagin, Alexei and Wilson, Keith S.",
+title = "{Overview of the {\it CCP}4 suite and current developments}",
+journal = "Acta Crystallographica Section D",
+year = "2011",
+volume = "67",
+number = "4",
+pages = "235--242",
+month = "Apr",
+doi = {10.1107/S0907444910045749},
+url = {https://doi.org/10.1107/S0907444910045749},
+abstract = {The {\it CCP}4 (Collaborative Computational Project, Number 4) software suite is a collection of programs and associated data and software libraries which can be used for macromolecular structure determination by X-ray crystallography. The suite is designed to be flexible, allowing users a number of methods of~achieving their aims. The programs are from a wide variety of~sources but are connected by a common infrastructure provided by standard file formats, data objects and graphical interfaces. Structure solution by macromolecular crystallo{\-}graphy is becoming increasingly automated and the {\it CCP}4 suite includes several automation pipelines. After giving a brief description of the evolution of {\it CCP}4 over the last 30 years, an overview of the current suite is given. While detailed descriptions are given in the accompanying articles, here it is shown how the individual programs contribute to a complete software package.},
+keywords = {CCP4, macromolecular crystallography, software, collaboration, automation, macromolecular structure determination},
+}
+
+@article{Simpkin:qe5007,
+author = "Simpkin, Adam J. and Elliot, Luc G. and Joseph, Agnel Praveen and Burnley, Tom and Stevenson, Kyle and S{\'{a}}nchez Rodr{\'\i}guez, Filomeno and Fando, Maria and Krissinel, Eugene and McNicholas, Stuart and Rigden, Daniel J. and Keegan, Ronan M.",
+title = "{{\it Slice'N'Dice}: maximizing the value of predicted models for structural biologists}",
+journal = "Acta Crystallographica Section D",
+year = "2025",
+volume = "81",
+number = "3",
+pages = "105--121",
+month = "Mar",
+doi = {10.1107/S2059798325001251},
+url = {https://doi.org/10.1107/S2059798325001251},
+abstract = {With the advent of next-generation modelling methods, such as {\it AlphaFold}2, structural biologists are increasingly using predicted structures to obtain structure solutions via molecular replacement (MR) or model fitting in single-particle cryogenic sample electron microscopy (cryoEM). Differences between the domain{--}domain orientations represented in a predicted model and a crystal structure are often a key limitation when using predicted models. {\it Slice'N'Dice} is a software package designed to address this issue by first slicing models into distinct structural units and then automatically placing the slices using either {\it Phaser}, {\it MOLREP} or {\it PowerFit}. The slicing step can use the {\it AlphaFold} predicted aligned error (PAE) or can operate via a variety of C${\sp\alpha}$-atom-based clustering algorithms, extending the applicability to structures of any origin. The number of splits can either be selected by the user or determined automatically. {\it Slice'N'Dice} is available for both MR and automated map fitting in the {\it CCP}4 and {\it CCP-EM} software suites.},
+keywords = {structure determination, cryo-EM, X-ray crystallography, molecular replacement, structure prediction},
+}
+
+@article{Dialpuri:qe5003,
+author = "Dialpuri, Jordan S. and Bagdonas, Haroldas and Atanasova, Mihaela and Schofield, Lucy C. and Hekkelman, Maarten L. and Joosten, Robbie P. and Agirre, Jon",
+title = "{Analysis and validation of overall {\it N}-glycan conformation in {\it Privateer}}",
+journal = "Acta Crystallographica Section D",
+year = "2023",
+volume = "79",
+number = "6",
+pages = "462--472",
+month = "Jun",
+doi = {10.1107/S2059798323003510},
+url = {https://doi.org/10.1107/S2059798323003510},
+abstract = {The oligosaccharides in {\it N}-glycosylation provide key structural and functional contributions to a glycoprotein. These contributions are dependent on the composition and overall conformation of the glycans. The {\it Privateer} software allows structural biologists to evaluate and improve the atomic structures of carbohydrates, including {\it N}-glycans; this software has recently been extended to check glycan composition through the use of glycomics data. Here, a broadening of the scope of the software to analyse and validate the overall conformation of {\it N}-glycans is presented, focusing on a newly compiled set of glycosidic linkage torsional preferences harvested from a curated set of glycoprotein models.},
+keywords = {glycobiology, validation, Privateer, N-glycans, torsion angles},
+}
+
+@online{emscripten,
+  title = {Emscripten is a complete compiler toolchain to WebAssembly, using LLVM, with a special focus on speed, size,
+  and the Web platform},
+  url = {https://emscripten.org/},
+  urldate = {2024-05-15},
+  year = {2025},
+  author = { Alon Zakai and others}
+}
+
+@online{wasm,
+  author = {{WebAssembly Working Group}},
+  title = {WebAssembly Core Specification},
+  url = {https://www.w3.org/TR/wasm-core/},
+  year = 2025,
+  urldate = {2025-06-16}
+}
+
+@online{NodeJS,
+  author = {{OpenJS Foundation}},
+  title = {NodeJS is a free, open-source, cross-platform JavaScript runtime environment that lets developers create servers, web apps, command line tools and scripts},
+  url = {https://nodejs.org/},
+  year = 2025,
+  urldate = {2025-11-11}
+}
+
+@online{webworkers,
+  author = {{WHATWG}},
+  title = {Web workers},
+  url = {https://html.spec.whatwg.org/multipage/workers.html},
+  year = 2025,
+  urldate = {2025-13-11}
+}
+
+@article{McNicholas:ba5253,
+author = "McNicholas, Stuart and Agirre, Jon",
+title = "{Glycoblocks: a schematic three-dimensional representation for glycans and their interactions}",
+journal = "Acta Crystallographica Section D",
+year = "2017",
+volume = "73",
+number = "2",
+pages = "187--194",
+month = "Feb",
+doi = {10.1107/S2059798316013553},
+url = {https://doi.org/10.1107/S2059798316013553},
+abstract = {The close-range interactions provided by covalently linked glycans are essential for the correct folding of glycoproteins and also play a pivotal role in recognition processes. Being able to visualise protein{--}glycan and glycan{--}glycan contacts in a clear way is thus of great importance for the understanding of these biological processes. In structural terms, glycosylation sugars glue the protein together {\it via} hydrogen bonds, whereas non-covalently bound glycans frequently harness additional stacking interactions. Finding an unobscured molecular view of these multipartite scenarios is usually far from trivial; in addition to the need to show the interacting protein residues, glycans may contain many branched sugars, each composed of more than ten non-H atoms and offering more than three potential bonding partners. With structural glycoscience finally gaining popularity and steadily increasing the deposition rate of three-dimensional structures of glycoproteins, the need for a clear way of depicting these interactions is more pressing than ever. Here a schematic representation, named Glycoblocks, is introduced which combines a simplified bonding-network depiction (covering hydrogen bonds and stacking interactions) with the familiar two-dimensional glycan notation used by the glycobiology community, brought into three dimensions by the CCP4 molecular graphics project ({\it CCP4mg}).},
+keywords = {Glycoblocks, molecular graphics, glycans, interactions, CCP4mg, Privateer, carbohydrates, three-dimensional representations},
+}
+
+@article{Cowtan:di5041,
+author = "Cowtan, K. and Metcalfe, S. and Bond, P.",
+title = "{Shift-field refinement of macromolecular atomic models}",
+journal = "Acta Crystallographica Section D",
+year = "2020",
+volume = "76",
+number = "12",
+pages = "1192--1200",
+month = "Dec",
+doi = {10.1107/S2059798320013170},
+url = {https://doi.org/10.1107/S2059798320013170},
+abstract = {The aim of crystallographic structure solution is typically to determine an atomic model which accurately accounts for an observed diffraction pattern. A key step in this process is the refinement of the parameters of an initial model, which is most often determined by molecular replacement using another structure which is broadly similar to the structure of interest. In macromolecular crystallography, the resolution of the data is typically insufficient to determine the positional and~uncertainty parameters for each individual atom, and so stereochemical information is used to supplement the observational data. Here, a new approach to refinement is evaluated in which a `shift field' is determined which describes changes to model parameters affecting whole regions of the model rather than individual atoms only, with the size of the affected region being a key parameter of the calculation which can be changed in accordance with the resolution of the~data. It is demonstrated that this approach can improve the radius of convergence of the refinement calculation while also dramatically reducing the calculation time.},
+keywords = {refinement, low resolution, computational methods},
+}
+
+@Article{Zhang1997,
+author={Zhang, Tian
+and Ramakrishnan, Raghu
+and Livny, Miron},
+title={BIRCH: A New Data Clustering Algorithm and Its Applications},
+journal={Data Mining and Knowledge Discovery},
+year={1997},
+month={Jun},
+day={01},
+volume={1},
+number={2},
+pages={141-182},
+abstract={Data clustering is an important technique for exploratory data analysis, and has been studied for several years. It has been shown to be useful in many practical domains such as data classification and image processing. Recently, there has been a growing emphasis on exploratory analysis of very large datasets to discover useful patterns and/or correlations among attributes. This is called data mining, and data clustering is regarded as a particular branch. However existing data clustering methods do not adequately address the problem of processing large datasets with a limited amount of resources (e.g., memory and cpu cycles). So as the dataset size increases, they do not scale up well in terms of memory requirement, running time, and result quality.},
+issn={1573-756X},
+doi={10.1023/A:1009783824328},
+url={https://doi.org/10.1023/A:1009783824328}
+}
+
+@Article{Murtagh2012,
+author={Murtagh, F. and Contreras, P.},
+journal={WIREs Data Mining and Knowledge Discovery},
+volume={2},
+pages={86–97},
+title={Algorithms for hierarchical clustering: an overview},
+year={2012},
+}
+
+@Article{Jumper2021,
+author={Jumper, John
+and Evans, Richard
+and Pritzel, Alexander
+and Green, Tim
+and Figurnov, Michael
+and Ronneberger, Olaf
+and Tunyasuvunakool, Kathryn
+and Bates, Russ
+and {\v{Z}}{\'i}dek, Augustin
+and Potapenko, Anna
+and Bridgland, Alex
+and Meyer, Clemens
+and Kohl, Simon A. A.
+and Ballard, Andrew J.
+and Cowie, Andrew
+and Romera-Paredes, Bernardino
+and Nikolov, Stanislav
+and Jain, Rishub
+and Adler, Jonas
+and Back, Trevor
+and Petersen, Stig
+and Reiman, David
+and Clancy, Ellen
+and Zielinski, Michal
+and Steinegger, Martin
+and Pacholska, Michalina
+and Berghammer, Tamas
+and Bodenstein, Sebastian
+and Silver, David
+and Vinyals, Oriol
+and Senior, Andrew W.
+and Kavukcuoglu, Koray
+and Kohli, Pushmeet
+and Hassabis, Demis},
+title={Highly accurate protein structure prediction with AlphaFold},
+journal={Nature},
+year={2021},
+month={Aug},
+day={01},
+volume={596},
+number={7873},
+pages={583-589},
+abstract={Proteins are essential to life, and understanding their structure can facilitate a mechanistic understanding of their function. Through an enormous experimental effort1--4, the structures of around 100,000 unique proteins have been determined5, but this represents a small fraction of the billions of known protein sequences6,7. Structural coverage is bottlenecked by the months to years of painstaking effort required to determine a single protein structure. Accurate computational approaches are needed to address this gap and to enable large-scale structural bioinformatics. Predicting the three-dimensional structure that a protein will adopt based solely on its amino acid sequence---the structure prediction component of the `protein folding problem'8---has been an important open research problem for more than 50 years9. Despite recent progress10--14, existing methods fall far short of atomic accuracy, especially when no homologous structure is available. Here we provide the first computational method that can regularly predict protein structures with atomic accuracy even in cases in which no similar structure is known. We validated an entirely redesigned version of our neural network-based model, AlphaFold, in the challenging 14th Critical Assessment of protein Structure Prediction (CASP14)15, demonstrating accuracy competitive with experimental structures in a majority of cases and greatly outperforming other methods. Underpinning the latest version of AlphaFold is a novel machine learning approach that incorporates physical and biological knowledge about protein structure, leveraging multi-sequence alignments, into the design of the deep learning algorithm.},
+issn={1476-4687},
+doi={10.1038/s41586-021-03819-2},
+url={https://doi.org/10.1038/s41586-021-03819-2}
+}
+
+@article{Ramachandran1963,
+  title={Stereochemistry of polypeptide chain configurations},
+  author={Ramachandran, G. N. and Ramakrishnan, C. and Sasisekharan, V.},
+  journal={Journal of Molecular Biology},
+  volume={7},
+  pages={95--99},
+  year={1963},
+  publisher={Elsevier},
+  doi={10.1016/s0022-2836(63)80023-6}
+}
+
+@misc{Everitt2001InteractiveOT,
+  title={Interactive Order-Independent Transparency},
+  author={Cass W. Everitt},
+  year={2001},
+  url={https://api.semanticscholar.org/CorpusID:5813703}
+}
+
+@Article{Weininger1988,
+author={Weininger, David},
+title={SMILES, a chemical language and information system. 1. Introduction to methodology and encoding rules},
+journal={Journal of Chemical Information and Computer Sciences},
+year={1988},
+month={Feb},
+day={01},
+publisher={American Chemical Society},
+volume={28},
+number={1},
+pages={31-36},
+issn={0095-2338},
+doi={10.1021/ci00057a005},
+url={https://doi.org/10.1021/ci00057a005}
+}
+
+@article{Long:ba5260,
+author = "Long, Fei and Nicholls, Robert A. and Emsley, Paul and Gra{\v{z}}ulis, Saulius and Merkys, Andrius and Vaitkus, Antanas and Murshudov, Garib N.",
+title = "{{\it AceDRG}: a stereochemical description generator for ligands}",
+journal = "Acta Crystallographica Section D",
+year = "2017",
+volume = "73",
+number = "2",
+pages = "112--122",
+month = "Feb",
+doi = {10.1107/S2059798317000067},
+url = {https://doi.org/10.1107/S2059798317000067},
+abstract = {The program {\it AceDRG} is designed for the derivation of stereochemical information about small molecules. It uses local chemical and topological environment-based atom typing to derive and organize bond lengths and angles from a small-molecule database: the Crystallography Open Database (COD). Information about the hybridization states of atoms, whether they belong to small rings (up to seven-membered rings), ring aromaticity and nearest-neighbour information is encoded in the atom types. All atoms from the COD have been classified according to the generated atom types. All bonds and angles have also been classified according to the atom types and, in a certain sense, bond types. Derived data are tabulated in a machine-readable form that is freely available from {\it CCP}4. {\it AceDRG} can also generate stereochemical information, provided that the basic bonding pattern of a ligand is known. The basic bonding pattern is perceived from one of the computational chemistry file formats, including SMILES, mmCIF, SDF MOL and SYBYL MOL2 files. Using the bonding chemistry, atom types, and bond and angle tables generated from the COD, {\it AceDRG} derives the `ideal' bond lengths, angles, plane groups, aromatic rings and chirality information, and writes them to an mmCIF file that can be used by the refinement program {\it REFMAC}5 and the model-building program {\it Coot}. Other refinement and model-building programs such as {\it PHENIX} and {\it BUSTER} can also use these files. {\it AceDRG} also generates one or more coordinate sets corresponding to the most favourable conformation(s) of a given ligand. {\it AceDRG} employs {\it RDKit} for chemistry perception and for initial conformation generation, as well as for the interpretation of SMILES strings, SDF MOL and SYBYL MOL2 files.},
+keywords = {AceDRG, refinement, ligand chemistry, Crystallography Open Database, RDKit},
+}
+
+@misc{Grade2,
+  author = {Smart, O.S. and Sharff A. and Holstein, J. and Womack, T.O. and Flensburg, C. and Keller, P. and Paciorek, W. and Vonrhein, C. and Bricogne, G.},
+  title = {{Grade2 version 1.7.1., Global Phasing Ltd., Cambridge, United Kingdom}},
+  institution = {{Global Phasing Ltd.,Cambridge, United Kingdom }},
+  year=2021
+}
+
+@ARTICLE{Van_den_Akker2000-tt,
+  title    = "Structure of the dimerized hormone-binding domain of a
+              guanylyl-cyclase-coupled receptor",
+  author   = "van den Akker, F and Zhang, X and Miyagi, M and Huo, X and
+              Misono, K S and Yee, V C",
+  abstract = "The atrial natriuretic peptide (ANP) hormone is secreted by the
+              heart in response to an increase in blood pressure. ANP exhibits
+              several potent anti-hypertensive actions in the kidney, adrenal
+              gland and vascular system. These actions are induced by hormone
+              binding extracellularly to the ANP receptor, thereby activating
+              its intracellular guanylyl cyclase domain for the production of
+              cyclic GMP. Here we present the crystal structure of the
+              glycosylated dimerized hormone-binding domain of the ANP receptor
+              at 2.0-A resolution. The monomer comprises two interconnected
+              subdomains, each encompassing a central beta-sheet flanked by
+              alpha-helices, and exhibits the type I periplasmic binding
+              protein fold. Dimerization is mediated by the juxtaposition of
+              four parallel helices, arranged two by two, which brings the two
+              protruding carboxy termini into close relative proximity. From
+              affinity labelling and mutagenesis studies, the ANP-binding site
+              maps to the side of the dimer crevice and extends to near the
+              dimer interface. A conserved chloride-binding site is located in
+              the membrane distal domain, and we found that hormone binding is
+              chloride dependent. These studies suggest mechanisms for hormone
+              activation and the allostery of the ANP receptor.",
+  journal  = "Nature",
+  volume   =  406,
+  number   =  6791,
+  pages    = "101--104",
+  month    =  jul,
+  year     =  2000,
+  address  = "England",
+  language = "en"
+}
+
+@ARTICLE{Wyatt2008-ji,
+  title     = "Identification of
+               {N-(4-Piperidinyl)-4-(2,6-dichlorobenzoylamino)-1H-pyrazole-3-carboxamide}
+               ({AT7519)}, a Novel Cyclin Dependent Kinase Inhibitor Using
+               {Fragment-Based} {X-Ray} Crystallography and Structure Based
+               Drug Design",
+  author    = "Wyatt, Paul G and Woodhead, Andrew J and Berdini, Valerio and
+               Boulstridge, John A and Carr, Maria G and Cross, David M and
+               Davis, Deborah J and Devine, Lindsay A and Early, Theresa R and
+               Feltell, Ruth E and Lewis, E Jonathan and McMenamin, Rachel L
+               and Navarro, Eva F and O'Brien, Michael A and O'Reilly, Marc and
+               Reule, Matthias and Saxty, Gordon and Seavers, Lisa C A and
+               Smith, Donna-Michelle and Squires, Matt S and Trewartha, Gary
+               and Walker, Margaret T and Woolford, Alison J-A",
+  journal   = "J. Med. Chem.",
+  publisher = "American Chemical Society",
+  volume    =  51,
+  number    =  16,
+  pages     = "4986--4999",
+  month     =  aug,
+  year      =  2008
+}
+
+@ARTICLE{1056489,
+  author={Lloyd, S.},
+  journal={IEEE Transactions on Information Theory},
+  title={Least squares quantization in PCM},
+  year={1982},
+  volume={28},
+  number={2},
+  pages={129-137},
+  keywords={Noise;Quantization (signal);Voltage;Receivers;Pulse modulation;Sufficient conditions;Stochastic processes;Probabilistic logic;Urban areas;Q measurement},
+  doi={10.1109/TIT.1982.1056489}
+}
+
+@article{10.1093-nar-gky949,
+    author = {wwPDB consortium },
+    title = {Protein Data Bank: the single global archive for 3D macromolecular structure data},
+    journal = {Nucleic Acids Research},
+    volume = {47},
+    number = {D1},
+    pages = {D520-D528},
+    year = {2018},
+    month = {10},
+    abstract = {The Protein Data Bank (PDB) is the single global archive of experimentally determined three-dimensional (3D) structure data of biological macromolecules. Since 2003, the PDB has been managed by the Worldwide Protein Data Bank (wwPDB; wwpdb.org), an international consortium that collaboratively oversees deposition, validation, biocuration, and open access dissemination of 3D macromolecular structure data. The PDB Core Archive houses 3D atomic coordinates of more than 144 000 structural models of proteins, DNA/RNA, and their complexes with metals and small molecules and related experimental data and metadata. Structure and experimental data/metadata are also stored in the PDB Core Archive using the readily extensible wwPDB PDBx/mmCIF master data format, which will continue to evolve as data/metadata from new experimental techniques and structure determination methods are incorporated by the wwPDB. Impacts of the recently developed universal wwPDB OneDep deposition/validation/biocuration system and various methods-specific wwPDB Validation Task Forces on improving the quality of structures and data housed in the PDB Core Archive are described together with current challenges and future plans.},
+    issn = {0305-1048},
+    doi = {10.1093/nar/gky949},
+    url = {https://doi.org/10.1093/nar/gky949},
+    eprint = {https://academic.oup.com/nar/article-pdf/47/D1/D520/27436045/gky949.pdf},
+}
+
+@online{CCD-dictionaries,
+  author = {wwPDB},
+  title = {Chemical Component Dictionary},
+  url = {https://www.wwpdb.org/data/ccd},
+  urldate = {2015-03-15},
+  year = {2015}
+}
+
+@ARTICLE{Bickerton2012-pi,
+  title     = "Quantifying the chemical beauty of drugs",
+  author    = "Bickerton, G Richard and Paolini, Gaia V and Besnard,
+               J{\'e}r{\'e}my and Muresan, Sorel and Hopkins, Andrew L",
+  abstract  = "Drug-likeness is a key consideration when selecting compounds
+               during the early stages of drug discovery. However, evaluation
+               of drug-likeness in absolute terms does not reflect adequately
+               the whole spectrum of compound quality. More worryingly, widely
+               used rules may inadvertently foster undesirable molecular
+               property inflation as they permit the encroachment of
+               rule-compliant compounds towards their boundaries. We propose a
+               measure of drug-likeness based on the concept of desirability
+               called the quantitative estimate of drug-likeness (QED). The
+               empirical rationale of QED reflects the underlying distribution
+               of molecular properties. QED is intuitive, transparent,
+               straightforward to implement in many practical settings and
+               allows compounds to be ranked by their relative merit. We
+               extended the utility of QED by applying it to the problem of
+               molecular target druggability assessment by prioritizing a large
+               set of published bioactive compounds. The measure may also
+               capture the abstract notion of aesthetics in medicinal
+               chemistry.",
+  journal   = "Nat. Chem.",
+  publisher = "Springer Science and Business Media LLC",
+  volume    =  4,
+  number    =  2,
+  pages     = "90--98",
+  month     =  jan,
+  year      =  2012,
+  language  = "en"
+}
+
+@online{webgl,
+  author = {{Khronos WebGL Working Group}},
+  title = {WebGL},
+  url = {https://www.khronos.org/webgl/},
+  urldate = {2009-12-15},
+  year = {2011}
+}
+
+@article{10.1093-bioinformatics-btt473,
+    author = {Mariani, Valerio and Biasini, Marco and Barbato, Alessandro and Schwede, Torsten},
+    title = {lDDT: a local superposition-free score for comparing protein structures and models using distance difference tests},
+    journal = {Bioinformatics},
+    volume = {29},
+    number = {21},
+    pages = {2722-2728},
+    year = {2013},
+    month = {08},
+    abstract = {Motivation: The assessment of protein structure prediction techniques requires objective criteria to measure the similarity between a computational model and the experimentally determined reference structure. Conventional similarity measures based on a global superposition of carbon α atoms are strongly influenced by domain motions and do not assess the accuracy of local atomic details in the model.Results: The Local Distance Difference Test (lDDT) is a superposition-free score that evaluates local distance differences of all atoms in a model, including validation of stereochemical plausibility. The reference can be a single structure, or an ensemble of equivalent structures. We demonstrate that lDDT is well suited to assess local model quality, even in the presence of domain movements, while maintaining good correlation with global measures. These properties make lDDT a robust tool for the automated assessment of structure prediction servers without manual intervention.Availability and implementation: Source code, binaries for Linux and MacOSX, and an interactive web server are available at http://swissmodel.expasy.org/lddt Contact:  torsten.schwede@unibas.ch.},
+    issn = {1367-4803},
+    doi = {10.1093/bioinformatics/btt473},
+    url = {https://doi.org/10.1093/bioinformatics/btt473},
+    eprint = {https://academic.oup.com/bioinformatics/article-pdf/29/21/2722/50746741/bioinformatics_29_21_2722.pdf},
+}
+
+@article{Winn:ba5030,
+author = "Winn, M. D. and Ashton, A. W. and Briggs, P. J. and Ballard, C. C. and Patel, P.",
+title = "{Ongoing developments in {\it CCP}4 for high-throughput structure determination}",
+journal = "Acta Crystallographica Section D",
+year = "2002",
+volume = "58",
+number = "11",
+pages = "1929--1936",
+month = "Nov",
+doi = {10.1107/S0907444902016116},
+url = {https://doi.org/10.1107/S0907444902016116},
+abstract = {Collaborative Computational Project Number 4 (CCP4) was established in 1979 to promote collaboration between UK groups writing software for protein crystallography. From these beginnings, CCP4 now distributes a large software suite and is active in developing new software. In this article, an overview is given of recent and ongoing developments in the {\it CCP}4 software suite, in particular as they pertain to high-throughput studies. Developments in individual programs are discussed first, although these are covered in more detail elsewhere. The bulk of the article focusses on the infrastructure of the software suite which allows the user to move effortlessly between different programs or to create automated schemas. Major changes to the software library at the heart of the {\it CCP}4 suite, developments in the {\it CCP}4 graphical user interface, and data management within {\it CCP}4 are discussed. The latter is crucial to high-throughput studies, where a large number of data are imported, created and finally archived.},
+keywords = {CCP4, high-throughput structure determination},
+}
+
+@article{10.1093-nar-gkz990,
+    author = {Armstrong, David R and Berrisford, John M and Conroy, Matthew J and Gutmanas, Aleksandras and Anyango, Stephen and Choudhary, Preeti and Clark, Alice R and Dana, Jose M and Deshpande, Mandar and Dunlop, Roisin and Gane, Paul and Gáborová, Romana and Gupta, Deepti and Haslam, Pauline and Koča, Jaroslav and Mak, Lora and Mir, Saqib and Mukhopadhyay, Abhik and Nadzirin, Nurul and Nair, Sreenath and Paysan-Lafosse, Typhaine and Pravda, Lukas and Sehnal, David and Salih, Osman and Smart, Oliver and Tolchard, James and Varadi, Mihaly and Svobodova-Vařeková, Radka and Zaki, Hossam and Kleywegt, Gerard J and Velankar, Sameer},
+    title = {PDBe: improved findability of macromolecular structure data in the PDB},
+    journal = {Nucleic Acids Research},
+    volume = {48},
+    number = {D1},
+    pages = {D335-D343},
+    year = {2019},
+    month = {11},
+    abstract = {The Protein Data Bank in Europe (PDBe), a founding member of the Worldwide Protein Data Bank (wwPDB), actively participates in the deposition, curation, validation, archiving and dissemination of macromolecular structure data. PDBe supports diverse research communities in their use of macromolecular structures by enriching the PDB data and by providing advanced tools and services for effective data access, visualization and analysis. This paper details the enrichment of data at PDBe, including mapping of RNA structures to Rfam, and identification of molecules that act as cofactors. PDBe has developed an advanced search facility with ∼100 data categories and sequence searches. New features have been included in the LiteMol viewer at PDBe, with updated visualization of carbohydrates and nucleic acids. Small molecules are now mapped more extensively to external databases and their visual representation has been enhanced. These advances help users to more easily find and interpret macromolecular structure data in order to solve scientific problems.},
+    issn = {0305-1048},
+    doi = {10.1093/nar/gkz990},
+    url = {https://doi.org/10.1093/nar/gkz990},
+    eprint = {https://academic.oup.com/nar/article-pdf/48/D1/D335/31697752/gkz990.pdf},
+}
+
+@article{10.1093-nar-gkad1011,
+    author = {Varadi, Mihaly and Bertoni, Damian and Magana, Paulyna and Paramval, Urmila and Pidruchna, Ivanna and Radhakrishnan, Malarvizhi and Tsenkov, Maxim and Nair, Sreenath and Mirdita, Milot and Yeo, Jingi and Kovalevskiy, Oleg and Tunyasuvunakool, Kathryn and Laydon, Agata and Žídek, Augustin and Tomlinson, Hamish and Hariharan, Dhavanthi and Abrahamson, Josh and Green, Tim and Jumper, John and Birney, Ewan and Steinegger, Martin and Hassabis, Demis and Velankar, Sameer},
+    title = {AlphaFold Protein Structure Database in 2024: providing structure coverage for over 214 million protein sequences},
+    journal = {Nucleic Acids Research},
+    volume = {52},
+    number = {D1},
+    pages = {D368-D375},
+    year = {2023},
+    month = {11},
+    abstract = {The AlphaFold Protein Structure Database (AlphaFold DB) is a massive digital library of predicted protein structures, with over 214 million entries, marking a 500-times expansion in size since its initial release in 2021. The structures are predicted using Google DeepMind's AlphaFold 2 artificial intelligence (AI) system. Our new report highlights the latest updates we have made to this database. We have added more data on specific organisms and proteins related to global health and expanded to cover almost the complete UniProt database, a primary data resource of protein sequences. We also made it easier for our users to access the data by directly downloading files or using advanced cloud-based tools. Finally, we have also improved how users view and search through these protein structures, making the user experience smoother and more informative. In short, AlphaFold DB has been growing rapidly and has become more user-friendly and robust to support the broader scientific community.The AlphaFold Database Protein Structure Database (AlphaFold DB, https://alphafold.ebi.ac.uk) has significantly impacted structural biology by amassing over 214 million predicted protein structures, expanding from the initial 300k structures released in 2021. Enabled by the groundbreaking AlphaFold2 artificial intelligence (AI) system, the predictions archived in AlphaFold DB have been integrated into primary data resources such as PDB, UniProt, Ensembl, InterPro and MobiDB. Our manuscript details subsequent enhancements in data archiving, covering successive releases encompassing model organisms, global health proteomes, Swiss-Prot integration, and a host of curated protein datasets. We detail the data access mechanisms of AlphaFold DB, from direct file access via FTP to advanced queries using Google Cloud Public Datasets and the programmatic access endpoints of the database. We also discuss the improvements and services added since its initial release, including enhancements to the Predicted Aligned Error viewer, customisation options for the 3D viewer, and improvements in the search engine of AlphaFold DB.},
+    issn = {0305-1048},
+    doi = {10.1093/nar/gkad1011},
+    url = {https://doi.org/10.1093/nar/gkad1011},
+    eprint = {https://academic.oup.com/nar/article-pdf/52/D1/D368/55039845/gkad1011.pdf},
+}
+
+@article{10.1093-nar-gkab1061,
+    author = {Varadi, Mihaly and Anyango, Stephen and Deshpande, Mandar and Nair, Sreenath and Natassia, Cindy and Yordanova, Galabina and Yuan, David and Stroe, Oana and Wood, Gemma and Laydon, Agata and Žídek, Augustin and Green, Tim and Tunyasuvunakool, Kathryn and Petersen, Stig and Jumper, John and Clancy, Ellen and Green, Richard and Vora, Ankur and Lutfi, Mira and Figurnov, Michael and Cowie, Andrew and Hobbs, Nicole and Kohli, Pushmeet and Kleywegt, Gerard and Birney, Ewan and Hassabis, Demis and Velankar, Sameer},
+    title = {AlphaFold Protein Structure Database: massively expanding the structural coverage of protein-sequence space with high-accuracy models},
+    journal = {Nucleic Acids Research},
+    volume = {50},
+    number = {D1},
+    pages = {D439-D444},
+    year = {2021},
+    month = {11},
+    abstract = {The AlphaFold Protein Structure Database (AlphaFold DB, https://alphafold.ebi.ac.uk) is an openly accessible, extensive database of high-accuracy protein-structure predictions. Powered by AlphaFold v2.0 of DeepMind, it has enabled an unprecedented expansion of the structural coverage of the known protein-sequence space. AlphaFold DB provides programmatic access to and interactive visualization of predicted atomic coordinates, per-residue and pairwise model-confidence estimates and predicted aligned errors. The initial release of AlphaFold DB contains over 360,000 predicted structures across 21 model-organism proteomes, which will soon be expanded to cover most of the (over 100 million) representative sequences from the UniRef90 data set.The AlphaFold Protein Structure Database (AlphaFold DB, https://alphafold.ebi.ac.uk) is an extensive, public database of highly accurate protein structure models. The models are the products of AlphaFold2, an Artificial Intelligence algorithm developed by DeepMind. AlphaFold enabled scientists to investigate an unprecedented number of protein structures. The database we describe here provides access to these predicted models and information on their accuracy. The first version of AlphaFold DB contains over 360,000 models of 21 biologically essential species.},
+    issn = {0305-1048},
+    doi = {10.1093/nar/gkab1061},
+    url = {https://doi.org/10.1093/nar/gkab1061},
+    eprint = {https://academic.oup.com/nar/article-pdf/50/D1/D439/43502749/gkab1061.pdf},
+}
+
+@article{Simpkin:qn5006,
+author = "Simpkin, Adam J. and Thomas, Jens M. H. and Keegan, Ronan M. and Rigden, Daniel J.",
+title = "{{\it MrParse}: finding homologues in the PDB and the EBI AlphaFold database for molecular replacement and more}",
+journal = "Acta Crystallographica Section D",
+year = "2022",
+volume = "78",
+number = "5",
+pages = "553--559",
+month = "May",
+doi = {10.1107/S2059798322003576},
+url = {https://doi.org/10.1107/S2059798322003576},
+abstract = {Crystallographers have an array of search-model options for structure solution by molecular replacement (MR). The well established options of homologous experimental structures and regular secondary-structure elements or motifs are increasingly supplemented by computational modelling. Such modelling may be~carried out locally or may use pre-calculated predictions retrieved from databases such as the EBI AlphaFold database. {\it MrParse} is a new pipeline to help to streamline the decision process in MR by consolidating bioinformatic predictions in one place. When reflection data are provided, {\it MrParse} can rank any experimental homologues found using eLLG, which indicates the likelihood that a given search model will work in MR. Inbuilt displays of predicted secondary structure, coiled-coil and transmembrane regions further inform the choice of MR protocol. {\it MrParse} can also identify and rank homologues in the EBI AlphaFold database, a function that will also interest other structural biologists and bioinformaticians.},
+keywords = {molecular replacement, AlphaFold2, MrParse, bioinformatic tools, sequence features},
+}
+
+@ARTICLE{Finn2011-pl,
+  title     = "{HMMER} web server: interactive sequence similarity searching",
+  author    = "Finn, Robert D and Clements, Jody and Eddy, Sean R",
+  abstract  = "HMMER is a software suite for protein sequence similarity
+               searches using probabilistic methods. Previously, HMMER has
+               mainly been available only as a computationally intensive UNIX
+               command-line tool, restricting its use. Recent advances in the
+               software, HMMER3, have resulted in a 100-fold speed gain
+               relative to previous versions. It is now feasible to make
+               efficient profile hidden Markov model (profile HMM) searches via
+               the web. A HMMER web server (http://hmmer.janelia.org) has been
+               designed and implemented such that most protein database
+               searches return within a few seconds. Methods are available for
+               searching either a single protein sequence, multiple protein
+               sequence alignment or profile HMM against a target sequence
+               database, and for searching a protein sequence against Pfam. The
+               web server is designed to cater to a range of different user
+               expertise and accepts batch uploading of multiple queries at
+               once. All search methods are also available as RESTful web
+               services, thereby allowing them to be readily integrated as
+               remotely executed tasks in locally scripted workflows. We have
+               focused on minimizing search times and the ability to rapidly
+               display tabular results, regardless of the number of matches
+               found, developing graphical summaries of the search results to
+               provide quick, intuitive appraisement of them.",
+  journal   = "Nucleic Acids Res.",
+  publisher = "Oxford University Press (OUP)",
+  volume    =  39,
+  number    = "Web Server issue",
+  pages     = "W29--37",
+  month     =  jul,
+  year      =  2011,
+  copyright = "http://creativecommons.org/licenses/by-nc/3.0",
+  language  = "en"
+}
+
+@article{soding2004,
+    author = {Söding, Johannes},
+    title = {Protein homology detection by HMM–HMM comparison},
+    journal = {Bioinformatics},
+    volume = {21},
+    number = {7},
+    pages = {951-960},
+    year = {2004},
+    month = {11},
+    abstract = {Motivation: Protein homology detection and sequence alignment are at the basis of protein structure prediction, function prediction and evolution.Results: We have generalized the alignment of protein sequences with a profile hidden Markov model (HMM) to the case of pairwise alignment of profile HMMs. We present a method for detecting distant homologous relationships between proteins based on this approach. The method (HHsearch) is benchmarked together with BLAST, PSI-BLAST, HMMER and the profile–profile comparison tools PROF\_SIM and COMPASS, in an all-against-all comparison of a database of 3691 protein domains from SCOP 1.63 with pairwise sequence identities below 20\%.Sensitivity: When the predicted secondary structure is included in the HMMs, HHsearch is able to detect between 2.7 and 4.2 times more homologs than PSI-BLAST or HMMER and between 1.44 and 1.9 times more than COMPASS or PROF\_SIM for a rate of false positives of 10\%. Approximately half of the improvement over the profile–profile comparison methods is attributable to the use of profile HMMs in place of simple profiles.Alignment quality: Higher sensitivity is mirrored by an increased alignment quality. HHsearch produced 1.2, 1.7 and 3.3 times more good alignments (‘balanced’ score $>$ 0.3) than the next best method (COMPASS), and 1.6, 2.9 and 9.4 times more than PSI-BLAST, at the family, superfamily and fold level, respectively.Speed: HHsearch scans a query of 200 residues against 3691 domains in 33 s on an AMD64 2GHz PC. This is 10 times faster than PROF\_SIM and 17 times faster than COMPASS.Availability: HHsearch can be downloaded from http://www.protevo.eb.tuebingen.mpg.de/download/ together with up-to-date versions of SCOP and PFAM. A web server is available at http://www.protevo.eb.tuebingen.mpg.de/toolkit/index.php?view=hhpredContact:  johannes.soeding@tuebingen.mpg.de},
+    issn = {1367-4803},
+    doi = {10.1093/bioinformatics/bti125},
+    url = {https://doi.org/10.1093/bioinformatics/bti125},
+    eprint = {https://academic.oup.com/bioinformatics/article-pdf/21/7/951/48966807/bioinformatics_21_7_951.pdf},
+}
+
+@article{McCoy:he5368,
+author = "McCoy, Airlie J. and Grosse-Kunstleve, Ralf W. and Adams, Paul D. and Winn, Martyn D. and Storoni, Laurent C. and Read, Randy J.",
+title = "{{\it Phaser} crystallographic software}",
+journal = "Journal of Applied Crystallography",
+year = "2007",
+volume = "40",
+number = "4",
+pages = "658--674",
+month = "Aug",
+doi = {10.1107/S0021889807021206},
+url = {https://doi.org/10.1107/S0021889807021206},
+abstract = {{\it Phaser} is a program for phasing macromolecular crystal structures by both molecular replacement and experimental phasing methods. The novel phasing algorithms implemented in {\it Phaser} have been developed using maximum likelihood and multivariate statistics. For molecular replacement, the new algorithms have proved to be significantly better than traditional methods in discriminating correct solutions from noise, and for single-wavelength anomalous dispersion experimental phasing, the new algorithms, which account for correlations between {\it F}${\sp +}$ and {\it F}${\sp {$-$}}$, give better phases (lower mean phase error with respect to the phases given by the refined structure) than those that use mean {\it F} and anomalous differences {$\Delta$}{\it F}. One of the design concepts of {\it Phaser} was that it be capable of a high degree of automation. To this end, {\it Phaser} (written in C++) can be called directly from Python, although it can also be called using traditional {\it CCP4} keyword-style input. {\it Phaser} is a platform for future development of improved phasing methods and their release, including source code, to the crystallographic community.},
+keywords = {computer programs, molecular replacement, SAD phasing, likelihood, structural genomics},
+}
+
+@ARTICLE{Potterton2018-dm,
+  title     = "{CCP4i2}: the new graphical user interface to the {CCP4} program
+               suite",
+  author    = "Potterton, Liz and Agirre, Jon and Ballard, Charles and Cowtan,
+               Kevin and Dodson, Eleanor and Evans, Phil R and Jenkins, Huw T
+               and Keegan, Ronan and Krissinel, Eugene and Stevenson, Kyle and
+               Lebedev, Andrey and McNicholas, Stuart J and Nicholls, Robert A
+               and Noble, Martin and Pannu, Navraj S and Roth, Christian and
+               Sheldrick, George and Skubak, Pavol and Turkenburg, Johan and
+               Uski, Ville and von Delft, Frank and Waterman, David and Wilson,
+               Keith and Winn, Martyn and Wojdyr, Marcin",
+  abstract  = "The CCP4 (Collaborative Computational Project, Number 4)
+               software suite for macromolecular structure determination by
+               X-ray crystallography groups brings together many programs and
+               libraries that, by means of well established conventions,
+               interoperate effectively without adhering to strict design
+               guidelines. Because of this inherent flexibility, users are
+               often presented with diverse, even divergent, choices for
+               solving every type of problem. Recently, CCP4 introduced CCP4i2,
+               a modern graphical interface designed to help structural
+               biologists to navigate the process of structure determination,
+               with an emphasis on pipelining and the streamlined presentation
+               of results. In addition, CCP4i2 provides a framework for writing
+               structure-solution scripts that can be built up incrementally to
+               create increasingly automatic procedures.",
+  journal   = "Acta Crystallogr. D Struct. Biol.",
+  publisher = "International Union of Crystallography (IUCr)",
+  volume    =  74,
+  number    = "Pt 2",
+  pages     = "68--84",
+  month     =  feb,
+  year      =  2018,
+  keywords  = "CCP4; CCP4i2; automation; graphical user interfaces; pipelines;
+               structure solution",
+  copyright = "http://creativecommons.org/licenses/by/2.0/uk/legalcode",
+  language  = "en"
+}
+
+@article{Burnley:a62288,
+author = "Burnley, T. and Iadanza, M. and Joseph, A. and Palmer, C. and Winn, M.",
+title = "{{\it CCP-EM 2.0}: software tools for efficient, accurate and reproducible management and automation of cryo-EM processing from images to structures}",
+journal = "Acta Crystallographica Section A",
+year = "2023",
+volume = "79",
+number = "a2",
+pages = "C17",
+month = "Aug",
+doi = {10.1107/S2053273323095918},
+url = {https://doi.org/10.1107/S2053273323095918},
+}
+
+@techreport{osti_369685,
+  author       = {Burnett, M N and Johnson, C K},
+  title        = {ORTEP-III: Oak Ridge Thermal Ellipsoid Plot Program for crystal structure illustrations},
+  institution  = {Oak Ridge National Lab., TN (United States)},
+  annote       = {This report describes a computer program for drawing crystal structure illustrations. Ball-and-stick type illustrations of a quality suitable for publication are produced with either spheres or thermal-motion probability ellipsoids on the atomic sites. The program can also produce stereoscopic pairs of illustrations which aid in the visualization of complex packing arrangements of atoms and thermal motion patterns. Interatomic distances, bond angles, and principal axes of thermal motion are also calculated to aid the structural study.},
+  doi          = {10.2172/369685},
+  url          = {https://www.osti.gov/biblio/369685},
+  place        = {United States},
+  year         = {1996},
+  month        = {07}
+}
+
+@article{Gruber:ba5101,
+author = "Gruber, Jan and Zawaira, Alexander and Saunders, Rhodri and Barrett, C. Paul and Noble, Martin E. M.",
+title = "{Computational analyses of the surface properties of protein{--}protein interfaces}",
+journal = "Acta Crystallographica Section D",
+year = "2007",
+volume = "63",
+number = "1",
+pages = "50--57",
+month = "Jan",
+doi = {10.1107/S0907444906046762},
+url = {https://doi.org/10.1107/S0907444906046762},
+abstract = {Several potential applications of structural biology depend on discovering how one macromolecule might recognize a partner. Experiment remains the best way to answer this question, but computational tools can contribute where this fails. In such cases, structures may be studied to identify patches of exposed residues that have properties common to interaction surfaces and the locations of these patches can serve as the basis for further modelling or for further experimentation. To date, interaction surfaces have been proposed on the basis of unusual physical properties, unusual propensities for particular amino-acid types or an unusually high level of sequence conservation. Using the {\it CXXSurface} toolkit, developed as a part of the {\it CCP}4{\it MG} program, a suite of tools to analyse the properties of surfaces and their interfaces in complexes has been prepared and applied. These tools have enabled the rapid analysis of known complexes to evaluate the distribution of (i) hydrophobicity, (ii) electrostatic complementarity and (iii) sequence conservation in authentic complexes, so as to assess the extent to which these properties may be useful indicators of probable biological function.},
+keywords = {surfaces, electrostatics, hydrophobicity, conservation},
+}
+
+@article{sharp1990calculating,
+  title={Calculating total electrostatic energies with the nonlinear Poisson-Boltzmann equation},
+  author={Sharp, Kim A and Honig, Barry},
+  journal={Journal of Physical Chemistry},
+  volume={94},
+  number={19},
+  pages={7684--7692},
+  year={1990},
+  publisher={ACS Publications}
+}
+
+@ARTICLE{Agirre2016-xn,
+  title     = "Three-dimensional structures of two heavily N-glycosylated
+               Aspergillus sp. family {GH3} {$\beta$-D-glucosidases}",
+  author    = "Agirre, Jon and Ariza, Antonio and Offen, Wendy A and
+               Turkenburg, Johan P and Roberts, Shirley M and McNicholas,
+               Stuart and Harris, Paul V and McBrayer, Brett and Dohnalek, Jan
+               and Cowtan, Kevin D and Davies, Gideon J and Wilson, Keith S",
+  abstract  = "The industrial conversion of cellulosic plant biomass into
+               useful products such as biofuels is a major societal goal. These
+               technologies harness diverse plant degrading enzymes, classical
+               exo- and endo-acting cellulases and, increasingly,
+               cellulose-active lytic polysaccharide monooxygenases, to
+               deconstruct the recalcitrant $\beta$-D-linked polysaccharide. A
+               major drawback with this process is that the exo-acting
+               cellobiohydrolases suffer from severe inhibition from their
+               cellobiose product. $\beta$-D-Glucosidases are therefore
+               important for liberating glucose from cellobiose and thereby
+               relieving limiting product inhibition. Here, the
+               three-dimensional structures of two industrially important
+               family GH3 $\beta$-D-glucosidases from Aspergillus fumigatus and
+               A. oryzae, solved by molecular replacement and refined at 1.95
+               {\AA} resolution, are reported. Both enzymes, which share 78\%
+               sequence identity, display a three-domain structure with the
+               catalytic domain at the interface, as originally shown for
+               barley $\beta$-D-glucan exohydrolase, the first
+               three-dimensional structure solved from glycoside hydrolase
+               family GH3. Both enzymes show extensive N-glycosylation, with
+               only a few external sites being truncated to a single GlcNAc
+               molecule. Those glycans N-linked to the core of the structure
+               are identified purely as high-mannose trees, and establish
+               multiple hydrogen bonds between their sugar components and
+               adjacent protein side chains. The extensive glycans pose special
+               problems for crystallographic refinement, and new techniques and
+               protocols were developed especially for this work. These
+               protocols ensured that all of the D-pyranosides in the
+               glycosylation trees were modelled in the preferred
+               minimum-energy (4)C1 chair conformation and should be of general
+               application to refinements of other crystal structures
+               containing O- or N-glycosylation. The Aspergillus GH3
+               structures, in light of other recent three-dimensional
+               structures, provide insight into fungal $\beta$-D-glucosidases
+               and provide a platform on which to inform and inspire new
+               generations of variant enzymes for industrial application.",
+  journal   = "Acta Crystallogr. D Struct. Biol.",
+  publisher = "International Union of Crystallography (IUCr)",
+  volume    =  72,
+  number    = "Pt 2",
+  pages     = "254--265",
+  month     =  feb,
+  year      =  2016,
+  keywords  = "N-glycan; biofuels; cellulose degradation; glucosidase;
+               glycoblocks",
+  copyright = "http://creativecommons.org/licenses/by/2.0/uk/legalcode",
+  language  = "en"
+}
+
+@ARTICLE{Chuankhayan2013-mo,
+  title     = "Structural insights into the hydrolysis and polymorphism of
+               methotrexate polyglutamate by zebrafish $\gamma$-glutamyl
+               hydrolase",
+  author    = "Chuankhayan, Phimonphan and Kao, Tseng-Ting and Lin, Chien-Chih
+               and Guan, Hong-Hsiang and Nakagawa, Atsushi and Fu, Tzu-Fun and
+               Chen, Chun-Jung",
+  abstract  = "$\gamma$-Glutamyl hydrolases ($\gamma$GH) catalyze the
+               hydrolysis of $\gamma$-linked glutamate residues from the
+               polyglutamyl of folates and antifolates, such as methotrexate
+               (MTX), a widely used anticancer drug. We describe the first
+               crystal structures of the endopeptidase-type $\gamma$GH
+               (z$\gamma$GH) from zebrafish and the mutant complexes with
+               MTX(Glu)5 and hydrolyzed MTX(Glu)1, revealing the complete set
+               of key residues involved in hydrolysis as well as the
+               substrate-binding subsites (-1 to +2). The side chain of Phe20
+               and the 6-methylpterin ring of MTX(Glu)5 invoke $\pi$-$\pi$
+               interactions to promote distinct concerted conformational
+               alterations involving ∼90° rotations in the complexes with the
+               z$\gamma$GH-C108A and z$\gamma$GH-H218N mutant proteins. The
+               structural geometries of the MTX(Glu)5 and hydrolyzed MTX(Glu)1
+               in the mutant complexes differ significantly from those of the
+               previously known MTX(Glu)1, providing polymorphic information.
+               Together with the structural comparison and the activity
+               analysis, these results shed light on the catalytic mechanism
+               and substrate recognition of z$\gamma$GH and other
+               $\gamma$-glutamyl hydrolases.",
+  journal   = "J. Med. Chem.",
+  publisher = "American Chemical Society (ACS)",
+  volume    =  56,
+  number    =  19,
+  pages     = "7625--7635",
+  month     =  oct,
+  year      =  2013,
+  language  = "en"
+}
+
+@ARTICLE{Sehnal2020-im,
+  title    = "Visualization and analysis of protein structures with {LiteMol}
+              suite",
+  author   = "Sehnal, David and Svobodov{\'a}, Radka and Berka, Karel and
+              Pravda, Luk{\'a}{\v s} and Midlik, Adam and Ko{\v c}a, Jaroslav",
+  abstract = "LiteMol suite is an innovative solution that enables near-instant
+              delivery of model and experimental biomacromolecular structural
+              data, providing users with an interactive and responsive
+              experience in all modern web browsers and mobile devices. LiteMol
+              suite is a combination of data delivery services
+              (CoordinateServer and DensityServer), compression format
+              (BinaryCIF), and a molecular viewer (LiteMol Viewer). The LiteMol
+              suite is integrated into Protein Data Bank in Europe (PDBe) and
+              other life science web applications (e.g., UniProt, Ensemble,
+              SIB, and CNRS services), it is freely available at
+              https://litemol.org , and its source code is available via
+              GitHub. LiteMol suite provides advanced functionality
+              (annotations and their visualization, powerful selection
+              features), and this chapter will describe their use for visual
+              inspection of protein structures.",
+  journal  = "Methods Mol. Biol.",
+  volume   =  2112,
+  pages    = "1--13",
+  year     =  2020,
+  keywords = "Atom selection; Electron density; Ligand representation; Protein
+              visualization; Validation report",
+  language = "en"
+}
+
+@article{Wojdyr2017,
+  doi = {10.21105/joss.00350},
+  url = {https://doi.org/10.21105/joss.00350},
+  year = {2017},
+  publisher = {The Open Journal},
+  volume = {2},
+  number = {18},
+  pages = {350},
+  author = {Wojdyr,
+  Marcin},
+  title = {UglyMol: a WebGL macromolecular viewer focused on the electron density},
+  journal = {Journal of Open Source Software}
+}
+
+@online{jolecule:GitHub,
+  title = {Jolecule - viewer for proteins and DNA with animated views},
+  url = {https://github.com/boscoh/jolecule},
+  urldate = {2015-07-17},
+  year = {2015},
+  author = {Bosco Ho}
+}
+
+@online{Fragalysis:readthedocs,
+  title = {Fragalysis},
+  key = {Fragalysis},
+  url = {https://fragalysis.readthedocs.io/en/latest/index.html},
+  year = {2025},
+  author = {{Diamond Light Source}}
+}
+
+@ARTICLE{Bienfait2013-mt,
+  title    = "{JSME}: a free molecule editor in {JavaScript}",
+  author   = "Bienfait, Bruno and Ertl, Peter",
+  abstract = "A molecule editor, i.e. a program facilitating graphical input
+              and interactive editing of molecules, is an indispensable part of
+              every cheminformatics or molecular processing system. Today, when
+              a web browser has become the universal scientific user interface,
+              a tool to edit molecules directly within the web browser is
+              essential. One of the most popular tools for molecular structure
+              input on the web is the JME applet. Since its release nearly 15
+              years ago, however the web environment has changed and Java
+              applets are facing increasing implementation hurdles due to their
+              maintenance and support requirements, as well as security issues.
+              This prompted us to update the JME editor and port it to a modern
+              Internet programming language - JavaScript.",
+  journal  = "Journal of Cheminformatics",
+  volume   =  5,
+  number   =  1,
+  pages    = "24",
+  month    =  may,
+  year     =  2013
+}
+
+@online{MarvinSketch,
+  title = {MarvinSketch},
+  key = {MarvinSketch},
+  url = {https://www.chemaxon.com},
+  year = {2025},
+  author = {{Chemaxon Ltd.}}
+}
+
+@online{chemdraw,
+  author = {{Revvity Signals Software}},
+  title = {{ChemDraw}},
+  url = {https://revvitysignals.com/products/research/chemdraw},
+  year = {2025},
+}
+
+@online{XDrawChem:GitHub,
+  title = {XDrawChem: a two-dimensional molecule drawing program},
+  url = {https://github.com/bryanherger/xdrawchem},
+  year = {2017},
+  author = {Bryan Herger}
+}
+
+@ARTICLE{Hanwell2012-eb,
+  title    = "Avogadro: an advanced semantic chemical editor, visualization,
+              and analysis platform",
+  author   = "Hanwell, Marcus D and Curtis, Donald E and Lonie, David C and
+              Vandermeersch, Tim and Zurek, Eva and Hutchison, Geoffrey R",
+  abstract = "The Avogadro project has developed an advanced molecule editor
+              and visualizer designed for cross-platform use in computational
+              chemistry, molecular modeling, bioinformatics, materials science,
+              and related areas. It offers flexible, high quality rendering,
+              and a powerful plugin architecture. Typical uses include building
+              molecular structures, formatting input files, and analyzing
+              output of a wide variety of computational chemistry packages. By
+              using the CML file format as its native document type, Avogadro
+              seeks to enhance the semantic accessibility of chemical data
+              types.",
+  journal  = "Journal of Cheminformatics",
+  volume   =  4,
+  number   =  1,
+  pages    = "17",
+  month    =  aug,
+  year     =  2012
+}
+
+@ARTICLE{Casanal2020-ue,
+  title     = "Current developments in Coot for macromolecular model building
+               of Electron Cryo-microscopy and Crystallographic Data",
+  author    = "Casa{\~n}al, Ana and Lohkamp, Bernhard and Emsley, Paul",
+  abstract  = "Coot is a tool widely used for model building, refinement, and
+               validation of macromolecular structures. It has been extensively
+               used for crystallography and, more recently, improvements have
+               been introduced to aid in cryo-EM model building and refinement,
+               as cryo-EM structures with resolution ranging 2.5-4 A are now
+               routinely available. Model building into these maps can be
+               time-consuming and requires experience in both biochemistry and
+               building into low-resolution maps. To simplify and expedite the
+               model building task, and minimize the needed expertise, new
+               tools are being added in Coot. Some examples include morphing,
+               Geman-McClure restraints, full-chain refinement, and
+               Fourier-model based residue-type-specific Ramachandran
+               restraints. Here, we present the current state-of-the-art in
+               Coot usage.",
+  journal   = "Protein Sci.",
+  publisher = "Wiley",
+  volume    =  29,
+  number    =  4,
+  pages     = "1069--1078",
+  month     =  apr,
+  year      =  2020,
+  keywords  = "ligands; macromolecular model building; molecular biophysics;
+               real space refinement; rotamers; validation",
+  copyright = "http://creativecommons.org/licenses/by/4.0/",
+  language  = "en"
+}
+
+@Article{cimb46020084,
+AUTHOR = {Li, Hui and Wei, Xinru},
+TITLE = {A Concise Review of Biomolecule Visualization},
+JOURNAL = {Current Issues in Molecular Biology},
+VOLUME = {46},
+YEAR = {2024},
+NUMBER = {2},
+PAGES = {1318--1334},
+URL = {https://www.mdpi.com/1467-3045/46/2/84},
+PubMedID = {38392202},
+ISSN = {1467-3045},
+ABSTRACT = {The structural characteristics of biomolecules are a major focus in the field of structural biology. Molecular visualization plays a crucial role in displaying structural information in an intuitive manner, aiding in the understanding of molecular properties. This paper provides a comprehensive overview of core concepts, key techniques, and tools in molecular visualization. Additionally, it presents the latest research findings to uncover emerging trends and highlights the challenges and potential directions for the development of the field.},
+DOI = {10.3390/cimb46020084}
+}
+
+@techreport{bray:json,
+  author       = {Tim Bray},
+  title        = {{The JavaScript Object Notation (JSON) Data Interchange Format}},
+  howpublished = {RFC 8259},
+  type         = {RFC},
+  number       = {8259},
+  year         = {2017},
+  month        = dec,
+  publisher    = {RFC Editor},
+  institution  = {RFC Editor},
+  doi          = {10.17487/RFC8259},
+  url          = {https://www.rfc-editor.org/info/rfc8259}
+}
+
+@misc{nanobind,
+  author = {Wenzel Jakob},
+  title  = {nanobind: tiny and efficient C++/Python bindings},
+  year   = {2022},
+  url    = {https://github.com/wjakob/nanobind}
+}
+
+@misc{react,
+  author       = {{Meta Platforms, Inc.}},
+  title        = {React: A {JavaScript} library for building user interfaces},
+  year         = {2013},
+  publisher    = {GitHub},
+  howpublished = {\url{https://github.com/facebook/react}},
+  note         = {Version 18.2.0}
+}
+
+@misc{glm,
+  author       = {Christophe Riccio},
+  title        = {{GLM}: {OpenGL} {Mathematics}},
+  year         = {2024},
+  publisher    = {GitHub},
+  howpublished = {\url{https://github.com/g-truc/glm}},
+  note         = {Version 1.0.1}
+}
+
+@misc{boost_libraries,
+  author       = {{Boost Community}},
+  title        = {Boost {C++} Libraries},
+  year         = {2024},
+  publisher    = {Boost},
+  howpublished = {\url{https://www.boost.org/}},
+  note         = {Version 1.85.0}
+}
+
+@misc{graphene_graphics,
+  author       = {Emmanuele Bassi},
+  title        = {Graphene: A thin layer of graphic data types},
+  year         = {2022},
+  publisher    = {GitHub},
+  howpublished = {\url{https://github.com/ebassi/graphene}},
+  note         = {Version 1.10.8}
+}
+
+@misc{maeparser,
+  author       = {{Schr\"odinger, Inc.}},
+  title        = {maeparser: Maestro File Parser},
+  year         = {2024},
+  publisher    = {GitHub},
+  howpublished = {\url{https://github.com/schrodinger/maeparser}},
+  note         = {Version 1.2.4}
+}
+
+@misc{coordgen,
+  author       = {{Schr\"odinger, Inc.}},
+  title        = {coordgenlibs: 2D Coordinate Generation Library},
+  year         = {2024},
+  publisher    = {GitHub},
+  howpublished = {\url{https://github.com/schrodinger/coordgenlibs}},
+  note         = {Version 3.0.2}
+}
+
+@techreport{zlib_rfc1950,
+  author       = {L. Peter Deutsch and Jean-Loup Gailly},
+  title        = {{ZLIB Compressed Data Format Specification version 3.3}},
+  howpublished = {RFC 1950},
+  type         = {RFC},
+  number       = {1950},
+  year         = {1996},
+  month        = may,
+  publisher    = {RFC Editor},
+  institution  = {RFC Editor},
+  doi          = {10.17487/RFC1950},
+  url          = {https://www.rfc-editor.org/info/rfc1950}
+}
+
+@misc{zlib_implementation,
+  author       = {Jean-loup Gailly and Mark Adler},
+  title        = {zlib: A Massively Spiffy Yet Delicately Unobtrusive Compression Library},
+  year         = {2024},
+  publisher    = {GitHub},
+  howpublished = {\url{https://www.zlib.net/}},
+  note         = {Version 1.3.1}
+}
+
+@misc{freetype,
+  author       = {David Turner and Robert Wilhelm and Werner Lemberg},
+  title        = {{FreeType}: A Free, High-Quality, and Portable Font Engine},
+  year         = {2024},
+  publisher    = {The FreeType Project},
+  howpublished = {\url{https://freetype.org/}},
+  note         = {Version 2.13.3}
+}

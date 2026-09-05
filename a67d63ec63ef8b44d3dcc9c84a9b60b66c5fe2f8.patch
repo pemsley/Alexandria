@@ -1,0 +1,131 @@
+commit a67d63ec63ef8b44d3dcc9c84a9b60b66c5fe2f8
+Author: Paul Emsley <pemsley@gmail.com>
+Date:   Sat Sep 5 15:17:20 2026 +0100
+
+    fix(jats): stop the backfill toasting once per paper
+    
+    "Fetch JATS full text…" produced an "Ignored an external sidecar
+    change" toast for every paper it touched.
+    
+    sidecar.write is atomic — tmp file plus os.replace — and the watcher
+    is built on that: `_do_resync_sidecar` documents that our own writes
+    surface as RENAMED, which the RENAMED branch ignores, so a
+    CREATED/CHANGED on a `*.alexandria` path means a genuinely external
+    writer. That holds for a single unhurried write; it does not hold at
+    the write rate of a full backfill. Reproduced from the watcher's own
+    event log: alongside the expected
+    
+        created  …pdf.alexandria.<host>.<pid>.tmp
+        renamed  …tmp → …pdf.alexandria
+    
+    macOS also coalesces the replace into
+    
+        deleted  s13321-020-00429-4.pdf.alexandria
+        created  s13321-020-00429-4.pdf.alexandria
+    
+    dropping the tmp events entirely. That CREATED is indistinguishable
+    from someone dropping a shared sidecar into the library, so the toast
+    fired 129 times.
+    
+    `_on_changed` already consults `_is_suppressed` centrally before
+    routing, so the existing mechanism was the right one — the backfill
+    simply never called it. jats.backfill takes a `suppress` callable and
+    invokes it with both the sidecar and the .jats.xml path before
+    writing; _on_jats_backfill passes library_watcher.suppress(path, 60).
+    
+    Also fixes a guard that had never once run: browse.py tested
+    `getattr(self, "watcher", None)` where the attribute is
+    `library_watcher`, so the suppression around cached cited-by /
+    references writes was dead code.
+    
+    Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
+diff --git a/alexandria/browse.py b/alexandria/browse.py
+index b4daa71..a2450d4 100644
+--- a/alexandria/browse.py
++++ b/alexandria/browse.py
+@@ -2378,10 +2378,27 @@ class BrowserWindow(Adw.ApplicationWindow):
+             self._toast(msg, timeout=5)
+             return False
+ 
++        # Silence the watcher for each file the backfill writes.
++        # sidecar.write is atomic and normally invisible, but at
++        # backfill write-rates macOS coalesces the replace into
++        # DELETED + CREATED on the destination, and a CREATED on a
++        # `*.alexandria` path reads as an externally-dropped sidecar
++        # — one toast per paper. 60s covers the fetch that follows.
++        w = getattr(self, "library_watcher", None)
++
++        def suppress(path):
++            if w is None:
++                return
++            try:
++                w.suppress(path, 60)
++            except Exception:
++                pass
++
+         def work():
+             conn = index.connect_existing(self._db_path)
+             try:
+-                totals = jats.backfill(conn, on_progress=progress)
++                totals = jats.backfill(conn, on_progress=progress,
++                                       suppress=suppress)
+             finally:
+                 conn.close()
+             GLib.idle_add(finish, totals)
+@@ -4416,9 +4433,10 @@ class BrowserWindow(Adw.ApplicationWindow):
+         except Exception:
+             return
+         rec.update(updates)
+-        if getattr(self, "watcher", None) is not None:
++        w = getattr(self, "library_watcher", None)
++        if w is not None:
+             try:
+-                self.watcher.suppress(sc_path, 5)
++                w.suppress(sc_path, 5)
+             except Exception:
+                 pass
+         try:
+diff --git a/alexandria/jats.py b/alexandria/jats.py
+index 8c030ce..58e4201 100644
+--- a/alexandria/jats.py
++++ b/alexandria/jats.py
+@@ -370,13 +370,24 @@ def parse_xrefs(xml_path):
+     return out
+ 
+ 
+-def backfill(conn, on_progress=None, stop=None):
++def backfill(conn, on_progress=None, stop=None, suppress=None):
+     """Walk every DOI-bearing paper, fetch-and-store JATS where an
+     attempt is due, and record the outcome in each sidecar.
+ 
+     on_progress(done, total) is called after each candidate
+     (skipped ones included); `stop` is an optional threading.Event
+-    checked between papers. Returns
++    checked between papers.
++
++    `suppress(path)` — when given, called with each file this is
++    about to write, so a running LibraryWatcher can ignore the
++    resulting events. Needed because `sidecar.write` is atomic
++    (tmp + `os.replace`) and therefore normally invisible to the
++    monitor, but under the write rate of a full backfill macOS
++    coalesces the replace into DELETED + CREATED on the destination
++    — and a CREATED on a `*.alexandria` path is indistinguishable
++    from someone dropping a shared sidecar into the library, so
++    every paper produced an "Ignored an external sidecar change"
++    toast. Returns
+     {"stored": n, "absent": n, "errors": n, "skipped": n} —
+     "absent" covers both no_pmcid and no_fulltext."""
+     from . import index, sidecar
+@@ -405,6 +416,11 @@ def backfill(conn, on_progress=None, stop=None):
+             if on_progress:
+                 on_progress(done, len(rows))
+             continue
++        if suppress is not None:
++            # Both files: the sidecar for the reason above, the XML
++            # so its own create/rename events stay quiet too.
++            suppress(jats_path(pdf_path))
++            suppress(sc_path)
+         block = fetch_and_store(pdf_path, rec["doi"])
+         rec["jats"] = block
+         sidecar.write(sc_path, rec)

@@ -1,0 +1,265 @@
+commit de69cedb906aab8d403e30e81645d1d58d52f9dc
+Author: Paul Emsley <pemsley@gmail.com>
+Date:   Sat Sep 5 15:12:04 2026 +0100
+
+    docs(backlog): PDF-fetch strategies, author-popover avatars, shared papers
+    
+    Five entries, three of them from surveying neighbouring projects.
+    
+    From bibtui (tgoelles/bib_tui, a Textual TUI over a .bib file — notes
+    in chat-stuff/possible-collaboration-bibtui.md, which is gitignored):
+    
+    - Construct publisher PDF URLs arithmetically from the DOI, as their
+      Copernicus path does. Measured: our chain already finds *a* PDF for
+      10.5194/tc-17-1585-2023, but it returns a repository copy from HAL;
+      construction gets the publisher's version of record with no API call
+      at all. The win is quality of copy and independence from
+      OpenAlex/Unpaywall, not coverage — worth stating, because measured
+      against "did we find a PDF" it scores nothing. Mirror image of the
+      existing "derive DOIs from publisher filenames" entry.
+    - arXiv as a direct fetch strategy. Also not new coverage: OpenAlex
+      already resolves 10.48550/arXiv.2006.11239 to the right URL. Kept
+      for the narrower reasons — it works with the OpenAlex circuit
+      breaker tripped, and reaches entries with an arxiv.org URL but no
+      DOI, which the DOI-keyed chain cannot.
+    
+    From JabRef (still very actively developed — 6.0 alphas through 2026,
+    three GSoC projects; notes in chat-stuff/competitors-jabref.md):
+    
+    - Citation insertion into the document being written, promoted from
+      "consider" now that both JabRef and Paperlib have it. Scoped to the
+      clipboard route deliberately: LibreOffice/Word plugins are a large
+      brittle surface and JabRef has twenty years of it.
+    
+    UI:
+    
+    - Author avatars in the main-window author popover. The rationale is
+      that an avatar is a *curation signal* — you only have one because
+      you went and found it — so its job is scannability in a long author
+      list. That drives the design: blank space rather than initials discs
+      when absent, because sparseness is the whole point, and no
+      reordering or trail-based marking, which would dilute it.
+    - Shared papers between an author and a collaborator, on right-click
+      (left-click already navigates). Records that the OpenAlex AND-syntax
+      `authorships.author.id:A+B` silently returns only A's works — 79 for
+      Emsley+Cowtan, exactly Emsley's solo total — where the repeated-key
+      form returns 11, all verified to carry both authors. A + query looks
+      plausible and is badly wrong, so a test should pin it.
+    
+    Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
+diff --git a/BACKLOG.md b/BACKLOG.md
+index 04d0e7c..7469f43 100644
+--- a/BACKLOG.md
++++ b/BACKLOG.md
+@@ -23,6 +23,60 @@ Pending features, roughly grouped. Newest at the top of each section.
+  - zoom to fit by default (explore)
+ 
+ ## Import / ingestion
++- **Construct publisher PDF URLs from the DOI, before asking anyone.**
++  Borrowed from bibtui (see
++  `chat-stuff/possible-collaboration-bibtui.md`), which derives a
++  Copernicus PDF location arithmetically — no API, no key, no lookup:
++
++    ```
++    10.5194/tc-17-1585-2023
++      → https://tc.copernicus.org/articles/17/1585/2023/tc-17-1585-2023.pdf
++    ```
++
++  (verified 2026-09-03: HTTP 200, application/pdf, 1.1 MB), with
++  separate shapes for preprints and EGUsphere.
++
++  **Measured value, and it is not what it first looks like.** Our
++  existing chain already finds *something* for that DOI — but what it
++  returns is `hal.science/hal-04672801v1/document`, a **repository
++  copy**, not the publisher's version of record. Construction gets
++  the published PDF, and gets it with zero API calls. So the win is
++  **quality of copy and independence from OpenAlex/Unpaywall**, not
++  coverage. That reframing matters: measured against "does the chain
++  find a PDF", this scores nothing.
++
++  This is the exact mirror of the "derive DOIs from publisher
++  filename conventions" entry above — same insight, opposite
++  direction: **publisher identifiers are structured, not opaque.**
++  Worth building both directions against one small table of publisher
++  rules. Candidates beyond Copernicus: any publisher whose DOI suffix
++  encodes volume/page/year.
++
++  See also the note's suggestion that this rule table is the natural
++  thing to **factor out and co-own with bibtui** rather than each
++  project maintaining its own.
++
++- **arXiv as a direct fetch strategy.** Also from bibtui, whose chain
++  starts arXiv → Copernicus → OpenAlex → Unpaywall → direct-URL.
++
++  Again, be honest about the size of the win: for a DOI-bearing
++  preprint our chain **already** resolves
++  `10.48550/arXiv.2006.11239` to `https://arxiv.org/pdf/2006.11239`
++  (verified 2026-09-03: HTTP 200, 10.3 MB). So this is not new
++  coverage. It is worth doing for three narrower reasons:
++
++    - **It works when OpenAlex does not.** We have a circuit breaker
++      and credit accounting precisely because OpenAlex fails or runs
++      out; a direct arXiv fetch needs neither, so it still works with
++      the breaker tripped.
++    - **Entries with an arxiv.org URL but no DOI** are unreachable by
++      the current chain, which is DOI-keyed throughout. bibtui
++      matches `arxiv.org/(abs|pdf)/<id>` on the entry URL as well as
++      the DOI.
++    - **One round-trip instead of two.** `extract.py:642` already
++      turns an arXiv ID into a `10.48550/arxiv.*` DOI, so we hold the
++      ID before we ask anyone anything.
++
+ 
+ - **Telling Claude which paper you mean.** ("Drag and drop"
+   papers/references/cards into claude.) Designed 2026-08-31: in the
+@@ -1515,6 +1569,112 @@ via `extract.CROSSREF_USER_AGENT`.
+   folder).
+ 
+ ## UI
++- **Show the author's avatar in the main-window author popover.**
++  Clicking the author list on a card opens the popover built by
++  `_open_authors_popover` / `_build_author_row` (`browse.py:5066`,
++  `:5143`). When the author has a photo, show it there — small, next
++  to the name.
++
++  **The avatar is a curation signal, not decoration** — this is the
++  point of the feature and it drives the design below. An author only
++  has a photo because the user went and found one, so its presence
++  means "I care about this person". In a fifty-name author list, that
++  makes it a **scanning aid**: a face jumps out where a name would be
++  missed. Everything else follows from that job.
++
++  (Secondary, but real: avatars currently appear *only* in the
++  Authors window, so the effort of setting one is invisible from the
++  main window where most time is spent.)
++
++  **The lookup is already deterministic and needs no network or DB
++  column:** `author_image.image_path(authorship)` returns
++  `<root>/.author-images/<key>.png` (key = OpenAlex ID, else ORCID)
++  or `None` when the authorship carries neither. Then an
++  `os.path.isfile`. Scraped-only names have no identifier, so they
++  can never have one — consistent with their existing greyed-italic
++  treatment.
++
++  **Layout.** Each author currently occupies *two* grid rows — name
++  button on the first, institution on the second — so the avatar
++  wants a new leading column spanning both, and every existing
++  `grid.attach` column index shifts by one. Small, but it is the
++  actual work.
++
++  **Show blank space, not initials, when there is no photo** — and
++  given the rationale above this is not a preference but a
++  requirement. `Adw.Avatar` would give an initials disc for free (as
++  on the author page), but if every author gets a disc the signal is
++  destroyed: the whole value is that *most rows have nothing there*.
++  Sparseness is the feature. Reserve the column width so names stay
++  aligned, and draw nothing. Put the column at the leading edge, so
++  the eye can run down one column and stop at the faces.
++
++  **Do not reorder** to bring photographed authors to the top —
++  author order carries meaning (first/last position is already shown)
++  and scanning works fine with the images in place.
++
++  **Resist widening the signal.** The `author_trail` table is a
++  second, cheaper record of "authors I have looked at", and it is
++  tempting to mark those rows too. That would dilute it: trail
++  membership accrues from a single click, whereas a photo takes
++  deliberate effort, and it is precisely the *cost* of the avatar
++  that makes it worth scanning for. If a broader "authors of
++  interest" mark is ever wanted, it should be its own explicit flag,
++  not an inference from either.
++
++  **Watch the cost on long author lists.** The popover is rebuilt on
++  each open and some papers carry 50+ authors. The files are <=512px
++  PNGs and scaling to ~20px is cheap, but decoding dozens per open is
++  not free — cache the scaled `Gdk.Texture` by trail key rather than
++  re-decoding, since the same authors recur across cards.
++
++- **Shared papers between an author and a collaborator.** On the
++  author page, act on a collaborator chip to see the papers the two
++  have written *together*.
++
++  **Right-click, and left-click keeps its current job.** The chips are
++  already `Gtk.Button`s whose click calls `_open_coauthor` and
++  navigates to that person's page — a good, discoverable primary
++  action that should not move. So the new action wants a secondary
++  gesture, and a context menu is the conventional one.
++
++  Note this is deliberately *not* the avatar's "either mouse button
++  opens the menu" rule (7b1c940). That was right there because the
++  avatar has no primary action — its menu *is* the action, and users
++  were right-clicking it because it reads as an object. A chip does
++  have a primary action, so the two buttons must differ. Worth
++  recording so the inconsistency looks considered rather than
++  accidental.
++
++  **Discoverability is the weak point**, and the avatar commit
++  already learned this lesson — it added a tooltip and pointer cursor
++  "so the click is discoverable before the first guess". Same applies:
++  the chip tooltip should say so outright, e.g. *"Open Kevin Cowtan —
++  right-click for shared papers"*. On a Mac laptop right-click is a
++  two-finger tap, so the hint matters more than it would on Linux.
++
++  **Two sources, and the local one should come first.** Papers in
++  *this library* that both authors appear on can be found from the
++  DB — instant, offline, and usually the more interesting question
++  ("which of my papers do these two share?"). OpenAlex then gives the
++  complete set. Same in-library-then-discovered split the app already
++  uses elsewhere.
++
++  **OpenAlex query — the obvious form is wrong.** Intersecting two
++  authors is:
++
++    ```
++    filter=authorships.author.id:A5071138931,authorships.author.id:A5018808577
++    ```
++
++  Repeat the whole key, comma-separated. Do **not** use the `+`
++  AND-syntax (`authorships.author.id:A+B`): it silently fails and
++  returns the *first* author's works alone. Measured 2026-09-01 —
++  Emsley+Cowtan returned 79 works via `+`, which is exactly Emsley's
++  solo total, whereas the comma form returned 11, all verified to
++  carry both authors. A `+` query therefore looks plausible and is
++  badly wrong, so a test should pin it.
++
+ 
+ - **Right-click the JATS chip → "Summarise with <agent>".** Noted
+   2026-08-31: right-clicking the JATS chip pops the *"Cite this
+@@ -1952,14 +2112,28 @@ things it does better:
+       per-publisher maintenance cost flagged in the
+       publisher-page-harvest entry. Lowest priority of the four.
+ 
+-- **Quick-copy citation popup.** They ship an MS Word plugin and a
+-  Spotlight-like popup for pasting references into whatever you are
+-  writing. We have BibTeX / RIS / CSL *export* but no
+-  "drop a citation into the document I am in right now" path. A
+-  global shortcut that searches the library and puts a formatted
+-  citation on the clipboard would close it — the formatting already
+-  exists (`csl_format`, `bibtex_export`, `ris_export`), so this is a
+-  UI surface over solved problems.
++- **Citation insertion into the document being written — both
++  competitors have it, we do not.** Raised by Paperlib (MS Word
++  plugin plus a Spotlight-like paste popup); **confirmed against
++  JabRef 2026-09-02**, which has native BibTeX/BibLaTeX with
++  LibreOffice and Word integration, thousands of built-in citation
++  styles, and spent GSoC 2026 effort *improving* citation insertion
++  in LibreOffice. Two independent projects having it and us not is a
++  signal rather than a coincidence — **promoted from "consider" on
++  that evidence.**
++
++  We have BibTeX / RIS / CSL *export* but no "drop a citation into
++  the document I am in right now" path. The cheap version is not the
++  plugin: a **global shortcut that searches the library and puts a
++  formatted citation on the clipboard** closes most of the gap, and
++  the formatting already exists (`csl_format`, `bibtex_export`,
++  `ris_export`) — a UI surface over solved problems, with no
++  per-word-processor integration to maintain.
++
++  Deliberately *not* matching them on the plugin: LibreOffice and
++  Word integrations are a large, brittle, per-application surface,
++  and JabRef has twenty years of it. The clipboard route gets the
++  workflow without the maintenance.
+ 
+ - **LLM paper summaries, via MCP rather than in the app.** Paperlib
+   advertises LLM summarisation, auto-tagging and semantic search. We

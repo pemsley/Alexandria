@@ -2752,6 +2752,12 @@ class BrowserWindow(Adw.ApplicationWindow):
             msg = "BibTeX: {} imported, {} ghost, {} duplicate, {} errors".format(
                 counts["imported"], counts["ghost"],
                 counts["duplicate"], counts["error"])
+            renamed = counts.get("renamed") or []
+            if renamed:
+                # Not a toast. A citation key is what the user types
+                # in a manuscript, so a rename is something to
+                # acknowledge, not something to notice in passing.
+                self._report_renamed_keys(renamed)
             n_new = counts["imported"] + counts["ghost"]
             if n_new:
                 self._set_status_with_show(msg)
@@ -3017,6 +3023,49 @@ class BrowserWindow(Adw.ApplicationWindow):
         self.progress_label.set_text(" ".join(bits))
         self.progress_bar.set_fraction(i / n if n else 1.0)
         return False
+
+    def _report_renamed_keys(self, renamed):
+        """Tell the user which citation keys had to change, and make
+        them dismiss it.
+
+        A .bib that uses one key twice is not an error — both entries
+        are real papers — but only one can keep the key. Renaming
+        silently would leave a \\cite in a manuscript pointing at the
+        wrong paper, or at nothing, with no way to find out.
+
+        No warning icon, deliberately: GTK4 dropped message-type
+        icons from its dialogs (GTK3's MessageDialog had them,
+        Gtk.AlertDialog and Adw.AlertDialog have no icon property at
+        all), because the heading is meant to carry the weight. So
+        the heading names the consequence — a citation now pointing
+        somewhere else — rather than the event.
+        """
+        lines = "\n".join(
+            "\t<tt>{}</tt>  \u2192  <tt>{}</tt>".format(
+                GLib.markup_escape_text(a), GLib.markup_escape_text(b))
+            for a, b in renamed[:12])
+        more = ("\n\t\u2026 and {} more".format(len(renamed) - 12)
+                if len(renamed) > 12 else "")
+        n = len(renamed)
+        dlg = Adw.AlertDialog()
+        dlg.set_heading(
+            "A citation in your manuscript may now point elsewhere"
+            if n == 1 else
+            "{} citations in your manuscript may now point "
+            "elsewhere".format(n))
+        dlg.set_body_use_markup(True)
+        dlg.set_body(
+            "The file used {} twice, so both papers were kept but the "
+            "later one needed a new key:\n\n{}{}\n\n"
+            "Any <tt>\\cite</tt> using the old key now resolves to the "
+            "<i>other</i> paper. The new key is stored with the "
+            "paper and shown in Edit metadata.".format(
+                "a citation key" if n == 1 else "some citation keys",
+                lines, more))
+        dlg.add_response("ok", "I understand")
+        dlg.set_default_response("ok")
+        dlg.set_close_response("ok")
+        dlg.present(self)
 
     def _hide_progress(self):
         """Take the progress bar down without touching anything else.

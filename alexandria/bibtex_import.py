@@ -161,6 +161,10 @@ def _create_ghost(conn, br, library_root):
     rec["authors"] = list(br.get("authors") or [])
     rec["year"] = br.get("year")
     rec["journal"] = br.get("journal")
+    if br.get("bibtex_key_was"):
+        # Durable, so the card and the metadata editor can still show
+        # "was: react" long after the import dialog has gone.
+        rec["bibtex_key_was"] = br["bibtex_key_was"]
     rec["doi"] = br.get("doi")
     _apply_bibtex_provenance(rec, br)
 
@@ -446,13 +450,23 @@ def attach_pdf_to_ghost(conn, ghost_row, source_pdf_path, library_root):
 
 def import_bib(conn, bib_path, library_root, on_progress=None):
     """Parse a `.bib` file and import every entry. Returns a counts
-    dict: `{imported, ghost, duplicate, error}`. `on_progress(i, n,
-    key, status)` is called once per entry if supplied."""
+    dict: `{imported, ghost, duplicate, error, renamed}`, where
+    `renamed` is a list of `(was, now)` citation-key pairs for
+    entries whose key the file used more than once. `on_progress(i,
+    n, key, status)` is called once per entry if supplied."""
     from . import bibtex
     records = bibtex.parse(bib_path)
     n = len(records)
-    counts = {"imported": 0, "ghost": 0, "duplicate": 0, "error": 0}
+    counts = {"imported": 0, "ghost": 0, "duplicate": 0, "error": 0,
+              # Entries whose citation key had to change because the
+              # file used it twice. Reported so the user can act: a
+              # key is what they type in a manuscript, and a silent
+              # rename could break a \cite with no trace.
+              "renamed": []}
     for i, br in enumerate(records):
+        if br.get("bibtex_key_was"):
+            counts["renamed"].append(
+                (br["bibtex_key_was"], br.get("bibtex_key")))
         try:
             _rec, status = import_record(conn, br, library_root)
         except Exception as e:

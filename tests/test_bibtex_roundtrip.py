@@ -103,3 +103,35 @@ def test_a_url_with_a_query_string_survives():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_a_plain_hyphen_page_range_is_written_as_an_en_dash():
+    """OpenAlex returns "713-730" and that is now what the record
+    stores, but BibTeX spells a page range with an en dash — two
+    hyphens. Reported 2026-09-05."""
+    rec = {"bibtex_key": "k1", "bibtex_type": "article", "title": "T",
+           "authors": ["A B"], "year": 2020,
+           "bibtex_extra": {"pages": "713-730"}}
+    assert "{713--730}" in bibtex.write([rec])
+
+
+def test_an_en_dash_page_range_is_written_as_an_en_dash():
+    rec = {"bibtex_key": "k1", "bibtex_type": "article", "title": "T",
+           "authors": ["A B"], "year": 2020,
+           "bibtex_extra": {"pages": "713–730"}}
+    assert "{713--730}" in bibtex.write([rec])
+
+
+def test_an_already_correct_range_is_not_doubled():
+    rec = {"bibtex_key": "k1", "bibtex_type": "article", "title": "T",
+           "authors": ["A B"], "year": 2020,
+           "bibtex_extra": {"pages": "713--730"}}
+    out = bibtex.write([rec])
+    assert "{713--730}" in out and "---" not in out
+
+
+def test_a_single_page_is_left_alone():
+    rec = {"bibtex_key": "k1", "bibtex_type": "article", "title": "T",
+           "authors": ["A B"], "year": 2020,
+           "bibtex_extra": {"pages": "112814"}}
+    assert "{112814}" in bibtex.write([rec])

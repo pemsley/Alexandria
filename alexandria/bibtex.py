@@ -105,12 +105,37 @@ def _lastfirst_to_display(name):
     return "{} {}".format(first, last)
 
 
-def _display_to_lastfirst(name):
+def _looks_corporate(name):
+    """Whether a name should be written as an unparsed unit.
+
+    A corporate author reaches us either flagged by the parser (from
+    `{{…}}` in the source) or typed by hand. The giveaways are a
+    legal-form suffix or an organisation word: guessing wrong costs
+    only a pair of braces, whereas guessing wrong the other way
+    turns "Meta Platforms, Inc." into "Platforms, Inc. Meta"."""
+    n = (name or "").strip()
+    if not n:
+        return False
+    low = n.lower()
+    return any(w in low for w in (
+        " inc", " inc.", " ltd", " llc", " gmbh", " corp", " co.",
+        "consortium", "collaboration", "institute", "university",
+        "laboratory", "foundation", "society", "committee",
+        "organization", "organisation", "group", "project", "team"))
+
+
+def _display_to_lastfirst(name, corporate=False):
     """Inverse of `_lastfirst_to_display`. The heuristic is "last
     whitespace token is the surname"; it covers `Jane Smith` →
-    `Smith, Jane` but not e.g. `Johannes van der Waals`."""
+    `Smith, Jane` but not e.g. `Johannes van der Waals`.
+
+    A corporate name is returned brace-wrapped and untouched: that is
+    BibTeX for "one name, do not parse this", and without it the next
+    reader splits it at the comma exactly as we once did."""
     if not name:
         return name
+    if corporate or _looks_corporate(name):
+        return "{" + name.strip() + "}"
     parts = name.strip().split()
     if len(parts) < 2:
         return name
@@ -154,6 +179,13 @@ def _record_from_entry(entry):
         "bibtex_type": entry.entry_type,
         "title": clean(raw.get("title")),
         "authors": _split_authors(clean(raw.get("author")) or ""),
+        # Decoded but not yet reordered — `_restore_corporate_authors`
+        # needs these, because the raw re-parse it works from has not
+        # been through the LaTeX middleware. Removed there.
+        "_authors_decoded": [
+            p.strip() for p in re.split(
+                r"\s+\band\b\s+", clean(raw.get("author")) or "",
+                flags=re.IGNORECASE) if p.strip()],
         "year": _parse_year(clean(raw.get("year"))),
         "journal": clean(raw.get("journal") or raw.get("booktitle")),
         "doi": clean(raw.get("doi")),
@@ -299,6 +331,39 @@ def _record_from_failed_block(block):
     return rec
 
 
+def _split_at_depth_zero(value):
+    """Split a BibTeX name list on ` and ` outside any braces, so a
+    corporate name containing the word survives intact."""
+    parts, buf, depth = [], [], 0
+    i, n = 0, len(value)
+    while i < n:
+        ch = value[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+        if depth == 0 and value[i:i + 5].lower() == " and ":
+            parts.append("".join(buf))
+            buf = []
+            i += 5
+            continue
+        buf.append(ch)
+        i += 1
+    parts.append("".join(buf))
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _corporate_flags(raw_author):
+    """Which names in a raw `author` value are brace-wrapped.
+
+    `{{Meta Platforms, Inc.}}` is BibTeX for "one name, do not parse
+    it". By the time the LaTeX middleware has run the braces are
+    gone, and `Meta Platforms, Inc.` then looks like `Surname, First`
+    — which is how it came back out as `Platforms, Inc. Meta`."""
+    return [p.startswith("{") and p.endswith("}")
+            for p in _split_at_depth_zero(raw_author or "")]
+
+
 def _restore_verbatim_fields(text, records):
     """Put back the undecoded value of every `_VERBATIM_FIELDS` entry.
 
@@ -314,8 +379,13 @@ def _restore_verbatim_fields(text, records):
     by_key = {e.key: e for e in raw.entries}
     for rec in records:
         entry = by_key.get(rec.get("bibtex_key"))
+        if entry is None:
+            continue
+        # Before the extra-field loop: a record can have no
+        # bibtex_extra at all and still have a corporate author.
+        _restore_corporate_authors(entry, rec)
         extra = rec.get("bibtex_extra")
-        if entry is None or not extra:
+        if not extra:
             continue
         for name in list(extra):
             if name.lower() not in _VERBATIM_FIELDS:
@@ -324,6 +394,32 @@ def _restore_verbatim_fields(text, records):
             if field is not None and field.value is not None:
                 extra[name] = _VERBATIM_UNESCAPE_RE.sub(
                     r"\1", _clean_value(field.value))
+
+
+def _restore_corporate_authors(entry, rec):
+    """Undo the Surname-comma-First reordering for names the file
+    braced as a unit. Uses the raw field to decide which, and the
+    decoded names for the text, falling back to leaving them alone
+    when the two cannot be lined up — which happens only for a
+    corporate name that itself contains " and "."""
+    field = entry.fields_dict.get("author")
+    names = rec.get("authors") or []
+    if field is None or not names:
+        return
+    flags = _corporate_flags(field.value)
+    if len(flags) != len(names) or not any(flags):
+        return
+    # The decoded, un-reordered names, stashed by
+    # `_record_from_entry`: the entry we hold here came from the raw
+    # re-parse and so has not been through the LaTeX middleware.
+    decoded = rec.get("_authors_decoded") or []
+    if len(decoded) != len(flags):
+        return
+    out = []
+    for is_corp, name, dec in zip(flags, names, decoded):
+        out.append(_clean_value(dec) if is_corp else name)
+    rec["authors"] = out
+    rec["corporate_authors"] = [n for f, n in zip(flags, out) if f]
 
 
 def parse(text_or_path):
@@ -343,11 +439,70 @@ def parse(text_or_path):
     lib = bibtexparser.parse_string(text, append_middleware=_PARSE_MIDDLEWARES)
     records = [_record_from_entry(e) for e in lib.entries]
     _restore_verbatim_fields(text, records)
+    seen = {r.get("bibtex_key") for r in records if r.get("bibtex_key")}
     for blk in (lib.failed_blocks or []):
-        rec = _record_from_failed_block(blk)
+        rec = _reparse_failed_block(blk, seen)
+        if rec is None:
+            rec = _record_from_failed_block(blk)
         if rec:
+            key = rec.get("bibtex_key")
+            if key:
+                seen.add(key)
             records.append(rec)
+    # Drop the scratch key after the failed blocks too, or a salvaged
+    # record carries it into the sidecar.
+    for r in records:
+        r.pop("_authors_decoded", None)
     return records
+
+
+def _unique_key(key, taken):
+    """`react` → `react_2`, matching `bibtex_export._dedup_key`."""
+    if key not in taken:
+        return key
+    n = 2
+    while "{}_{}".format(key, n) in taken:
+        n += 1
+    return "{}_{}".format(key, n)
+
+
+def _reparse_failed_block(block, taken):
+    r"""Parse a rejected block properly, under a key that is free.
+
+    A DuplicateBlockKeyBlock is valid BibTeX whose *only* defect is
+    that its key is already used, so the regex salvage in
+    `_record_from_failed_block` — which does not run the LaTeX
+    middleware — mangles it needlessly: `\url{https://…}` loses its
+    braces to become `\urlhttps://…` and is then eaten as an unknown
+    command. Re-parsing the block on its own gives exactly what the
+    entry would have produced had its key been unique.
+
+    The record carries `bibtex_key_was` so the rename can be
+    surfaced. A citation key is what the user types in a manuscript;
+    changing one silently could break a \cite with no trace.
+    Returns None if the block cannot be re-parsed, leaving the
+    caller to fall back to the salvage."""
+    raw = getattr(block, "raw", None) or ""
+    original = getattr(block, "key", None)
+    head = re.match(r"(\s*@\w+\s*\{\s*)([^,\s]+)(\s*,)", raw)
+    if not head:
+        return None
+    original = original or head.group(2)
+    new_key = _unique_key(original, taken)
+    patched = raw[:head.start()] + head.group(1) + new_key + \
+        head.group(3) + raw[head.end():]
+    try:
+        lib = bibtexparser.parse_string(
+            patched, append_middleware=_PARSE_MIDDLEWARES)
+    except Exception:
+        return None
+    if not lib.entries:
+        return None
+    rec = _record_from_entry(lib.entries[0])
+    _restore_verbatim_fields(patched, [rec])
+    if new_key != original:
+        rec["bibtex_key_was"] = original
+    return rec
 
 
 # ---- Writing -------------------------------------------------------
@@ -362,11 +517,14 @@ def parse(text_or_path):
 _BARE_PERCENT_RE = re.compile(r"(?<!\\)%")
 
 
-# A page range is spelled `123--130` in BibTeX. The parser normalises
-# it to an en dash on the way in, because the CSL and RIS exporters
-# depend on that; this puts the BibTeX spelling back on the way out,
-# so a file we write matches the file we read.
-_PAGE_DASH_RE = re.compile(r"\s*[–—]\s*")
+# A page range is spelled `123--130` in BibTeX — an en dash, which
+# TeX writes as two hyphens. Any single dash form is converted: the
+# parser normalises `--` to an en dash on the way in (the CSL and RIS
+# exporters depend on that), and OpenAlex hands back a plain hyphen,
+# so by the time a range reaches here it may be spelled any of three
+# ways. `--+` in the alternation keeps an already-correct `713--730`
+# from becoming `713----730`.
+_PAGE_DASH_RE = re.compile(r"\s*(?:-{2,}|[-–—])\s*")
 
 
 def _format_value(v, field=None):
@@ -385,8 +543,10 @@ def _record_field_order(rec):
     if rec.get("title"):
         yield "title", rec["title"]
     if rec.get("authors"):
+        corporate = set(rec.get("corporate_authors") or [])
         yield "author", " and ".join(
-            _display_to_lastfirst(a) for a in rec["authors"])
+            _display_to_lastfirst(a, corporate=(a in corporate))
+            for a in rec["authors"])
     if rec.get("year"):
         yield "year", str(rec["year"])
     if rec.get("journal"):

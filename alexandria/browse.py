@@ -1721,6 +1721,13 @@ class BrowserWindow(Adw.ApplicationWindow):
         self.search.set_hexpand(True)
         self.search.set_placeholder_text(
             "Search title / authors / DOI / journal")
+        # Pending typing-debounce timer, and the flag that lets a
+        # programmatic set skip it.
+        self._search_timeout = None
+        self._search_applied = None
+        # Text this window put in the box itself; the delayed
+        # search-changed it provokes is ignored once.
+        self._search_forced = None
         self.search.connect("search-changed", self._on_search)
         self.search_bar = Gtk.SearchBar()
         self.search_bar.connect_entry(self.search)
@@ -2533,7 +2540,55 @@ class BrowserWindow(Adw.ApplicationWindow):
         return True
 
     def _on_search(self, entry):
-        self._reload(entry.get_text() or None)
+        """Schedule a search, rather than running one per keystroke.
+
+        `search-changed` fires on every letter, and each reload is a
+        full index.search plus a rebuild of every card."""
+        text = entry.get_text()
+        if self._search_forced is not None and text == self._search_forced:
+            # Our own set_text, already applied by _set_search_query.
+            # GtkSearchEntry delays this signal, so it arrives well
+            # after that call returned — and running it again would
+            # re-judge a deliberate two-character filter against the
+            # typing minimum and silently clear it.
+            self._search_forced = None
+            return
+        self._search_forced = None
+        if self._search_timeout is not None:
+            GLib.source_remove(self._search_timeout)
+        self._search_timeout = GLib.timeout_add(
+            reload_policy.SEARCH_DEBOUNCE_MS, self._search_timer_fired)
+
+    def _search_timer_fired(self):
+        self._search_timeout = None
+        self._run_search(self.search.get_text())
+        return False
+
+    def _run_search(self, text, min_chars=reload_policy.SEARCH_MIN_CHARS):
+        query = reload_policy.search_query(text, min_chars=min_chars)
+        # GTK's SearchEntry has debouncing of its own, so the timer
+        # can fire twice for one word and ask for the same query
+        # again. Rebuilding every card to reach the list already on
+        # screen is pure waste.
+        if query == self._search_applied:
+            return
+        self._search_applied = query
+        self._reload(query)
+
+    def _set_search_query(self, query):
+        """Put `query` in the search box and apply it at once.
+
+        Used by the filter chips and the "show me this DOI" paths: a
+        programmatic set is a deliberate search, so it should neither
+        wait for the typing debounce nor be discarded for being two
+        characters long."""
+        query = query or ""
+        self._search_forced = query
+        if self._search_timeout is not None:
+            GLib.source_remove(self._search_timeout)
+            self._search_timeout = None
+        self.search.set_text(query)
+        self._run_search(query, min_chars=1)
 
     def _install_actions(self):
         """Wire window-scoped Gio actions for menu items. Each action
@@ -3913,7 +3968,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         # Clear any active filter so a search-restricted results list
         # doesn't hide the target card.
         try:
-            self.search.set_text("")
+            self._set_search_query("")
         except Exception:
             pass
         self._mark_focus(pdf_path)
@@ -4117,7 +4172,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         if not doi:
             return
         self.search_bar.set_search_mode(True)
-        self.search.set_text(doi)
+        self._set_search_query(doi)
         self.search.grab_focus()
 
     def _add_published_version(self, pv, btn):
@@ -5252,7 +5307,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         # Reveal the search bar so the active filter is visible (and
         # clearable) rather than silently narrowing the list.
         self.search_bar.set_search_mode(True)
-        self.search.set_text(query)   # search-changed → _reload
+        self._set_search_query(query)
         if popover is not None:
             popover.popdown()
 

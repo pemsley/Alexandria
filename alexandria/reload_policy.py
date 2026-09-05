@@ -15,6 +15,37 @@ catches up, at most MIN_INTERVAL_MS behind.
 DEBOUNCE_MS = 300
 MIN_INTERVAL_MS = 5000
 
+# Typing is a different kind of burst from a filesystem event, and
+# the reader is waiting on the result — 300 ms between letters reads
+# as lag. Fast typing runs at roughly 100 ms per character, so this
+# is long enough to swallow a word and short enough to feel prompt.
+SEARCH_DEBOUNCE_MS = 150
+
+# Below this, the list is left unfiltered. A one- or two-character
+# query matches almost everything, so it returns the full row limit
+# and rebuilds every card — the most expensive query of the sequence
+# and the least useful, which is what made the second and third
+# keystrokes feel slow.
+SEARCH_MIN_CHARS = 3
+
+
+def search_query(text, min_chars=SEARCH_MIN_CHARS):
+    """The query to actually run for what is in the search box, or
+    None to show the unfiltered list.
+
+    Returning None rather than the short string matters: the
+    alternative is leaving the previous result on screen, so deleting
+    a query back to one letter would strand the user in a filtered
+    view they can no longer see the reason for.
+
+    `min_chars` is lowered by callers that set the box themselves —
+    a filter chip naming a two-letter surname is a deliberate search,
+    not someone part-way through typing."""
+    s = (text or "").strip()
+    if len(s) < min_chars:
+        return None
+    return s
+
 
 def reload_delay_ms(now, last_reload_at, debounce_ms=DEBOUNCE_MS,
                     min_interval_ms=MIN_INTERVAL_MS,

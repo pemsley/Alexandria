@@ -401,6 +401,46 @@ Pending features, roughly grouped. Newest at the top of each section.
       single-writer-at-a-time guarantee documented in
       `docs/design/database-and-nfs.md` — two simultaneous
       editors on two hosts is the unsolved race.
+- **Import by PMC / PubMed identifier**, alongside import by DOI.
+  Asked for 2026-09-03. Paste `PMC1234567` (or a bare PMID) and get
+  the paper, exactly as `doi_import_dialog.open_doi_import` does for
+  a DOI.
+
+  **Most of it exists.** `jats.pmcid_for_doi` already talks to the
+  Europe PMC search API to go DOI → PMCID; the same endpoint answers
+  the other direction, and its result carries the DOI, title,
+  authors, journal and year. So the work is: resolve the identifier
+  to a DOI, then hand off to the path already built —
+  `metrics.resolve_doi` → `bibtex_import.br_from_metadata` →
+  `import_record`. The dialog itself is `doi_import_dialog` with a
+  different `_clean_doi` and a different first hop.
+
+  **Why it is worth more than a second way to type an identifier.**
+  A PMC identifier *means* the full text is deposited and open. So
+  unlike a DOI import, this one can reliably also fetch the JATS
+  (`jats.fetch_and_store`, already written) and stands a much better
+  chance of finding an open-access PDF. A PMC import could arrive
+  complete — metadata, full text, references with DOIs, and the PDF
+  — where a DOI import often arrives as metadata alone.
+
+  Details worth settling:
+    - **Accept all three spellings.** `PMC1234567`, `1234567` with
+      the PMC prefix implied, and a bare PMID (no prefix, different
+      number space). A PMID and a PMCID are easy to confuse and the
+      wrong guess silently imports the wrong paper, so a bare number
+      is ambiguous: either ask, or query both and say which matched.
+      `europepmc.org/article/MED/<pmid>` vs `/PMC/<pmcid>`.
+    - **A full Europe PMC URL pasted from the browser** should work
+      too, the way a DOI URL does.
+    - **No DOI at all.** Some PMC records (older, or preprints) have
+      no DOI. The DOI path assumes one throughout — dedup, ghost
+      creation, JATS — so decide whether to refuse those or to key
+      the ghost on the PMCID.
+
+  Same dialog, so it should share the "also fetch the PDF" checkbox
+  and the ghost/duplicate handling rather than growing a parallel
+  implementation.
+
 - **Import from DOI (paste):** small dialog with a DOI entry field. Fetch
   metadata via OpenAlex/CrossRef, then attempt to fetch the open-access
   PDF (when `is_oa` and `oa_url` are present); if no OA copy, save a
@@ -931,36 +971,159 @@ Pending features, roughly grouped. Newest at the top of each section.
     - Worth a full brainstorm → spec before implementation; this
       spans several subsystems (matching, adapters, cache, UI).
 
-- **"This author cites" / "Cited by" author lists in the author
-  dialog.** Extend the existing coauthors section in
-  `author_works.py` with two more compact lists:
-    - **Cites most:** top-N other authors that this author's
-      papers reference. For each of A's works, OpenAlex gives
-      `referenced_works`; for each referenced work, fetch
-      authorships (batchable via `ids.openalex:W1|W2|…` —
-      ~30–50 calls for a typical career). Tally author IDs,
-      exclude A (self), keep top 10–15 by count.
-    - **Cited by most:** top-N authors whose papers cite A's
-      papers. Same iteration as `compute_citing_impact` but
-      tally citing-paper authorships instead of citation counts.
-      Self-exclusion via the same OpenAlex filter negation.
-    - Click an author → open their author dialog (already
-      supported by `author_works.py`).
-    - **Same cache shape as the citing-impact score:** roll into
-      the planned `author_scores` table or a sibling
-      `author_relations(openalex_id PRIMARY KEY,
-      cites_top_json, cited_by_top_json, computed_at)`. ~30-day
-      TTL. Background pass shares the citing-impact loop's
-      walk over distinct OpenAlex IDs across library sidecars.
-    - **Why this beats the graph for v1:** much higher
-      information-density per pixel, no layout problem to
-      solve, and the social signal — "Cowtan cites Sheldrick
-      and Murshudov; is cited by [young protégés]" — is the
-      part of a citation graph that actually carries meaning
-      to a researcher.
+- **Authors should live alongside the catalogues, not inside them.**
+  Realised 2026-09-02, working out from two smaller problems: author
+  avatars are stored per library root, and "which of this author's
+  papers do I have" only knows about the current catalogue. The
+  common cause is that *everything* about an author is currently
+  filed under whichever catalogue happened to be open.
+
+  **The evidence that this is the wrong home: none of it is
+  catalogue-specific.** Four tables, all keyed by a global identity
+  and holding nothing that belongs to one library:
+
+    - `author_trail` — key (OpenAlex ID, else ORCID), name,
+      institution, position, added_at, last_viewed
+    - `author_scores` — citing impact per OpenAlex ID
+    - `author_works_cache` — that author's works from OpenAlex
+    - `author_relations` — who cites them (added 2026-09-01)
+
+  Plus `<library_root>/.author-images/`, already named by the same
+  global key (see the avatars item in Sharing). A person's identity,
+  their photograph, their publication list and who cites them do not
+  change because you switched catalogue. Only *which of their papers
+  you hold* does — and that is the one thing that should stay
+  per-catalogue.
+
+  **Tractable, because the coupling is thinner than it looks.** The
+  one place the two sides meet is `index.stale_author_score_ids`,
+  which picks authors to refresh from the papers in the library —
+  and it already collects the IDs in *Python* from
+  `authorships_json` before joining them against `author_scores`
+  through a temp table. So the paper side can come from a catalogue
+  connection and the join move to an authors connection, without
+  restructuring the query.
+
+  **The tricky parts, in order:**
+    - **Merging existing trails.** Each catalogue has its own trail
+      with its own `position` ordering; a union has to reconcile
+      those. `last_viewed` merges as a max, `added_at` as a min,
+      duplicates collapse on the key — but the ordering is a real
+      decision, and a user who curated two trails will notice.
+    - **Signatures ripple.** `AuthorPage` and `AuthorsWindow` take a
+      single `conn`. They would need an authors connection *and*, for
+      the papers-you-hold section, catalogue connections. That is
+      the change that touches the most code.
+    - **Per-host naming.** The library database is already
+      `library.<host>.db` because a home directory can be shared over
+      NFS (see Multi-host / NFS). An authors database needs the same
+      treatment, or two machines will corrupt each other's trail.
+    - **Deleting a catalogue.** The trail would survive it. That is
+      probably right — you were following that person, not that
+      library — but it should be a decision.
+    - **Self-containedness**, the same doubt as the avatars item: a
+      catalogue directory stops carrying everything about itself.
+
+  **Do the avatars first.** They are the same argument at one tenth
+  the size, they are already globally keyed, and they have a single
+  choke point in `author_image._images_dir`. Getting the shared
+  location and its XDG/Flatpak questions settled on the small case
+  makes the big one mostly mechanical — and a shared authors
+  database is the natural companion to a shared image store, and to
+  the avatar packs below.
+
+- **"Papers in the library" section in the author page.** Asked for
+  2026-09-02: on an author's page, show which of their papers you
+  already hold — as a section alongside "Frequent collaborators" and
+  "Cited most often by", and collapsible like them.
+
+  **The detection already exists.** `author_works._existing_dois(conn)`
+  builds the set of DOIs in the catalogue, `_make_work_row` marks a
+  row `in_library` from it (`author_works.py:1618`), and
+  `refresh_in_library` keeps it current as papers are imported. So
+  the answer is already computed and scattered down the works list;
+  this is about collecting it into one place at the top, where "do I
+  have this person's work?" is answered without scrolling a
+  200-entry list.
+
+  Fits the shape `_section_expander` / `_people_flowbox` now
+  establish, but the rows want to be papers rather than name chips —
+  title, year, journal — and clicking one should open the PDF, which
+  the works list can already do.
+
+  **Across catalogues: worth doing, but it is a different feature.**
+  `prefs.get_catalogues()` and `index.db_path_for_catalogue(name)`
+  make the query straightforward — open each catalogue's database
+  read-only and match on DOI. The awkward parts are not the query:
+
+    - **What does clicking a result do?** A paper in another
+      catalogue cannot be opened in this window. It means switching
+      catalogue (the `[open-catalogue]` path browse.py already has)
+      and landing on that paper — a bigger interaction than "open
+      the PDF", and one that discards the window you were in.
+    - **Catalogues can be absent.** A library root on an unplugged
+      drive or an unmounted share must degrade to "not counted",
+      not to an error or a hang on a stat.
+    - **N databases on a page load.** Opening every catalogue's
+      database to draw one section is the kind of thing that has
+      bitten this app before; it belongs on the worker thread that
+      already fetches the profile, with the count arriving late like
+      the citers row does.
+    - **Say which catalogue.** "3 papers, 2 here and 1 in moorhen"
+      is useful; a bare total is not.
+
+  Suggest shipping the current-catalogue version first — it is
+  mostly rearranging what is already computed — and treating the
+  cross-catalogue count as a follow-on once the section exists and
+  its usefulness is obvious.
+
+- **"This author cites" author list in the author dialog.** The
+  companion to the "Cited most often by" row shipped on 2026-09-01
+  (see below): who this author *reads*, as against who reads them.
+
+  **The cost estimate that was here was wrong, by about fifty-fold.**
+  It assumed fetching `referenced_works` for each of A's works and
+  then the authorships of each of those — "~30–50 calls for a typical
+  career". OpenAlex will do the whole tally server-side. Measured
+  2026-09-01 against Jon Agirre (89 works, 1,783 referenced works):
+
+      /works?filter=cited_by:W1|W2|…,authorships.author.id:!A<id>
+             &group_by=authorships.author.id
+
+  **Two calls**, one for the work IDs and one for the tally — the
+  mirror image of the `cites:` query the "cited by" row already uses,
+  with `cited_by:` in place of `cites:`. It returned Paul Adams,
+  Garib Murshudov, Randy Read, Gideon Davies at the top, which is
+  the right answer.
+
+  Almost all of the work is done: `metrics.rank_citing_authors` and
+  `metrics.MAX_CITES_OR_IDS` apply unchanged, `author_relations`
+  needs one more column (`cites_top_json`) beside `cited_by_top_json`,
+  and `author_works._apply_citers` is a copy with a different label
+  and tooltip. Half a day at most.
+
+  Caps to keep in mind, both learned building the other half:
+  OpenAlex rejects more than 100 OR'd IDs outright rather than
+  truncating, and batching beyond that double-counts a paper that
+  spans two batches — so use the author's 100 most-cited works and
+  say so, rather than pretending to completeness.
+
+  **Why this beats the graph for v1:** much higher
+  information-density per pixel, no layout problem to solve, and the
+  social signal — "Cowtan cites Sheldrick and Murshudov; is cited by
+  [young protégés]" — is the part of a citation graph that actually
+  carries meaning to a researcher.
 
   Defers the Cairo citation-graph item below: ship this first,
   see whether the graph still feels missing afterwards.
+
+  - *(Shipped 2026-09-01: the "Cited most often by" half. The row
+    sits under Frequent collaborators in `author_works.py`, names
+    are clickable through to that author's own page, and the ranked
+    list is cached 30 days in the new `author_relations` table.
+    `metrics.fetch_top_citing_authors` is the two-call fetch;
+    `index.db_path_of` was added so the worker can open its own
+    connection from a window that is handed only a connection.)*
 
 - **Citing-impact score per author.** `metrics.compute_citing_impact`
   is shipped — sums `cited_by_count` across every paper that cites
@@ -1049,6 +1212,82 @@ Pending features, roughly grouped. Newest at the top of each section.
   before they get there is friendlier.
 
 ## Sharing
+
+- **Author avatars are per-catalogue, and should not be.** Noticed
+  2026-09-02: every catalogue keeps its own
+  `<library_root>/.author-images/`, so a photo fetched while
+  browsing one library is invisible from another. Measured on a real
+  machine: 16 images under the default catalogue, 2 under `moorhen`,
+  0 under `testing` — three disjoint sets, and the same person
+  fetched twice would be stored twice.
+
+  **The hard part is already solved.** Files are named
+  `<index.author_trail_key(authorship)>.png` — OpenAlex ID, else
+  ORCID — which is a *global* identity, not a catalogue-local one.
+  So the same author has the same filename in every catalogue on
+  every machine; the only thing wrong is which directory it sits in.
+  There is no migration to design, only a move and a lookup order.
+
+  Options, roughly in order of appetite:
+    1. **A shared store outside any library**, e.g.
+       `~/.local/share/Alexandria/author-images/`, with
+       `author_image._images_dir()` pointing there. Simplest, fixes
+       it everywhere, and the images stop being part of a library's
+       on-disk footprint.
+    2. **Shared store, with per-catalogue override** — read the
+       library-local directory first and fall back to the shared
+       one, so a catalogue can still carry its own picture of
+       someone. More moving parts; unclear anyone wants it.
+    3. **Leave them local and sync**, which is really option 1 with
+       extra steps.
+
+  **Option 1 is the preference (2026-09-02), with four things to
+  settle first:**
+
+    - **A library stops being self-contained.** Today
+      `~/Documents/Alexandria` holds the PDFs, the sidecars *and*
+      the photos, so copying that one directory to another machine
+      or restoring it from backup brings everything. Move the images
+      out and it no longer does — which is an odd result for a
+      change whose whole purpose is to make them travel better.
+      Either the export/backup story has to name both locations, or
+      a library keeps a copy on export (which is what the
+      avatar-packs item below is for).
+    - **Flatpak sees a different `~/.local/share`.** The sandbox
+      redirects it to `~/.var/app/io.github.pemsley.Alexandria/data/`
+      unless the manifest says otherwise; `flatpak-notes` currently
+      grants only `--filesystem=xdg-documents`. So a Flatpak install
+      and a `pip install --user` one would each build their own
+      "shared" store and never see each other's. Decide whether
+      that is acceptable or whether the manifest gains a permission.
+    - **Data or cache?** `~/.cache` is the usual home for anything
+      re-fetchable, and a Wikidata photo is. But a photo the user
+      *chose* — dragged from a browser, picked from a file — is not
+      recoverable, and the two sit in the same directory under the
+      same name. That argues for `XDG_DATA_HOME` (i.e.
+      `~/.local/share`), and for never treating the directory as
+      disposable. Use `XDG_DATA_HOME` rather than hard-coding the
+      path, as `browse.py` already does for `XDG_STATE_HOME`.
+    - **Nothing prunes it.** A per-library directory goes when the
+      library does; a shared store accumulates images for authors
+      no catalogue references any more. Probably acceptable — they
+      are keyed by a stable identity and each is ≤512px — but it
+      should be a decision rather than an oversight.
+
+  Whichever way, `_images_dir(root=None)` is the single choke point
+  — every read and write already goes through `image_path` — so this
+  is a small change plus a one-off migration that moves existing
+  files up and de-duplicates by filename.
+
+  **Decide alongside the avatar-packs item below**, which is the
+  same question asked across machines rather than across
+  catalogues: a shared store is also the natural thing for a pack to
+  install into, and for a Syncthing/Drive folder to point at. Doing
+  packs first would bake in the per-library assumption.
+
+  Watch: the images are ≤512px PNGs, so a big collection is real
+  disk (16 images is already ~2 MB). A shared store makes that one
+  cost rather than N.
 
 - **Author-avatar packs: export and import a collection wholesale.**
   "Here are my collected author avatars — apply this set to the
@@ -1434,6 +1673,54 @@ via `extract.CROSSREF_USER_AGENT`.
   Verify any of these before building against them.
 
 ## Sorting & filtering
+
+- **Mark related entries — the "Acedrg papers".** Asked for
+  2026-09-03. A program or a method accumulates a cluster of papers:
+  the one that introduced it, the follow-ups, the ones that describe
+  a component, the ones that apply it. You want to see them
+  together, and you know which they are; the app does not.
+
+  **What is already there, and why it is not quite this:**
+    - **Tags** (`sidecar["tags"]`, editable in the metadata dialog,
+      free text) already group papers by a label the user chooses.
+      For a set the user can enumerate, `acedrg` as a tag is most of
+      the feature — so the first question is whether this is really
+      a request for *better tagging* (a tag picker rather than a
+      comma-separated entry box, tag chips on cards, click a tag to
+      filter) rather than a new concept.
+    - **Marks** are four colours with library-wide labels
+      (`marks_config`), so one paper carries one; they cannot express
+      several overlapping groups.
+    - **Typed relations already exist but are narrow**: `si_of`
+      links a supplement to its parent, `published_version` links a
+      preprint to the published paper. Both are *pairwise* and
+      automatic, not user-declared sets.
+
+  **Three readings, and they want different things:**
+    1. **A named set the user curates** — "Acedrg" holds these six
+       papers. Closest to tags; cheapest by far. Wants tag chips on
+       cards and click-to-filter to actually feel like grouping.
+    2. **A pairwise "related to" link** between two entries, like
+       `si_of` but symmetric and free-form. Better when the relation
+       has a direction or a reason ("this supersedes that"), worse
+       for "show me all of them".
+    3. **Automatic clustering** — infer the set from citation
+       overlap, shared title terms, or that they cite each other.
+       The most interesting and the least predictable; it also
+       cannot know that a paper *is* an Acedrg paper rather than
+       merely adjacent to one.
+
+  Worth asking which of these was meant before building anything:
+  (1) is an afternoon and may be all that is wanted, (3) is a
+  research project. Suggest (1) first — if a tag chip on the card
+  and a click-to-filter make "show me the Acedrg papers" a
+  one-click operation, the rest may never be missed.
+
+  Note for whichever way it goes: tags are per-sidecar and so travel
+  with the paper, which is the right property here — a curated set
+  should survive re-import and be visible to the MCP server.
+
+
 - Tag chips + filter sidebar
 - FTS to include mark labels
 
@@ -1515,6 +1802,155 @@ via `extract.CROSSREF_USER_AGENT`.
   folder).
 
 ## UI
+
+- **"Find metadata" mis-parses a pasted author list.** Reported
+  2026-09-03 on `experiences-protein-ligand-studies:Pearce2022` in
+  the moorhen catalogue. Pasting the authors as they appear on the
+  card —
+
+      Nicholas M Pearce · Rachael Skyner · Tobias Krojer
+
+  returned *Hierarchical Linear Models*, *The Economics of Climate
+  Change* and Metropolis's *Equation of State Calculations*. Traced:
+
+      parse_citation_hint("Nicholas M Pearce · Rachael Skyner · …")
+        -> {'surname': 'Nicholas', 'year': None,
+            'journal': 'M Pearce · Rachael Skyner · Tobias Krojer'}
+
+  Three separate faults, each of which alone would have been
+  survivable:
+
+    1. **`·` is not a recognised separator.** `parse_citation_hint`
+       splits at "et al.", else at the first comma, else after the
+       first *whitespace-delimited token*. With middle dots and no
+       comma, the whole line after "Nicholas" became the journal.
+       The middle dot is what the app's own author display uses, so
+       it is the single most likely thing a user pastes.
+    2. **Display order is assumed to be citation order.** The parser
+       takes the first non-initial token as the surname, which is
+       right for "Pearce, N." and wrong for "Nicholas M Pearce". A
+       pasted author list is almost always given-name-first.
+    3. **Ranking by citations turns a bad match into a confident
+       one.** Searching a common given name with no year and no
+       journal returns the most-cited papers by anyone called
+       Nicholas, and the UI then reports "top result 2× more cited
+       than next" — reading as confidence about a result that is
+       pure noise.
+
+  **The dialog already knew the answer.** Title, Year (2022) and
+  Journal (Frontiers in Molecular Biosciences) were all filled in on
+  screen while the search ran on the word "Nicholas" alone. The
+  strongest fix is not a better parser: it is to search from the
+  fields already present, with the typed fragment as an *optional*
+  extra. A title search alone would have found this paper first.
+
+  **The shape the user wants (2026-09-04): a "Search using current
+  metadata" button.** Not a cleverer parser — a second button beside
+  Search that skips parsing entirely, because the dialog's fields
+  are *already* partitioned by type. Title is Title, Year is Year,
+  the authors are one per line with the surname as the last token.
+  The typed box stays for the case it was built for: a citation read
+  off a printed page, where there are no fields to draw on.
+
+  Note the actual goal behind the report: **getting the DOI, in
+  order to find out whether a PDF can be fetched.** So the result of
+  a successful match should make that next step obvious — filling
+  the DOI field is necessary but not sufficient.
+
+  **One gap to close first:** `find_citation_candidates(surname,
+  year, journal, max_n)` has no title parameter, and the title is by
+  far the strongest signal here — "Experiences from developing
+  software for large X-ray crystallography-driven protein-ligand
+  studies" identifies the paper on its own. Wants an OpenAlex
+  `title.search:` query, preferred when a title is present, with the
+  existing surname/year/journal ladder as the fallback.
+
+  Suggested order:
+    - The "Search using current metadata" button, with a title
+      query, and say what was searched in the hint line.
+    - Accept `·`, `;`, `&`, ` and ` and newlines as author
+      separators, and treat a multi-name list as "surname = last
+      token of the first name".
+    - When only a surname was extracted and it is also a common
+      given name, say what was searched for rather than silently
+      ranking by citations — the hint line already has the room
+      ("10 candidates (year ignored)").
+
+- **Filter the author trail by recency.** Asked for 2026-09-01: the
+  trail has grown to the point where it needs arranging. Three
+  buttons along the bottom of the sidebar — **This Week**, **This
+  Month**, **All** — behaving as radio buttons.
+
+  Everything needed is already there. `author_trail.last_viewed` is
+  stamped by `index.touch_author_trail` on every selection, so the
+  filter is a `WHERE last_viewed >= ?` on top of
+  `index.list_author_trail` (`index.py:837`), which today is an
+  unconditional `SELECT * ... ORDER BY position`. Give it an
+  optional `since` argument rather than filtering in the window, so
+  a long trail does not build rows it then hides.
+
+  Put them in the sidebar's `Adw.ToolbarView` as a bottom bar
+  (`author_works.py:1908` already adds a top bar to it), so they sit
+  below the scrolled list and stay put while it scrolls.
+  **`Adw.ToggleGroup`** is the widget — it exists in libadwaita
+  1.9.3, which is what we build against — and gives the segmented
+  look without hand-linking three `Gtk.ToggleButton`s.
+
+  Three things to get right:
+    - **Don't hide the author currently being read.** Selecting
+      someone, then narrowing to This Week, must not make the
+      selected row vanish from under the open page. Either always
+      include the selected key, or keep the selection and let the
+      row reappear.
+    - **Remember the choice**, as the collapsible sections now do —
+      `prefs.get_section_expanded` / `set_section_expanded` show
+      the shape; this wants its own key rather than reusing that
+      one.
+    - **Say when a filter is why the list is short.** "No authors
+      viewed this week" beats an empty sidebar that looks broken —
+      the window already has empty-state handling to follow
+      (`author_works.py:1919`).
+
+  Worth considering while in here: `last_viewed` is nullable, and
+  rows added before it existed have NULL. Decide whether those sort
+  as ancient (drop out of This Month) or fall back to `added_at`.
+  Falling back is kinder and the column is right there.
+
+- **Don't search until three characters are typed.** Reported
+  2026-09-01: typing in the search bar feels laggy — the second and
+  third characters take a noticeable while to appear.
+
+  `browse._on_search` (`browse.py:2491`) is
+  `self._reload(entry.get_text() or None)`, wired straight to
+  `search-changed`, so every keystroke runs a full `index.search`
+  and rebuilds the card list. The cost is worst exactly where it is
+  least useful: a one-character query matches almost the whole
+  library and returns the full `limit=500`, so the first keystroke
+  triggers the most expensive query and the largest rebuild of the
+  whole sequence, and the second and third keystrokes queue behind
+  it.
+
+  Two remedies, and both are wanted:
+    - **A minimum query length of 3.** Below it, show the unfiltered
+      list. On its own this only moves the problem — from the 3rd
+      character on, every keystroke still reloads.
+    - **Debounce the search path.** `reload_policy.reload_delay_ms`
+      and `_do_debounced_reload` (`browse.py:4261`) already exist
+      for watcher-driven reloads; the search path does not use
+      them. Typing is burstier than a filesystem event, so it may
+      want a shorter debounce of its own (~150 ms) rather than the
+      300 ms default.
+
+  Watch when implementing: deleting back below three characters must
+  restore the full list rather than leave the last filtered view on
+  screen, and `_on_filter_chip` / `browse.py:5202`
+  (`self.search.set_text(query)`, which relies on `search-changed`
+  firing) must still apply its query immediately — a programmatic
+  set is not a keystroke and should not wait for a debounce or trip
+  the minimum length.
+
+  The same entry-per-keystroke shape is in the Subscriptions search
+  and the Authors filter; check those while in here.
 
 - **Right-click the JATS chip → "Summarise with <agent>".** Noted
   2026-08-31: right-clicking the JATS chip pops the *"Cite this
@@ -2086,6 +2522,9 @@ sober "do we actually want this?" — before any work happens.
   We may decide we don't want that at all.
 
 ## Bug?
+
+  Round-trip a .bib file - does it preserve the fields? I think
+  page numbers may be missing. Needs a test.
 
   Why doesn't Charlotte Deane appear as the PI of Nicholas Pearce?
   Investigate.

@@ -97,5 +97,32 @@ def test_open_window_reuses_trail_window_singleton(conn):
     assert w2 is w1
 
 
+def test_singleton_adopts_the_catalogue_it_was_reached_from(tmp_path, conn):
+    """The one window can be reached from several BrowserWindows.
+    The author is the same person either way, but "do I hold this
+    paper" is not — so the per-catalogue connection follows the
+    window you clicked from, rather than staying whichever one
+    happened to create the window."""
+    other = index.open_db(str(tmp_path / "other" / "lib.db"))
+    win = author_works.open_trail_window(None, conn)
+    assert win.conn is conn
+    again = author_works.open_window(
+        None, other, {"name": "A. Uthor", "orcid": "0000-0001-2345-6789"})
+    assert again is win
+    assert win.conn is other
+    other.close()
+
+
+def test_trail_is_shared_between_the_two_catalogues(tmp_path, conn):
+    """The half that is *not* per-catalogue: an author followed from
+    one library is on the trail in the other."""
+    other = index.open_db(str(tmp_path / "other" / "lib.db"))
+    index.add_author_trail(
+        conn, {"name": "A. Uthor", "orcid": "0000-0001-2345-6789"})
+    win = author_works.AuthorsWindow(other)
+    assert "Select an author" in win._empty_lbl.get_label()
+    other.close()
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

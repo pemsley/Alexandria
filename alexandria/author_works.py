@@ -2269,6 +2269,29 @@ class AuthorsWindow(Adw.Window):
         for page in self._pages.values():
             page.refresh_in_library()
 
+    def set_catalogue(self, conn):
+        """Point the per-catalogue half of this window at `conn`.
+
+        There is one Authors window per process, but it can be
+        reached from several BrowserWindows, each on a different
+        catalogue. The author himself is the same person whichever
+        window you came from — the trail, scores, works and photos
+        all live in the shared authors database now. The one question
+        that *does* differ is "which of these papers do I hold", and
+        with it the '✓ in library' badges and where Add to Archive
+        would import. Those follow the window you clicked from, which
+        is the only reading that makes the answer mean anything.
+
+        Before this, the connection captured at creation time was
+        kept for the life of the window, so clicking an author on a
+        moorhen card could tell you about the default library."""
+        if conn is None or conn is self.conn:
+            return
+        self.conn = conn
+        for page in self._pages.values():
+            page.conn = conn
+        self.refresh_in_library()
+
 
 # The one Authors window (per process). Recreated on demand after
 # the user closes it; the trail table repopulates the sidebar.
@@ -2287,11 +2310,6 @@ def _ensure_window(parent, conn):
         if opener is not None:
             on_discover = lambda: opener(None)
         win = AuthorsWindow(conn, on_discover=on_discover)
-        # Register with the BrowserWindow (when it supports it) so an
-        # import landing elsewhere can live-refresh in-library badges.
-        reg = getattr(parent, "_register_author_window", None)
-        if reg is not None:
-            reg(win)
 
         def _on_close(_w):
             global _authors_window
@@ -2299,6 +2317,18 @@ def _ensure_window(parent, conn):
             return False
         win.connect("close-request", _on_close)
         _authors_window = win
+    else:
+        # Reached from a second BrowserWindow: adopt its catalogue for
+        # the questions that are per-catalogue.
+        _authors_window.set_catalogue(conn)
+    # Register with the BrowserWindow (when it supports it) so an
+    # import landing elsewhere can live-refresh in-library badges.
+    # Outside the creation branch, so a window reached from a second
+    # BrowserWindow gets that one's imports too; registration is
+    # idempotent.
+    reg = getattr(parent, "_register_author_window", None)
+    if reg is not None:
+        reg(_authors_window)
     return _authors_window
 
 

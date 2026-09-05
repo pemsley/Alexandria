@@ -105,6 +105,27 @@ def db_path_for_catalogue(name):
         return DEFAULT_DB_PATH
     return os.path.join(XDG_STATE, "Alexandria", name, _HOST_DB_NAME)
 
+
+_AUTHORS_DB_NAME = "authors." + _host_hash() + ".db"
+
+
+def authors_db_path():
+    """The one authors database, shared by every catalogue on this
+    host, at `$XDG_STATE/Alexandria/authors.<host>.db`.
+
+    Per-host for the same reason the library database is: a home
+    directory can be shared over NFS, and two machines writing one
+    SQLite file over NFS corrupt it.
+
+    Read from the environment on each call rather than from the
+    module-level `XDG_STATE`, which is bound at import. A test that
+    redirects `XDG_STATE_HOME` afterwards would otherwise open the
+    developer's real trail and write to it — the same trap that had
+    the suite saving photos into a real author-image store."""
+    state = os.environ.get("XDG_STATE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "state")
+    return os.path.join(state, "Alexandria", _AUTHORS_DB_NAME)
+
 # Pattern for any `library.<hash>.db` filename — used by the
 # migrator to spot stale-hash DBs left over from the brittle
 # hostname-based design.
@@ -555,7 +576,7 @@ def _ensure_fts(conn):
 
 
 CREATE_AUTHOR_SCORES = """
-CREATE TABLE IF NOT EXISTS author_scores (
+CREATE TABLE IF NOT EXISTS authors.author_scores (
     openalex_id       TEXT PRIMARY KEY,
     self_excluded     INTEGER NOT NULL DEFAULT 1,
     software_total    INTEGER NOT NULL DEFAULT 0,
@@ -586,7 +607,7 @@ def get_author_score(conn, openalex_id):
     if not openalex_id:
         return None
     row = conn.execute(
-        "SELECT * FROM author_scores WHERE openalex_id = ?",
+        "SELECT * FROM authors.author_scores WHERE openalex_id = ?",
         (openalex_id,)).fetchone()
     if row is None:
         return None
@@ -624,7 +645,7 @@ def set_author_score(conn, openalex_id, result, self_excluded=True):
                  int(b.get("n_works") or 0)]
     placeholders = ",".join(["?"] * len(cols))
     conn.execute(
-        "INSERT OR REPLACE INTO author_scores ({}) VALUES ({})".format(
+        "INSERT OR REPLACE INTO authors.author_scores ({}) VALUES ({})".format(
             ",".join(cols), placeholders),
         vals)
     conn.commit()
@@ -649,7 +670,7 @@ def db_path_of(conn):
 
 
 CREATE_AUTHOR_RELATIONS = """
-CREATE TABLE IF NOT EXISTS author_relations (
+CREATE TABLE IF NOT EXISTS authors.author_relations (
     openalex_id       TEXT PRIMARY KEY,
     cited_by_top_json TEXT NOT NULL,
     computed_at       TEXT NOT NULL
@@ -671,7 +692,7 @@ def get_author_relations(conn, openalex_id):
     if not openalex_id:
         return None
     row = conn.execute(
-        "SELECT cited_by_top_json, computed_at FROM author_relations "
+        "SELECT cited_by_top_json, computed_at FROM authors.author_relations "
         "WHERE openalex_id = ?", (openalex_id,)).fetchone()
     if row is None:
         return None
@@ -692,7 +713,7 @@ def set_author_relations(conn, openalex_id, cited_by_top):
     if not openalex_id or cited_by_top is None:
         return
     conn.execute(
-        "INSERT OR REPLACE INTO author_relations "
+        "INSERT OR REPLACE INTO authors.author_relations "
         "(openalex_id, cited_by_top_json, computed_at) VALUES (?, ?, ?)",
         (openalex_id, json.dumps(cited_by_top),
          datetime.datetime.now().isoformat(timespec="seconds")))
@@ -713,7 +734,7 @@ def author_relations_fresh(cached, ttl_days=AUTHOR_RELATIONS_TTL_DAYS):
 
 
 CREATE_AUTHOR_WORKS_CACHE = """
-CREATE TABLE IF NOT EXISTS author_works_cache (
+CREATE TABLE IF NOT EXISTS authors.author_works_cache (
     openalex_id  TEXT NOT NULL,
     sort_key     TEXT NOT NULL,
     works_json   TEXT NOT NULL,
@@ -735,7 +756,7 @@ def get_author_works_cache(conn, openalex_id, sort_key):
     if not openalex_id or not sort_key:
         return None
     row = conn.execute(
-        "SELECT works_json, computed_at FROM author_works_cache "
+        "SELECT works_json, computed_at FROM authors.author_works_cache "
         "WHERE openalex_id = ? AND sort_key = ?",
         (openalex_id, sort_key)).fetchone()
     if row is None:
@@ -752,7 +773,7 @@ def set_author_works_cache(conn, openalex_id, sort_key, works):
     if not openalex_id or not sort_key or works is None:
         return
     conn.execute(
-        "INSERT OR REPLACE INTO author_works_cache "
+        "INSERT OR REPLACE INTO authors.author_works_cache "
         "(openalex_id, sort_key, works_json, computed_at) "
         "VALUES (?, ?, ?, ?)",
         (openalex_id, sort_key,
@@ -767,13 +788,13 @@ def clear_author_works_cache(conn, openalex_id):
     if not openalex_id:
         return
     conn.execute(
-        "DELETE FROM author_works_cache WHERE openalex_id = ?",
+        "DELETE FROM authors.author_works_cache WHERE openalex_id = ?",
         (openalex_id,))
     conn.commit()
 
 
 CREATE_AUTHOR_TRAIL = """
-CREATE TABLE IF NOT EXISTS author_trail (
+CREATE TABLE IF NOT EXISTS authors.author_trail (
     key          TEXT PRIMARY KEY,
     openalex_id  TEXT,
     orcid        TEXT,
@@ -806,14 +827,15 @@ def add_author_trail(conn, authorship):
     if not key:
         return None
     now = datetime.datetime.now().isoformat(timespec="seconds")
+    key = _canonical_trail_key(conn, key, authorship)
     row = conn.execute(
-        "SELECT * FROM author_trail WHERE key = ?", (key,)).fetchone()
+        "SELECT * FROM authors.author_trail WHERE key = ?", (key,)).fetchone()
     if row is None:
         pos = conn.execute(
-            "SELECT COALESCE(MAX(position), 0) + 1 FROM author_trail"
+            "SELECT COALESCE(MAX(position), 0) + 1 FROM authors.author_trail"
         ).fetchone()[0]
         conn.execute(
-            "INSERT INTO author_trail (key, openalex_id, orcid, name,"
+            "INSERT INTO authors.author_trail (key, openalex_id, orcid, name,"
             " institution, position, added_at, last_viewed)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (key, authorship.get("openalex_id"), authorship.get("orcid"),
@@ -821,7 +843,7 @@ def add_author_trail(conn, authorship):
              authorship.get("institution"), pos, now, now))
     else:
         conn.execute(
-            "UPDATE author_trail SET"
+            "UPDATE authors.author_trail SET"
             " openalex_id = COALESCE(?, openalex_id),"
             " orcid       = COALESCE(?, orcid),"
             " institution = COALESCE(?, institution),"
@@ -831,13 +853,13 @@ def add_author_trail(conn, authorship):
              authorship.get("institution"), now, key))
     conn.commit()
     return dict(conn.execute(
-        "SELECT * FROM author_trail WHERE key = ?", (key,)).fetchone())
+        "SELECT * FROM authors.author_trail WHERE key = ?", (key,)).fetchone())
 
 
 def list_author_trail(conn):
     """Trail rows in user order (position ascending)."""
     return [dict(r) for r in conn.execute(
-        "SELECT * FROM author_trail ORDER BY position").fetchall()]
+        "SELECT * FROM authors.author_trail ORDER BY position").fetchall()]
 
 
 def touch_author_trail(conn, key):
@@ -845,7 +867,7 @@ def touch_author_trail(conn, key):
     if not key:
         return
     conn.execute(
-        "UPDATE author_trail SET last_viewed = ? WHERE key = ?",
+        "UPDATE authors.author_trail SET last_viewed = ? WHERE key = ?",
         (datetime.datetime.now().isoformat(timespec="seconds"), key))
     conn.commit()
 
@@ -854,7 +876,7 @@ def remove_author_trail(conn, key):
     """Drop a row from the trail (the sidebar ×)."""
     if not key:
         return
-    conn.execute("DELETE FROM author_trail WHERE key = ?", (key,))
+    conn.execute("DELETE FROM authors.author_trail WHERE key = ?", (key,))
     conn.commit()
 
 
@@ -865,14 +887,14 @@ def move_author_trail(conn, key, new_index):
     contiguous positions keep the append rule (`MAX(position)+1`)
     and future moves simple to reason about."""
     keys = [r["key"] for r in conn.execute(
-        "SELECT key FROM author_trail ORDER BY position").fetchall()]
+        "SELECT key FROM authors.author_trail ORDER BY position").fetchall()]
     if key not in keys:
         return
     keys.remove(key)
     keys.insert(max(0, min(int(new_index), len(keys))), key)
     for pos, k in enumerate(keys, start=1):
         conn.execute(
-            "UPDATE author_trail SET position = ? WHERE key = ?",
+            "UPDATE authors.author_trail SET position = ? WHERE key = ?",
             (pos, k))
     conn.commit()
 
@@ -1007,15 +1029,212 @@ def open_db(path=DEFAULT_DB_PATH):
     conn.executescript(CREATE_TABLE)
     _migrate(conn)
     conn.executescript(CREATE_INDEXES)
-    conn.executescript(CREATE_AUTHOR_SCORES)
-    conn.executescript(CREATE_AUTHOR_WORKS_CACHE)
-    conn.executescript(CREATE_AUTHOR_RELATIONS)
-    conn.executescript(CREATE_AUTHOR_TRAIL)
+    attach_authors_db(conn)
     conn.executescript(CREATE_SUBSCRIPTIONS)
     create_pdb_tables(conn)
     _migrate_discovered(conn)
     _ensure_fts(conn)
     return conn
+
+
+_PREMERGE_SUFFIX = "_premerge"
+_AUTHOR_TABLES = ("author_trail", "author_scores",
+                  "author_works_cache", "author_relations")
+
+
+def attach_authors_db(conn, path=None):
+    """Attach the shared authors database as the `authors` schema and
+    make sure its four tables exist.
+
+    Everything about a person — that you are following them, their
+    photograph, their publication list, who cites them — is keyed by
+    a global identity (OpenAlex ID, else ORCID) and does not change
+    because you switched catalogue. Only *which of their papers you
+    hold* does, and that stays in `main`.
+
+    ATTACH rather than a second connection threaded through every
+    signature: the queries are unchanged apart from a schema prefix,
+    and `stale_author_score_ids` stays one statement joining papers
+    in `main` against scores in `authors`.
+
+    Every reference to these four tables is written `authors.<table>`
+    — unqualified names resolve against `main` first, so a leftover
+    pre-merge table would silently shadow the shared one."""
+    dest = path or authors_db_path()
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    conn.execute("ATTACH DATABASE ? AS authors", (dest,))
+    conn.execute("PRAGMA authors.journal_mode=WAL")
+    conn.executescript(CREATE_AUTHOR_SCORES)
+    conn.executescript(CREATE_AUTHOR_WORKS_CACHE)
+    conn.executescript(CREATE_AUTHOR_RELATIONS)
+    conn.executescript(CREATE_AUTHOR_TRAIL)
+    _merge_author_tables_into_shared(conn)
+    # Two catalogues can hold the same person under two key kinds,
+    # and the union is where that first becomes visible. Cheap (one
+    # scan of a small table), and it repairs a database merged by an
+    # earlier build rather than only a fresh merge.
+    dedupe_author_trail(conn)
+    return dest
+
+
+def _merge_author_tables_into_shared(conn):
+    """One-off: fold this catalogue's own author tables into the
+    shared database, then rename them out of the way. Returns the
+    number of rows merged.
+
+    Self-marking rather than version-stamped: the presence of
+    `main.author_trail` *is* the "not yet merged" flag, and nothing
+    recreates it once renamed. The old tables are kept as
+    `<name>_premerge` rather than dropped — they are small, and they
+    are the only copy of a trail a user may have spent months
+    curating.
+
+    Conflicts resolve in favour of the shared row (`INSERT OR
+    IGNORE`), except that trail positions are reassigned: two
+    catalogues each numbered their trail from 1, so the union has to
+    be re-ordered. Oldest `added_at` first, which reconstructs the
+    order in which the user actually met these people — and is the
+    same answer whichever catalogue happens to be opened first."""
+    merged = 0
+    have = {r["name"] for r in conn.execute(
+        "SELECT name FROM main.sqlite_master WHERE type = 'table'")}
+    todo = [t for t in _AUTHOR_TABLES if t in have]
+    if not todo:
+        return 0
+    for table in todo:
+        cols = [r["name"] for r in conn.execute(
+            "PRAGMA main.table_info({})".format(table))]
+        shared_cols = [r["name"] for r in conn.execute(
+            "PRAGMA authors.table_info({})".format(table))]
+        cols = [c for c in cols if c in shared_cols]
+        if cols:
+            names = ",".join(cols)
+            before = conn.execute(
+                "SELECT COUNT(*) FROM authors.{}".format(table)).fetchone()[0]
+            conn.execute(
+                "INSERT OR IGNORE INTO authors.{0} ({1}) "
+                "SELECT {1} FROM main.{0}".format(table, names))
+            after = conn.execute(
+                "SELECT COUNT(*) FROM authors.{}".format(table)).fetchone()[0]
+            merged += after - before
+        conn.execute("ALTER TABLE main.{0} RENAME TO {0}{1}".format(
+            table, _PREMERGE_SUFFIX))
+    _renumber_author_trail(conn)
+    conn.commit()
+    return merged
+
+
+def _rekey_photo(old_key, new_key):
+    """Ask author_image to move a photo between identity keys.
+
+    Imported inside the function: author_image imports this module,
+    and it pulls in GdkPixbuf, which headless callers (the MCP
+    server, scripts) have no reason to load. Failure is not fatal —
+    the trail is still correct, the photo is merely orphaned."""
+    try:
+        from . import author_image
+        author_image.rekey_image(old_key, new_key)
+    except Exception:
+        pass
+
+
+def _canonical_trail_key(conn, key, authorship):
+    """The key `authorship` should actually be stored under, given
+    what is already on the trail. Returns `key` unchanged in the
+    ordinary case.
+
+    `author_trail_key` prefers the OpenAlex ID and falls back to the
+    ORCID, so one person gets two different keys depending on what
+    the caller happened to know — a coauthor chip has the OpenAlex
+    ID, a sidecar's author list may have only the ORCID. Per
+    catalogue that mostly stayed hidden; in one shared trail it shows
+    as the same person listed twice, each with their own photo.
+
+    The OpenAlex ID wins because that is what `author_trail_key`
+    already prefers and what most callers hold. Either order of
+    arrival has to work: the ORCID-keyed row is upgraded in place
+    when the richer caller turns up, and an ORCID-only caller
+    arriving second is steered onto the existing row instead of
+    starting a second one."""
+    orcid = (authorship or {}).get("orcid")
+    if not orcid:
+        return key
+    if key == orcid:
+        # ORCID-only caller: hand it the OpenAlex-keyed row if we
+        # already know this person by that identity.
+        row = conn.execute(
+            "SELECT key FROM authors.author_trail"
+            " WHERE orcid = ? AND openalex_id IS NOT NULL",
+            (orcid,)).fetchone()
+        return row["key"] if row is not None else key
+    row = conn.execute(
+        "SELECT key FROM authors.author_trail WHERE key = ?",
+        (orcid,)).fetchone()
+    if row is None:
+        return key
+    if conn.execute("SELECT 1 FROM authors.author_trail WHERE key = ?",
+                    (key,)).fetchone() is not None:
+        # Both rows already exist — `dedupe_author_trail` collapses
+        # them; don't create a primary-key clash here.
+        return key
+    conn.execute(
+        "UPDATE authors.author_trail SET key = ?, openalex_id = ?"
+        " WHERE key = ?", (key, key, orcid))
+    _rekey_photo(orcid, key)
+    return key
+
+
+def dedupe_author_trail(conn):
+    """Collapse trail rows that are one person under two key kinds
+    (see `_canonical_trail_key`). Returns the (old, new) key pairs
+    it merged.
+
+    The survivor keeps the earliest `added_at` and the latest
+    `last_viewed`, so neither "when did I start following them" nor
+    "when did I last look" is lost to the collapse."""
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM authors.author_trail")]
+    canonical = {}
+    for r in rows:
+        if r["openalex_id"] and r["orcid"]:
+            canonical.setdefault(r["orcid"], r)
+    moves = []
+    for r in rows:
+        if r["openalex_id"] or not r["orcid"]:
+            continue
+        target = canonical.get(r["orcid"])
+        if target is None or target["key"] == r["key"]:
+            continue
+        conn.execute(
+            "UPDATE authors.author_trail SET"
+            " added_at = MIN(added_at, ?),"
+            " last_viewed = MAX(COALESCE(last_viewed, ''),"
+            "                   COALESCE(?, '')),"
+            " institution = COALESCE(institution, ?)"
+            " WHERE key = ?",
+            (r["added_at"], r["last_viewed"], r["institution"],
+             target["key"]))
+        conn.execute("DELETE FROM authors.author_trail WHERE key = ?",
+                     (r["key"],))
+        _rekey_photo(r["key"], target["key"])
+        moves.append((r["key"], target["key"]))
+    if moves:
+        _renumber_author_trail(conn)
+        conn.commit()
+    return moves
+
+
+def _renumber_author_trail(conn):
+    """Rewrite trail positions contiguously (1..n) in `added_at`
+    order. Used after a merge, where two catalogues' positions
+    overlap; `move_author_trail` keeps them contiguous thereafter."""
+    keys = [r["key"] for r in conn.execute(
+        "SELECT key FROM authors.author_trail "
+        "ORDER BY added_at, key").fetchall()]
+    for pos, k in enumerate(keys, start=1):
+        conn.execute(
+            "UPDATE authors.author_trail SET position = ? WHERE key = ?",
+            (pos, k))
 
 
 def _migrate_discovered(conn):
@@ -1551,7 +1770,7 @@ def stale_author_score_ids(conn, max_age_days=AUTHOR_SCORE_TTL_DAYS,
     sql = """
         SELECT c.openalex_id AS openalex_id, s.computed_at AS computed_at
         FROM _author_score_candidates c
-        LEFT JOIN author_scores s ON s.openalex_id = c.openalex_id
+        LEFT JOIN authors.author_scores s ON s.openalex_id = c.openalex_id
         WHERE s.openalex_id IS NULL OR s.computed_at < ?
         ORDER BY (s.computed_at IS NULL) DESC, s.computed_at ASC
     """

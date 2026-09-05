@@ -1081,8 +1081,47 @@ Pending features, roughly grouped. Newest at the top of each section.
     - Worth a full brainstorm → spec before implementation; this
       spans several subsystems (matching, adapters, cache, UI).
 
-- **Authors should live alongside the catalogues, not inside them.**
-  Realised 2026-09-02, working out from two smaller problems: author
+- **DONE 2026-09-05: authors now live alongside the catalogues.**
+  The four tables moved to `$XDG_STATE/Alexandria/authors.<host>.db`,
+  ATTACHed as the `authors` schema by `index.open_db`. ATTACH rather
+  than a second connection threaded through every signature: the
+  queries change by a prefix, and `stale_author_score_ids` — the one
+  place the two sides meet — stays a single statement joining papers
+  in `main` against scores in `authors`. Every reference is written
+  `authors.<table>`, because an unqualified name resolves against
+  `main` first and a leftover table would silently shadow the shared
+  one.
+
+  Migration is self-marking: the presence of `main.author_trail` *is*
+  the "not yet merged" flag, and the old tables are renamed
+  `<name>_premerge` rather than dropped — a curated trail is months
+  of the user's work. Positions are renumbered by `added_at`, so the
+  merged order is the order the user actually met these people and
+  does not depend on which catalogue opens first.
+
+  On the real machine: 20 + 9 rows merged to a 29-author trail,
+  `AuthorsWindow.set_catalogue` added so the singleton adopts the
+  catalogue it was reached from (the walk-through below), and the
+  suite gained `tests/conftest.py` isolating `XDG_STATE_HOME` and
+  `XDG_DATA_HOME` — without it every test calling `open_db` would
+  have attached the developer's real trail.
+
+  **What the union exposed: one person under two key kinds.**
+  `author_trail_key` prefers the OpenAlex ID and falls back to ORCID,
+  so a caller with only an ORCID files the same person separately —
+  and their photo separately too. Per catalogue it stayed hidden;
+  merged, Zawaira and Fischer each appeared twice. The OpenAlex ID
+  now wins: `_canonical_trail_key` handles both arrival orders,
+  `dedupe_author_trail` runs on attach (so a database merged by an
+  earlier build repairs itself), and `author_image.rekey_image`
+  moves the photo so it is not orphaned under an identity nothing
+  looks up. Real trail: 29 → 27.
+
+  Left as it was: deleting a catalogue does not remove its authors
+  from the trail — you were following the person, not the library.
+
+  Original entry (2026-09-02), working out from two smaller
+  problems: author
   avatars are stored per library root, and "which of this author's
   papers do I have" only knows about the current catalogue. The
   common cause is that *everything* about an author is currently

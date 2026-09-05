@@ -149,6 +149,34 @@ def save_image(authorship, source):
     return path
 
 
+def rekey_image(old_key, new_key):
+    """Move a stored photo from one identity key to another. True if
+    a file moved.
+
+    An author reached with only an ORCID gets a photo filed under the
+    ORCID; the same person reached with an OpenAlex ID gets a
+    separate filename. When the trail collapses those two rows onto
+    the OpenAlex ID, the photo has to follow, or it becomes an
+    orphan named after an identity nothing looks up any more.
+
+    Does not overwrite: if the destination already has a photo, the
+    stale one is simply removed."""
+    if not old_key or not new_key or old_key == new_key:
+        return False
+    src = os.path.join(images_dir(), old_key + ".png")
+    if not os.path.isfile(src):
+        return False
+    dest = os.path.join(images_dir(), new_key + ".png")
+    try:
+        if os.path.exists(dest):
+            os.unlink(src)
+            return False
+        os.replace(src, dest)
+        return True
+    except OSError:
+        return False
+
+
 def remove_image(authorship):
     """Delete the stored photo. True if a file was removed."""
     path = image_path(authorship)

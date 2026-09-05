@@ -433,6 +433,54 @@ def choose_doi_candidate(pdf_title, pdf_year, candidates, resolve,
     return DoiChoice(seen[0], None, False)
 
 
+def conflict_from_refresh(rec, oa_title, oa_year, pdf_path=None):
+    """A `metadata_conflict` block when a refresh finds the stored
+    record and the DOI disagreeing, or None.
+
+    The citation refresher already runs this comparison and, on a
+    mismatch, logged a line and moved on — so a paper with wrong
+    metadata looked identical to a correct one. `make_metadata_chip`
+    has rendered this field since the DOI-first work; nothing but
+    the importer ever wrote it.
+
+    `found_by` distinguishes the two writers. The importer compares
+    what the *PDF* said against the DOI; a refresh compares what is
+    *stored* against what the DOI says now. Different questions, and
+    the popover should not claim the PDF said something it never
+    said.
+
+    `filename_doi` is carried when the publisher's own filename
+    yields a different DOI from the stored one — the case that
+    prompted this had `S0959440X99000202` in its name while its DOI
+    resolved to a Book Review in another journal, so the filename
+    held the answer."""
+    if not rec or rec.get("hand_edited"):
+        return None
+    if not (oa_title or oa_year):
+        return None          # OpenAlex knows nothing: a gap, not a clash
+    if _openalex_record_matches(rec.get("title"), rec.get("year"),
+                                oa_title, oa_year):
+        return None
+    out = {
+        "found_by": "refresh",
+        "stored_title": rec.get("title"),
+        "stored_year": rec.get("year"),
+        "stored_authors": list(rec.get("authors") or []),
+        "doi": rec.get("doi"),
+        "doi_title": oa_title,
+        "doi_year": oa_year,
+    }
+    if pdf_path:
+        try:
+            from_name = extract.doi_from_filename(pdf_path)
+        except Exception:
+            from_name = None
+        stored = (rec.get("doi") or "").strip().lower()
+        if from_name and from_name.strip().lower() != stored:
+            out["filename_doi"] = from_name
+    return out
+
+
 def _openalex_record_matches(pdf_title, pdf_year, oa_title, oa_year):
     """True if the OpenAlex Work's metadata is consistent with the
     PDF's. Used by `import_pdf` to detect cross-contaminated OpenAlex

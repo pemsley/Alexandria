@@ -211,6 +211,45 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
     add_label("Citation key:", 6)
     grid.attach(key_box, 1, 6, 1, 1)
 
+    # Verification state. The card has carried a "Check metadata"
+    # chip since the DOI-first work, but this dialog — where a user
+    # comes precisely when they suspect the metadata is wrong — said
+    # nothing at all about it.
+    conflict = rec.get("metadata_conflict")
+    if conflict or rec.get("metadata_unverified"):
+        warn = Gtk.Label(xalign=0.0)
+        warn.set_wrap(True)
+        warn.set_max_width_chars(58)
+        warn.set_margin_start(8)
+        warn.set_margin_end(8)
+        warn.set_margin_top(8)
+        if conflict:
+            from_refresh = conflict.get("found_by") == "refresh"
+            ours = (conflict.get("stored_title") if from_refresh
+                    else conflict.get("pdf_title")) or "—"
+            text = ("<b>This paper's metadata is disputed.</b>\n"
+                    "{} says: {}\nDOI ({}) says: {}".format(
+                        "Stored" if from_refresh else "The PDF",
+                        GLib.markup_escape_text(str(ours)),
+                        GLib.markup_escape_text(
+                            str(conflict.get("doi") or "?")),
+                        GLib.markup_escape_text(
+                            str(conflict.get("doi_title") or "—"))))
+            if conflict.get("filename_doi"):
+                text += ("\n<b>The filename suggests a different "
+                         "DOI:</b> {}".format(
+                             GLib.markup_escape_text(
+                                 str(conflict["filename_doi"]))))
+            text += ("\n<small>Saving from here marks the paper "
+                     "hand-edited, which settles it.</small>")
+        else:
+            text = ("<b>This paper's metadata is unverified.</b>\n"
+                    "No DOI resolved to a paper record, so these "
+                    "fields come from the PDF alone.")
+        warn.set_markup(
+            "<span foreground='#c07000'>{}</span>".format(text))
+        outer.append(warn)
+
     # --- Find metadata: citation disambiguation ------------------
     # The user can see "Jones et al., JMB, 1995" on the paper even
     # when extraction got nothing. Parse the fragment, query

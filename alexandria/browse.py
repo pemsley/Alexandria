@@ -654,14 +654,32 @@ def make_metadata_chip(record, parent_window=None, pdf_path=None,
     body.set_max_width_chars(52)
     body.set_selectable(True)
     if conflict:
+        # Two writers, two questions. The importer compares what the
+        # *PDF* said against the DOI's record; the citation refresher
+        # compares what is *stored* against what the DOI says now. The
+        # popover must not tell the user "the PDF says X" about a
+        # conflict found long after import, when the stored value may
+        # have come from anywhere.
+        from_refresh = conflict.get("found_by") == "refresh"
+        ours_label = "Stored" if from_refresh else "PDF"
+        ours = conflict.get("stored_title") if from_refresh \
+            else conflict.get("pdf_title")
         btn.set_tooltip_text(
-            "The DOI's record and the PDF disagree — click to compare")
-        head.set_markup("<b>The DOI and the PDF disagree</b>")
-        body.set_markup(
-            "<b>PDF says:</b> {}\n<b>DOI ({}) says:</b> {}".format(
-                safe_pango_markup(conflict.get("pdf_title") or "—"),
-                GLib.markup_escape_text(conflict.get("doi") or "?"),
-                safe_pango_markup(conflict.get("doi_title") or "—")))
+            "The DOI's record and this paper's metadata disagree — "
+            "click to compare")
+        head.set_markup("<b>The DOI and this paper disagree</b>")
+        lines = ["<b>{} says:</b> {}".format(
+                     ours_label, safe_pango_markup(ours or "—")),
+                 "<b>DOI ({}) says:</b> {}".format(
+                     GLib.markup_escape_text(conflict.get("doi") or "?"),
+                     safe_pango_markup(conflict.get("doi_title") or "—"))]
+        if conflict.get("filename_doi"):
+            # Often the answer outright: the publisher's own filename
+            # carries a different DOI from the one on record.
+            lines.append(
+                "\n<b>The filename suggests:</b> {}".format(
+                    GLib.markup_escape_text(conflict["filename_doi"])))
+        body.set_markup("\n".join(lines))
     else:
         btn.set_tooltip_text(
             "No DOI could be confirmed for this paper")
@@ -3285,14 +3303,32 @@ class BrowserWindow(Adw.ApplicationWindow):
                 today = metrics.today_iso()
                 try:
                     rec = sidecar.read(row["sidecar_path"])
+                    conflict = importer.conflict_from_refresh(
+                        rec, oa_title, oa_year,
+                        pdf_path=row["pdf_path"])
+                    if conflict is not None:
+                        # Record it, do not merely log it. The card's
+                        # "Check metadata" chip has rendered this
+                        # field since the DOI-first work; nothing but
+                        # the importer ever wrote it, so a paper with
+                        # wrong metadata looked exactly like a
+                        # correct one.
+                        _wlog("citations",
+                              "OpenAlex record for {} disagrees with "
+                              "the stored metadata — flagged"
+                              .format(doi))
+                        if rec.get("metadata_conflict") != conflict:
+                            rec["metadata_conflict"] = conflict
+                            try:
+                                sidecar.write(row["sidecar_path"], rec)
+                            except Exception as e:
+                                _wlog("citations",
+                                      "could not flag {}: {}".format(
+                                          doi, e))
+                        continue
                     if not importer._openalex_record_matches(
                             rec.get("title"), rec.get("year"),
                             oa_title, oa_year):
-                        if oa_title or oa_year:
-                            _wlog("citations",
-                                  "OpenAlex record for {} looks "
-                                  "corrupted — skipping refresh"
-                                  .format(doi))
                         continue
                     rec["citations"] = n
                     rec["citations_source"] = src

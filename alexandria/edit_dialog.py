@@ -11,7 +11,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GLib
 
-from . import sidecar, index, marks_config, metrics
+from . import sidecar, index, marks_config, metrics, bibtex_export
 
 
 def _mark_dropdown(initial_idx):
@@ -157,6 +157,37 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
     add_label("DOI:", 4)
     grid.attach(doi_entry, 1, 4, 1, 1)
 
+    # Citation key. A human artefact — people have typed
+    # `emsley2010features` into LaTeX for decades, and a paper's key
+    # often has to match one already in a group's .bib or a
+    # collaborator's manuscript. Left empty, export generates the
+    # same suggestion Suggest offers, so filling this in is only
+    # needed when you want a particular key.
+    key_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+    key_entry = Gtk.Entry()
+    key_entry.set_text(rec.get("bibtex_key") or "")
+    key_entry.set_hexpand(True)
+    key_entry.set_placeholder_text("e.g. emsley2010features")
+    key_box.append(key_entry)
+    suggest_btn = Gtk.Button(label="Suggest")
+    suggest_btn.set_tooltip_text(
+        "Build a key from the author, year and title above")
+    key_box.append(suggest_btn)
+
+    def _on_suggest(_b):
+        # Built from what is in the dialog now, not from the saved
+        # record: the point is usually to key a paper whose metadata
+        # you have just corrected.
+        key_entry.set_text(bibtex_export.suggest_key({
+            "authors": _parse_authors(_textview_text(authors_view)),
+            "year": _parse_year(year_entry.get_text()),
+            "title": title_entry.get_text().strip(),
+        }))
+
+    suggest_btn.connect("clicked", _on_suggest)
+    add_label("Citation key:", 5)
+    grid.attach(key_box, 1, 5, 1, 1)
+
     # --- Find metadata: citation disambiguation ------------------
     # The user can see "Jones et al., JMB, 1995" on the paper even
     # when extraction got nothing. Parse the fragment, query
@@ -293,8 +324,8 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
     tags_entry = Gtk.Entry()
     tags_entry.set_text(", ".join(rec.get("tags") or []))
     tags_entry.set_hexpand(True)
-    add_label("Tags\n(comma sep):", 5)
-    grid.attach(tags_entry, 1, 5, 1, 1)
+    add_label("Tags\n(comma sep):", 6)
+    grid.attach(tags_entry, 1, 6, 1, 1)
 
     _MARK_VALUES = [None, "red", "orange", "green", "cyan"]
     try:
@@ -302,8 +333,8 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
     except ValueError:
         initial_idx = 0
     mark_dropdown = _mark_dropdown(initial_idx)
-    add_label("Mark:", 6)
-    grid.attach(mark_dropdown, 1, 6, 1, 1)
+    add_label("Mark:", 7)
+    grid.attach(mark_dropdown, 1, 7, 1, 1)
 
     notes_view = Gtk.TextView()
     notes_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
@@ -317,18 +348,18 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
     notes_scroll.set_hexpand(True)
     notes_scroll.set_child(notes_view)
     notes_scroll.set_has_frame(True)
-    add_label("Notes:", 7)
-    grid.attach(notes_scroll, 1, 7, 1, 1)
+    add_label("Notes:", 8)
+    grid.attach(notes_scroll, 1, 8, 1, 1)
 
     hand_edited_check = Gtk.CheckButton(label="Hand-edited (don't overwrite on refresh)")
     hand_edited_check.set_active(bool(rec.get("hand_edited", False)))
-    grid.attach(hand_edited_check, 1, 8, 1, 1)
+    grid.attach(hand_edited_check, 1, 9, 1, 1)
 
     path_lbl = Gtk.Label()
     path_lbl.set_markup("<small><tt>{}</tt></small>".format(pdf_path))
     path_lbl.set_halign(Gtk.Align.START)
     path_lbl.set_selectable(True)
-    grid.attach(path_lbl, 1, 9, 1, 1)
+    grid.attach(path_lbl, 1, 10, 1, 1)
 
     scrolled.set_child(grid)
     outer.append(find_frame)
@@ -349,6 +380,8 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
         rec["year"] = _parse_year(year_entry.get_text())
         rec["journal"] = journal_entry.get_text().strip() or None
         rec["doi"] = doi_entry.get_text().strip() or None
+        rec["bibtex_key"] = (
+            bibtex_export.sanitise_key(key_entry.get_text()) or None)
         rec["tags"] = _parse_tags(tags_entry.get_text())
         rec["mark"] = _MARK_VALUES[mark_dropdown.get_selected()]
         rec["notes"] = _textview_text(notes_view)

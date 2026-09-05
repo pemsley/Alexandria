@@ -10,6 +10,7 @@ a `.bib` file.
 
 import os
 import re
+import unicodedata
 
 from . import bibtex, sidecar
 
@@ -35,17 +36,48 @@ def _surname(name):
     return parts[-1] if parts else ""
 
 
-def _autogenerate_key(rec):
+# Characters BibTeX and biblatex accept inside a citation key.
+# Everything else is dropped: a comma or a brace ends the key as far
+# as the parser is concerned, and a space breaks most of them.
+_KEY_ALLOWED_RE = re.compile(r"[^A-Za-z0-9:.\-_+/]")
+
+
+def sanitise_key(key):
+    """Make a typed citation key safe to write into a `.bib` file.
+
+    Unlike `suggest_key` this preserves case and the punctuation
+    people actually use — `Emsley2010-coot` is a perfectly good
+    hand-written key — and only removes what would break a parser."""
+    if not key:
+        return ""
+    return _KEY_ALLOWED_RE.sub("", _strip_accents(str(key)).strip())
+
+
+def _strip_accents(text):
+    """ASCII-fold, so `Jiménez` keys as `jimenez`. A key with an
+    accent in it is not portable through every LaTeX toolchain."""
+    return unicodedata.normalize("NFKD", text).encode(
+        "ascii", "ignore").decode("ascii")
+
+
+def suggest_key(rec):
     """Build a citation key from author surname + year + first
-    significant title word, e.g. 'emsley2010features'."""
+    significant title word, e.g. 'emsley2010features'.
+
+    Public because the Edit-metadata dialog's Suggest button and the
+    export fallback must not drift apart — a key you accepted in the
+    dialog should be the one that lands in the `.bib`."""
+    rec = rec or {}
     authors = rec.get("authors") or []
     surname = _surname(authors[0]) if authors else "anon"
-    surname = re.sub(r"[^A-Za-z0-9]", "", surname).lower() or "anon"
+    surname = re.sub(r"[^A-Za-z0-9]", "",
+                     _strip_accents(surname)).lower() or "anon"
     year = rec.get("year")
     year_part = str(year) if year else "nodate"
     title_word = ""
     for w in (rec.get("title") or "").split():
-        plain = re.sub(r"[^A-Za-z0-9]", "", w).lower()
+        plain = re.sub(r"[^A-Za-z0-9]", "",
+                       _strip_accents(w)).lower()
         if plain and plain not in _KEY_TITLE_STOPWORDS:
             title_word = plain[:14]
             break
@@ -70,7 +102,7 @@ def sidecar_to_bibtex_record(rec, pdf_path=None):
     `pdf_path` is the on-disk PDF path; when set and not a synthetic
     `bibtex:<key>` ghost path, it's emitted as a `file = {...}`
     field so the receiving side can re-link the PDF on import."""
-    key = (rec.get("bibtex_key") or "").strip() or _autogenerate_key(rec)
+    key = (rec.get("bibtex_key") or "").strip() or suggest_key(rec)
     btype = (rec.get("bibtex_type") or "").strip() or _default_type(rec)
 
     file_field = None

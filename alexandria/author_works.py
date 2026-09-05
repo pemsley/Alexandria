@@ -127,6 +127,20 @@ def _author_works_cache_is_fresh(cached):
 #
 # `(label, foreground)` tuples — no background fills, no emojis
 # (color emojis crash the user's Cairo/CoreText pipeline on macOS).
+def current_affiliation(rows):
+    """The row describing where this author is *now*, or None.
+
+    `metrics.fetch_author_profile` sorts most-recent `year_max`
+    first, so this is rows[0] — but stated as a function because it
+    is the one judgement in the header worth testing on its own, and
+    a caller reading `rows[0]` cannot see that the order is load
+    bearing."""
+    for r in rows or []:
+        if r.get("display_name"):
+            return r
+    return None
+
+
 def _people_flowbox():
     """The wrapping grid of name buttons used by both people
     sections."""
@@ -1225,16 +1239,23 @@ class AuthorPage(Gtk.Box):
         show)."""
         if not rows:
             return
-        # Most-recent first comes from metrics.fetch_author_profile;
-        # row[0] is "where they are now" with the usual asterisk.
-        current = rows[0]
+        current = current_affiliation(rows)
+        if current is None:
+            return
         # Remember the profile's current affiliation — the web-photo
         # search uses it to disambiguate common names even when the
         # opening authorship carried no institution.
         self._current_institution = current.get("display_name")
         if self._on_institution is not None and current.get("display_name"):
             self._on_institution(current["display_name"])
-        if not self._sub_inst_lbl.get_visible():
+        # Always overwrite, never only-when-empty. The label was
+        # seeded from `authorship["institution"]`, which is the
+        # address on whichever paper the user opened this author
+        # from — open a 2006 paper and you get their 2006 employer.
+        # OpenAlex's most-recent affiliation is the better answer,
+        # and the sidebar row was already being corrected this way,
+        # so guarding here just made the two disagree on screen.
+        if current.get("display_name"):
             self._sub_inst_lbl.set_markup(
                 "<span size='small' alpha='75%'>·  {}</span>".format(
                     GLib.markup_escape_text(current["display_name"])))

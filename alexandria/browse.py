@@ -2919,9 +2919,18 @@ class BrowserWindow(Adw.ApplicationWindow):
         self.progress_bar.set_fraction(i / n if n else 1.0)
         return False
 
+    def _hide_progress(self):
+        """Take the progress bar down without touching anything else.
+
+        `_end_progress` is the usual way to finish, but the BibTeX
+        import does its own reload and status message, so it wants
+        only this — calling `_end_progress` there would rebuild the
+        card list twice."""
+        self.progress_box.set_visible(False)
+
     def _end_progress(self, msg):
         self._import_busy = False
-        self.progress_box.set_visible(False)
+        self._hide_progress()
         self._reload(self.search.get_text() or None)
         if msg:
             self.status.set_text(msg)

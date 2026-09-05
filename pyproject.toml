@@ -13,6 +13,9 @@ authors = [{name = "Paul Emsley"}]
 requires-python = ">=3.9"
 dependencies = [
     "PyGObject>=3.42",
+    # viewer.py renders pages to a cairo.ImageSurface directly, so
+    # this is a first-order dependency, not just PyGObject's.
+    "pycairo",
     "pdfx",
     "pypdf",
     # bibtexparser v2 has the parse_string / middlewares API that

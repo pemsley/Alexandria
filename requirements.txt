@@ -23,7 +23,9 @@ pdfminer-six==20201018
 pdfx==1.4.1
     # via alexandria (pyproject.toml)
 pycairo==1.29.0
-    # via pygobject
+    # via
+    #   alexandria (pyproject.toml)
+    #   pygobject
 pycparser==3.0
     # via cffi
 pygobject==3.56.3

@@ -13,6 +13,7 @@ import re
 import unicodedata
 
 from . import bibtex, sidecar
+from . import csl
 
 
 # Words skipped when synthesising a key from the title — keeps the
@@ -110,6 +111,15 @@ def sidecar_to_bibtex_record(rec, pdf_path=None):
         file_field = pdf_path
 
     extra = dict(rec.get("bibtex_extra") or {})
+    # Volume / issue / pages are modelled on the record now, so
+    # they must reach the .bib even for papers that never came
+    # from BibTeX — and must override a stale passthrough value
+    # left over from an import. BibTeX calls the issue "number".
+    _bib = csl.biblio_of(rec)
+    for _field, _key in (("volume", "volume"), ("issue", "number"),
+                         ("pages", "pages")):
+        if _bib[_field]:
+            extra[_key] = str(_bib[_field])
 
     return {
         "bibtex_key": key,

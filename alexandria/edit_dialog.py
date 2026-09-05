@@ -151,11 +151,34 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
     add_label("Journal:", 3)
     grid.attach(journal_entry, 1, 3, 1, 1)
 
+    # Volume / issue / pages on one row: three short values that would
+    # each waste a full row, and they are read together.
+    biblio_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+    volume_entry = Gtk.Entry()
+    volume_entry.set_text(rec.get("volume") or "")
+    volume_entry.set_max_width_chars(8)
+    issue_entry = Gtk.Entry()
+    issue_entry.set_text(rec.get("issue") or "")
+    issue_entry.set_max_width_chars(6)
+    pages_entry = Gtk.Entry()
+    pages_entry.set_text(rec.get("pages") or "")
+    pages_entry.set_max_width_chars(12)
+    pages_entry.set_placeholder_text("713-730")
+    for _lbl, _w in (("Volume", volume_entry), ("Issue", issue_entry),
+                     ("Pages", pages_entry)):
+        cap = Gtk.Label()
+        cap.set_markup(
+            "<span size='small' alpha='70%'>{}</span>".format(_lbl))
+        biblio_row.append(cap)
+        biblio_row.append(_w)
+    add_label("Volume/issue\n/pages:", 4)
+    grid.attach(biblio_row, 1, 4, 1, 1)
+
     doi_entry = Gtk.Entry()
     doi_entry.set_text(rec.get("doi") or "")
     doi_entry.set_hexpand(True)
-    add_label("DOI:", 4)
-    grid.attach(doi_entry, 1, 4, 1, 1)
+    add_label("DOI:", 5)
+    grid.attach(doi_entry, 1, 5, 1, 1)
 
     # Citation key. A human artefact — people have typed
     # `emsley2010features` into LaTeX for decades, and a paper's key
@@ -185,8 +208,8 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
         }))
 
     suggest_btn.connect("clicked", _on_suggest)
-    add_label("Citation key:", 5)
-    grid.attach(key_box, 1, 5, 1, 1)
+    add_label("Citation key:", 6)
+    grid.attach(key_box, 1, 6, 1, 1)
 
     # --- Find metadata: citation disambiguation ------------------
     # The user can see "Jones et al., JMB, 1995" on the paper even
@@ -361,8 +384,8 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
     tags_entry = Gtk.Entry()
     tags_entry.set_text(", ".join(rec.get("tags") or []))
     tags_entry.set_hexpand(True)
-    add_label("Tags\n(comma sep):", 6)
-    grid.attach(tags_entry, 1, 6, 1, 1)
+    add_label("Tags\n(comma sep):", 7)
+    grid.attach(tags_entry, 1, 7, 1, 1)
 
     _MARK_VALUES = [None, "red", "orange", "green", "cyan"]
     try:
@@ -370,8 +393,8 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
     except ValueError:
         initial_idx = 0
     mark_dropdown = _mark_dropdown(initial_idx)
-    add_label("Mark:", 7)
-    grid.attach(mark_dropdown, 1, 7, 1, 1)
+    add_label("Mark:", 8)
+    grid.attach(mark_dropdown, 1, 8, 1, 1)
 
     notes_view = Gtk.TextView()
     notes_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
@@ -385,18 +408,18 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
     notes_scroll.set_hexpand(True)
     notes_scroll.set_child(notes_view)
     notes_scroll.set_has_frame(True)
-    add_label("Notes:", 8)
-    grid.attach(notes_scroll, 1, 8, 1, 1)
+    add_label("Notes:", 9)
+    grid.attach(notes_scroll, 1, 9, 1, 1)
 
     hand_edited_check = Gtk.CheckButton(label="Hand-edited (don't overwrite on refresh)")
     hand_edited_check.set_active(bool(rec.get("hand_edited", False)))
-    grid.attach(hand_edited_check, 1, 9, 1, 1)
+    grid.attach(hand_edited_check, 1, 10, 1, 1)
 
     path_lbl = Gtk.Label()
     path_lbl.set_markup("<small><tt>{}</tt></small>".format(pdf_path))
     path_lbl.set_halign(Gtk.Align.START)
     path_lbl.set_selectable(True)
-    grid.attach(path_lbl, 1, 10, 1, 1)
+    grid.attach(path_lbl, 1, 11, 1, 1)
 
     scrolled.set_child(grid)
     outer.append(find_frame)
@@ -416,6 +439,9 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
         rec["authors"] = _parse_authors(_textview_text(authors_view))
         rec["year"] = _parse_year(year_entry.get_text())
         rec["journal"] = journal_entry.get_text().strip() or None
+        rec["volume"] = volume_entry.get_text().strip() or None
+        rec["issue"] = issue_entry.get_text().strip() or None
+        rec["pages"] = pages_entry.get_text().strip() or None
         rec["doi"] = doi_entry.get_text().strip() or None
         rec["bibtex_key"] = (
             bibtex_export.sanitise_key(key_entry.get_text()) or None)

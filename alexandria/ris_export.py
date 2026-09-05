@@ -15,6 +15,7 @@ import os
 import re
 
 from . import sidecar
+from . import csl
 
 
 # BibTeX entry type → RIS TY tag. Anything we don't recognise falls
@@ -64,7 +65,10 @@ def _to_ris_name(name):
     return "{}, {}".format(surname, given)
 
 
-_PAGES_RE = re.compile(r"^\s*(\S+?)\s*[-–—]\s*(\S+)\s*$")
+# `[-–—]+` rather than a single character: a page range may now
+# arrive as BibTeX spells it, "713--730", in which case a
+# one-character separator leaves the end page as "-730".
+_PAGES_RE = re.compile(r"^\s*(\S+?)\s*[-–—]+\s*(\S+)\s*$")
 
 
 def _split_pages(pages):
@@ -113,12 +117,12 @@ def sidecar_to_ris_lines(rec, pdf_path=None):
         lines.append(("DO", rec["doi"]))
 
     extra = rec.get("bibtex_extra") or {}
-    if extra.get("volume"):
-        lines.append(("VL", str(extra["volume"])))
-    issue = extra.get("number") or extra.get("issue")
-    if issue:
-        lines.append(("IS", str(issue)))
-    sp, ep = _split_pages(extra.get("pages"))
+    bib = csl.biblio_of(rec)
+    if bib["volume"]:
+        lines.append(("VL", str(bib["volume"])))
+    if bib["issue"]:
+        lines.append(("IS", str(bib["issue"])))
+    sp, ep = _split_pages(bib["pages"])
     if sp:
         lines.append(("SP", sp))
     if ep:

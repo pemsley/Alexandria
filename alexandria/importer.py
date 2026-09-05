@@ -339,6 +339,15 @@ def _enrich_from_openalex(rec, pdf_path):
         rec["year"] = oa_year
     if oa_names:
         rec["authors"] = oa_names
+    # Volume / issue / pages from whichever source resolved the DOI.
+    # CrossRef and OpenAlex both carry them; neither was being read,
+    # which is why a 178-entry BibTeX export had not one volume,
+    # number or pages field despite 146 of the entries having a DOI.
+    record = getattr(choice, "record", None) or {}
+    for _f in ("volume", "issue", "pages"):
+        _v = record.get(_f)
+        if _v:
+            rec[_f] = str(_v)
 
 
 def _doi_looks_complete(doi):
@@ -478,6 +487,13 @@ def _build_record(pdf_path):
     rec["doi"] = extracted["doi"]
     rec["journal"] = extracted["journal"]
     rec["raw"] = extracted["raw"]
+    # Publishers stamp volume / issue / pages into the PDF's own PRISM
+    # XMP block, which `extract` already lifts into `raw` — it was
+    # simply never read. A DOI resolve overwrites these later with the
+    # better answer; this is what a paper without one still gets.
+    for _f, _v in metrics.biblio_from_raw(extracted["raw"]).items():
+        if _v:
+            rec[_f] = _v
     return rec
 
 

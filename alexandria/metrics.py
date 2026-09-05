@@ -2055,6 +2055,51 @@ def fetch_work_by_doi(doi):
         "citations": data.get("cited_by_count") or 0,
         "is_oa": bool(open_access.get("is_oa")),
         "oa_url": best_oa.get("pdf_url") or best_oa.get("landing_page_url"),
+        **biblio_from_openalex(data),
+    }
+
+
+PRISM_NS = "http://prismstandard.org/namespaces/basic/3.0/"
+
+_EMPTY_BIBLIO = {"volume": None, "issue": None, "pages": None}
+
+
+def _page_range(first, last):
+    """"209-216", or "112814" when an article is a single page."""
+    first = (first or "").strip() or None
+    last = (last or "").strip() or None
+    if first and last and first != last:
+        return "{}-{}".format(first, last)
+    return first or last
+
+
+def biblio_from_openalex(work):
+    """Volume / issue / pages from an OpenAlex work's `biblio` block,
+    which splits the page range into first_page and last_page."""
+    b = (work or {}).get("biblio") or {}
+    return {
+        "volume": (b.get("volume") or None),
+        "issue": (b.get("issue") or None),
+        "pages": _page_range(b.get("first_page"), b.get("last_page")),
+    }
+
+
+def biblio_from_raw(raw):
+    """Volume / issue / pages from the PRISM XMP block that `extract`
+    already lifts out of the PDF into `rec["raw"]`.
+
+    Publishers — Elsevier especially — stamp this into the file, so
+    for those papers the answer was already in the sidecar and
+    simply never read. PRISM calls the issue `number`."""
+    prism = (raw or {}).get(PRISM_NS) or {}
+    if not isinstance(prism, dict) or not prism:
+        return dict(_EMPTY_BIBLIO)
+    pages = (prism.get("pageRange") or "").strip() or _page_range(
+        prism.get("startingPage"), prism.get("endingPage"))
+    return {
+        "volume": (prism.get("volume") or None),
+        "issue": (prism.get("number") or None),
+        "pages": pages or None,
     }
 
 
@@ -2091,6 +2136,9 @@ def _work_from_crossref_message(msg, fallback_doi=None):
         "year": year,
         "publication_date": None,
         "journal": journal,
+        "volume": (msg.get("volume") or None),
+        "issue": (msg.get("issue") or None),
+        "pages": (msg.get("page") or None),
         "first_author": authors[0] if authors else None,
         "last_author": authors[-1] if authors else None,
         "authors": authors,

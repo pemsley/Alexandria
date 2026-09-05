@@ -81,6 +81,13 @@ def new_record(pdf_path):
         "year": None,
         "doi": None,
         "journal": None,
+        # Volume / issue / pages. First-class rather than left in
+        # bibtex_extra: all three exporters want them, the metadata
+        # editor edits them, and CrossRef, OpenAlex and the PDF's own
+        # PRISM block all supply them.
+        "volume": None,
+        "issue": None,
+        "pages": None,
         "tags": [],
         "notes": "",
         "mark": None,           # "red" / "orange" / "green" / "cyan" / None

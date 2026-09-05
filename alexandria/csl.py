@@ -71,15 +71,33 @@ def _split_author(name):
     return {"family": surname, "given": given}
 
 
+def biblio_of(rec):
+    """`{volume, issue, pages}` for a record: its own fields first,
+    then `bibtex_extra` for papers imported from BibTeX before these
+    fields existed. A field edited in the metadata dialog must win
+    over a stale passthrough value, or the edit would appear to do
+    nothing on export."""
+    extra = rec.get("bibtex_extra") or {}
+    return {
+        "volume": rec.get("volume") or extra.get("volume") or None,
+        "issue": (rec.get("issue") or extra.get("number")
+                  or extra.get("issue") or None),
+        "pages": rec.get("pages") or extra.get("pages") or None,
+    }
+
+
 def _normalise_pages(pages):
     """Normalise a 'pages' value to CSL's single 'page' field. en/em
-    dashes become plain hyphens so style files render consistently."""
+    dashes and BibTeX's `--` both become a single plain hyphen, so
+    style files render consistently — a page range can now arrive
+    straight from the record, spelled however it was typed or
+    however the .bib it was imported from spelled it."""
     if not pages:
         return None
     s = str(pages).strip()
     if not s:
         return None
-    return re.sub(r"[–—]", "-", s)
+    return re.sub(r"\s*[-–—]+\s*", "-", s)
 
 
 def sidecar_to_csl(rec, item_id=None):
@@ -126,12 +144,12 @@ def sidecar_to_csl(rec, item_id=None):
         csl["DOI"] = rec["doi"]
 
     extra = rec.get("bibtex_extra") or {}
-    if extra.get("volume"):
-        csl["volume"] = str(extra["volume"])
-    issue = extra.get("number") or extra.get("issue")
-    if issue:
-        csl["issue"] = str(issue)
-    page = _normalise_pages(extra.get("pages"))
+    bib = biblio_of(rec)
+    if bib["volume"]:
+        csl["volume"] = str(bib["volume"])
+    if bib["issue"]:
+        csl["issue"] = str(bib["issue"])
+    page = _normalise_pages(bib["pages"])
     if page:
         csl["page"] = page
     if extra.get("publisher"):

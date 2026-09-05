@@ -1,7 +1,7 @@
-"""Author photos: storage under the library root and the Wikidata
-portrait lookup.
+"""Author photos: a shared store and the Wikidata portrait lookup.
 
-Images live at `<library_root>/.author-images/<key>.png`, where
+Images live at `$XDG_DATA_HOME/Alexandria/author-images/<key>.png`,
+outside any library, where
 `<key>` is `index.author_trail_key` (OpenAlex ID, else ORCID) — the
 same identity the Authors-window trail uses, so a photo saved from
 any entry point shows everywhere. Everything is normalized to a
@@ -37,28 +37,91 @@ _WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
 _UA_SUFFIX = " author-photo"
 
 
-def _images_dir(root=None):
-    return os.path.join(root or prefs.get_library_root(),
-                        IMAGE_DIR_NAME)
+def _xdg_data_home():
+    return os.environ.get("XDG_DATA_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "share")
 
 
-def image_path(authorship, root=None):
+def images_dir():
+    """The one place author photos live, for every catalogue.
+
+    They used to sit in `<library_root>/.author-images/`, which made
+    a photo fetched in one catalogue invisible from another — 16
+    images under one library root and 4 under another, on a real
+    machine. The filenames were never the problem: they are
+    `index.author_trail_key` (OpenAlex ID, else ORCID), a *global*
+    identity, so the same person already had the same filename
+    everywhere. Only the directory was wrong.
+
+    `XDG_DATA_HOME`, not `~/.cache`: a photo fetched from Wikidata
+    could be fetched again, but one the user dragged in or chose from
+    a file could not, and both live here under the same name. So this
+    directory is never disposable.
+
+    Note for Flatpak: the sandbox redirects `~/.local/share` to
+    `~/.var/app/<id>/data`, so a Flatpak install and a `pip
+    install --user` one keep separate stores unless the manifest
+    grants wider access. See the backlog entry."""
+    return os.path.join(_xdg_data_home(), "Alexandria", "author-images")
+
+
+def migrate_into_shared_store(library_roots):
+    """Move any `<root>/.author-images/*.png` into the shared store.
+    Returns how many files were moved.
+
+    Idempotent, and first-one-wins on a clash: the same author in two
+    catalogues is the same person, and the files are two fetches of
+    one portrait rather than two different pictures."""
+    dest_dir = images_dir()
+    moved = 0
+    for root in library_roots or []:
+        if not root:
+            continue
+        src_dir = os.path.join(root, IMAGE_DIR_NAME)
+        if not os.path.isdir(src_dir):
+            continue
+        try:
+            names = sorted(os.listdir(src_dir))
+        except OSError:
+            continue
+        for name in names:
+            if not name.lower().endswith(".png"):
+                continue
+            src = os.path.join(src_dir, name)
+            dest = os.path.join(dest_dir, name)
+            try:
+                os.makedirs(dest_dir, exist_ok=True)
+                if os.path.exists(dest):
+                    os.unlink(src)      # already have this person
+                else:
+                    os.replace(src, dest)
+                    moved += 1
+            except OSError:
+                continue
+        try:
+            os.rmdir(src_dir)           # only if now empty
+        except OSError:
+            pass
+    return moved
+
+
+def image_path(authorship):
     """Deterministic photo path for this author, or None when the
     authorship has neither OpenAlex ID nor ORCID (same gate as the
     trail — no identity, nowhere stable to keep a photo)."""
     key = index.author_trail_key(authorship)
     if not key:
         return None
-    return os.path.join(_images_dir(root), key + ".png")
+    return os.path.join(images_dir(), key + ".png")
 
 
-def save_image(authorship, source, root=None):
+def save_image(authorship, source):
     """Normalize `source` (a filesystem path or raw bytes) to a
     ≤512 px PNG at image_path. Atomic write (tmp + rename) so a
     concurrent reader never sees a half-written file. Returns the
     path. Raises ValueError without an identifier; GLib.Error when
     the data isn't a decodable image — callers surface the message."""
-    path = image_path(authorship, root)
+    path = image_path(authorship)
     if path is None:
         raise ValueError("author has no OpenAlex ID or ORCID")
     if isinstance(source, (bytes, bytearray)):
@@ -86,9 +149,9 @@ def save_image(authorship, source, root=None):
     return path
 
 
-def remove_image(authorship, root=None):
+def remove_image(authorship):
     """Delete the stored photo. True if a file was removed."""
-    path = image_path(authorship, root)
+    path = image_path(authorship)
     if path and os.path.isfile(path):
         os.unlink(path)
         return True
@@ -222,7 +285,7 @@ def wikidata_portrait_url_by_name(name, http_get_json):
     return _sized(next(iter(items.values())))
 
 
-def fetch_wikidata_portrait(authorship, root=None,
+def fetch_wikidata_portrait(authorship,
                             http_get_json=None, http_get_bytes=None):
     """Look up and store the author's Wikidata portrait. Returns the
     saved path, or None when Wikidata has no item / no portrait.
@@ -244,4 +307,4 @@ def fetch_wikidata_portrait(authorship, root=None,
     if not url:
         return None
     data = get_bytes(url, {"User-Agent": user_agent() + _UA_SUFFIX}, 30)
-    return save_image(authorship, data, root=root)
+    return save_image(authorship, data)

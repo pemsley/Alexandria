@@ -43,7 +43,7 @@ def _try_load_vte():
         return None
 
 from . import (index, edit_dialog, importer, metrics, sidecar, extract,
-               identity,
+               identity, author_image,
                viewer, marks_config, prefs, watcher as watcher_mod,
                author_works, bibtex_import, bibtex_export, ris_export,
                csl_export, opener, references_pdf, discover, csl_format,
@@ -5779,6 +5779,19 @@ def main(argv=None):
     # throttles hard against the shared common quota — the source of the
     # "used up your OpenAlex allowance" reference-popover message.
     metrics.set_openalex_api_key(prefs.get_openalex_api_key())
+
+    # Author photos used to live inside each library, so switching
+    # catalogue appeared to lose them. Move any that are still there
+    # into the one shared store. Cheap and idempotent: after the
+    # first run there are no per-library directories left to look in.
+    try:
+        n = author_image.migrate_into_shared_store(
+            [c.get("library_root") for c in prefs.get_catalogues()])
+        if n:
+            print("[author-images] moved {} photo(s) into {}".format(
+                n, author_image.images_dir()))
+    except Exception as e:
+        print("[author-images] migration skipped:", e, file=sys.stderr)
 
     # Adw.Application initialises libadwaita (theme + dark/light follow
     # the system) and gives us native HeaderBar / Toast support.

@@ -1360,10 +1360,35 @@ Pending features, roughly grouped. Newest at the top of each section.
 
 ## Sharing
 
-- **Author avatars are per-catalogue, and should not be.** Noticed
-  2026-09-02: every catalogue keeps its own
+- **DONE 2026-09-05: author avatars are now in one shared store.**
+  Option 1 below, at `$XDG_DATA_HOME/Alexandria/author-images/`.
+  `author_image.images_dir()` is the single choke point; `root=`
+  is gone from `image_path`/`save_image`/`remove_image`/
+  `fetch_wikidata_portrait`, and `migrate_into_shared_store()` runs
+  at startup over every registered catalogue's library root, moving
+  files up and de-duplicating by filename (first one wins — the
+  same key in two catalogues is two fetches of one portrait).
+
+  On the real machine: 16 images moved, and both catalogues now
+  resolve their trail authors' photos from the same directory.
+
+  **What the migration does not reach: a library root no catalogue
+  points at any more.** Four photos — McCoy, Burnley, Palmer,
+  Krissinel, all of them authors the live `moorhen` catalogue shows
+  — were stranded under `moorhen-test-1`, a root dropped from
+  prefs; another 43 sit under `Alexandria-aside-5/-6`. Recovered
+  the four by hand. Nothing in the app will ever find the rest,
+  because a de-registered catalogue leaves no trace to walk. If
+  this recurs, the fix is a "scan a folder for author photos"
+  action rather than more guessing at startup.
+
+  Still open, and inherited from the original entry: the
+  self-containedness and Flatpak questions below, and that nothing
+  prunes the store.
+
+  Original entry (noticed 2026-09-02): every catalogue kept its own
   `<library_root>/.author-images/`, so a photo fetched while
-  browsing one library is invisible from another. Measured on a real
+  browsing one library was invisible from another. Measured on a real
   machine: 16 images under the default catalogue, 2 under `moorhen`,
   0 under `testing` — three disjoint sets, and the same person
   fetched twice would be stored twice.

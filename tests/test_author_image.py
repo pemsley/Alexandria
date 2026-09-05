@@ -8,6 +8,8 @@ Runnable as `python3 -m tests.test_author_image` or via pytest.
 import os
 import sys
 
+import pytest
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 if ROOT not in sys.path:
@@ -18,6 +20,16 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import GdkPixbuf
 
 from alexandria import author_image
+
+
+@pytest.fixture(autouse=True)
+def _isolated_store(tmp_path, monkeypatch):
+    """Point the shared store at a temp directory.
+
+    The store is no longer per-library, so a test that writes an
+    image writes to the *user's real* collection unless XDG_DATA_HOME
+    is redirected. That happened once while making this change."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
 
 
 def _png_bytes(w, h):
@@ -33,36 +45,36 @@ AUTH = {"name": "Jane K", "openalex_id": "A123", "orcid": "0000-0001"}
 
 
 def test_image_path_uses_key_precedence(tmp_path):
-    p = author_image.image_path(AUTH, root=str(tmp_path))
-    assert p == str(tmp_path / ".author-images" / "A123.png")
-    q = author_image.image_path({"orcid": "0000-0001"}, root=str(tmp_path))
-    assert q == str(tmp_path / ".author-images" / "0000-0001.png")
+    p = author_image.image_path(AUTH)
+    assert p == os.path.join(author_image.images_dir(), "A123.png")
+    q = author_image.image_path({"orcid": "0000-0001"})
+    assert q == os.path.join(author_image.images_dir(),
+                             "0000-0001.png")
 
 
 def test_image_path_none_without_identifier(tmp_path):
-    assert author_image.image_path({"name": "X"}, root=str(tmp_path)) is None
+    assert author_image.image_path({"name": "X"}) is None
 
 
 def test_save_from_bytes_and_remove(tmp_path):
-    p = author_image.save_image(AUTH, _png_bytes(64, 48), root=str(tmp_path))
+    p = author_image.save_image(AUTH, _png_bytes(64, 48))
     assert os.path.isfile(p)
     pb = GdkPixbuf.Pixbuf.new_from_file(p)
     assert (pb.get_width(), pb.get_height()) == (64, 48)
-    assert author_image.remove_image(AUTH, root=str(tmp_path)) is True
+    assert author_image.remove_image(AUTH) is True
     assert not os.path.isfile(p)
-    assert author_image.remove_image(AUTH, root=str(tmp_path)) is False
+    assert author_image.remove_image(AUTH) is False
 
 
 def test_save_from_file_path(tmp_path):
     src = tmp_path / "src.png"
     src.write_bytes(_png_bytes(32, 32))
-    p = author_image.save_image(AUTH, str(src), root=str(tmp_path))
+    p = author_image.save_image(AUTH, str(src))
     assert os.path.isfile(p)
 
 
 def test_save_scales_long_side_to_512(tmp_path):
-    p = author_image.save_image(AUTH, _png_bytes(1024, 256),
-                                root=str(tmp_path))
+    p = author_image.save_image(AUTH, _png_bytes(1024, 256))
     pb = GdkPixbuf.Pixbuf.new_from_file(p)
     assert pb.get_width() == 512
     assert pb.get_height() == 128   # aspect preserved
@@ -70,8 +82,7 @@ def test_save_scales_long_side_to_512(tmp_path):
 
 def test_save_without_identifier_raises(tmp_path):
     try:
-        author_image.save_image({"name": "X"}, _png_bytes(8, 8),
-                                root=str(tmp_path))
+        author_image.save_image({"name": "X"}, _png_bytes(8, 8))
     except ValueError:
         pass
     else:
@@ -128,14 +139,14 @@ def test_fetch_portrait_saves(tmp_path):
         return _png_bytes(300, 400)
 
     p = author_image.fetch_wikidata_portrait(
-        AUTH, root=str(tmp_path),
+        AUTH,
         http_get_json=fake_json, http_get_bytes=fake_bytes)
     assert p and os.path.isfile(p)
 
 
 def test_fetch_portrait_none_when_missing(tmp_path):
     p = author_image.fetch_wikidata_portrait(
-        AUTH, root=str(tmp_path),
+        AUTH,
         http_get_json=lambda u, headers, timeout: _sparql_response(),
         http_get_bytes=lambda u, headers, timeout: b"")
     assert p is None
@@ -174,7 +185,7 @@ def test_name_fallback_when_no_item(tmp_path):
                        "http://commons.wikimedia.org/wiki/"
                        "Special:FilePath/AVH.jpg")))
     p = author_image.fetch_wikidata_portrait(
-        dict(AUTH, name="Allan Victor Hoffbrand"), root=str(tmp_path),
+        dict(AUTH, name="Allan Victor Hoffbrand"),
         http_get_json=get,
         http_get_bytes=lambda u, headers, timeout: _png_bytes(64, 64))
     assert p and os.path.isfile(p)
@@ -189,7 +200,7 @@ def test_no_name_fallback_when_item_lacks_portrait(tmp_path):
                 {"item": {"value": "http://www.wikidata.org/entity/Q9"}}]}}
         raise AssertionError("name fallback must not run")
     p = author_image.fetch_wikidata_portrait(
-        dict(AUTH, name="Jane K"), root=str(tmp_path),
+        dict(AUTH, name="Jane K"),
         http_get_json=get,
         http_get_bytes=lambda u, headers, timeout: _png_bytes(8, 8))
     assert p is None
@@ -201,7 +212,7 @@ def test_name_fallback_ambiguous_declines(tmp_path):
         _sparql_items(("http://www.wikidata.org/entity/Q1", "http://c/1.jpg"),
                       ("http://www.wikidata.org/entity/Q2", "http://c/2.jpg")))
     p = author_image.fetch_wikidata_portrait(
-        dict(AUTH, name="John Smith"), root=str(tmp_path),
+        dict(AUTH, name="John Smith"),
         http_get_json=get,
         http_get_bytes=lambda u, headers, timeout: _png_bytes(8, 8))
     assert p is None
@@ -213,7 +224,7 @@ def test_name_fallback_same_item_two_images_is_unique(tmp_path):
         _sparql_items(("http://www.wikidata.org/entity/Q1", "http://c/a.jpg"),
                       ("http://www.wikidata.org/entity/Q1", "http://c/b.jpg")))
     p = author_image.fetch_wikidata_portrait(
-        dict(AUTH, name="Unique Person"), root=str(tmp_path),
+        dict(AUTH, name="Unique Person"),
         http_get_json=get,
         http_get_bytes=lambda u, headers, timeout: _png_bytes(8, 8))
     assert p and os.path.isfile(p)
@@ -222,7 +233,7 @@ def test_name_fallback_same_item_two_images_is_unique(tmp_path):
 def test_name_fallback_skipped_without_name(tmp_path):
     get = _fake_router(_sparql_response(), _sparql_items())
     p = author_image.fetch_wikidata_portrait(
-        {"openalex_id": "A123"}, root=str(tmp_path),
+        {"openalex_id": "A123"},
         http_get_json=get,
         http_get_bytes=lambda u, headers, timeout: _png_bytes(8, 8))
     assert p is None

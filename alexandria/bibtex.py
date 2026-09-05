@@ -174,6 +174,26 @@ _PARSE_MIDDLEWARES = [
     bm.NormalizeFieldKeys(),          # Title → title, AUTHOR → author
 ]
 
+# The same, minus the LaTeX decoding — see `_VERBATIM_FIELDS`.
+_RAW_MIDDLEWARES = [bm.NormalizeFieldKeys()]
+
+# Fields where LaTeX decoding does harm rather than good. Decoding is
+# right for prose (`\"o` → ö) but these are machine-readable strings
+# in which LaTeX's special characters are ordinary text: `&` is an
+# alignment character to LaTeX, so a URL query string came back with
+# its `&` replaced by a space — a broken link. And `--` is an en dash
+# to LaTeX, so `pages = {123--130}` became `123–130`, changing 35 of
+# the 53 page ranges in a real file on import. Found 2026-09-02.
+_VERBATIM_FIELDS = frozenset((
+    "url", "doi", "eprint", "file", "isbn", "issn",
+    "archiveprefix", "primaryclass", "urldate",
+))
+
+# Inside a verbatim field the only LaTeX left worth undoing is the
+# backslash escaping of BibTeX's own specials — `a\&b` really does
+# mean `a&b`. Everything else stays as written.
+_VERBATIM_UNESCAPE_RE = re.compile(r"\\([&%$#_{}])")
+
 # Cheap LaTeX-command stripper for things LatexDecodingMiddleware doesn't
 # touch: font commands like `\it Coot`, `\emph{X}`, `\textit{X}`. We don't
 # render typography in the sidecar, so just drop the command and keep the
@@ -279,6 +299,33 @@ def _record_from_failed_block(block):
     return rec
 
 
+def _restore_verbatim_fields(text, records):
+    """Put back the undecoded value of every `_VERBATIM_FIELDS` entry.
+
+    Parsing a second time without the LaTeX middleware is cheaper and
+    far less fragile than trying to undo its substitutions, which are
+    not reversible — a space could have been a `&` or could always
+    have been a space."""
+    try:
+        raw = bibtexparser.parse_string(
+            text, append_middleware=_RAW_MIDDLEWARES)
+    except Exception:
+        return
+    by_key = {e.key: e for e in raw.entries}
+    for rec in records:
+        entry = by_key.get(rec.get("bibtex_key"))
+        extra = rec.get("bibtex_extra")
+        if entry is None or not extra:
+            continue
+        for name in list(extra):
+            if name.lower() not in _VERBATIM_FIELDS:
+                continue
+            field = entry.fields_dict.get(name)
+            if field is not None and field.value is not None:
+                extra[name] = _VERBATIM_UNESCAPE_RE.sub(
+                    r"\1", _clean_value(field.value))
+
+
 def parse(text_or_path):
     """Parse a BibTeX string or a path to a `.bib` file. Returns a
     list of records (see module docstring for the schema). Entries
@@ -295,6 +342,7 @@ def parse(text_or_path):
         text = text_or_path
     lib = bibtexparser.parse_string(text, append_middleware=_PARSE_MIDDLEWARES)
     records = [_record_from_entry(e) for e in lib.entries]
+    _restore_verbatim_fields(text, records)
     for blk in (lib.failed_blocks or []):
         rec = _record_from_failed_block(blk)
         if rec:
@@ -305,13 +353,31 @@ def parse(text_or_path):
 # ---- Writing -------------------------------------------------------
 
 
-def _format_value(v):
-    """Wrap a value in BibTeX braces. Only escape the bare minimum;
-    we trust ourselves not to feed in raw `}` characters."""
+# An unescaped `%` starts a comment that runs to the end of the line,
+# and a field is written on one line — so a raw per-cent sign silently
+# truncates its own value and everything after it, closing brace
+# included. Found 2026-09-02: two abstracts in a real 76-entry file
+# lost two thirds of their text to "78% sequence identity". The
+# lookbehind leaves an already-escaped `\%` alone.
+_BARE_PERCENT_RE = re.compile(r"(?<!\\)%")
+
+
+# A page range is spelled `123--130` in BibTeX. The parser normalises
+# it to an en dash on the way in, because the CSL and RIS exporters
+# depend on that; this puts the BibTeX spelling back on the way out,
+# so a file we write matches the file we read.
+_PAGE_DASH_RE = re.compile(r"\s*[–—]\s*")
+
+
+def _format_value(v, field=None):
+    """Wrap a value in BibTeX braces, escaping what would otherwise
+    end the value early and restoring BibTeX's own spellings."""
     if v is None:
         return "{}"
     s = str(v)
-    return "{" + s + "}"
+    if field and field.lower() == "pages":
+        s = _PAGE_DASH_RE.sub("--", s)
+    return "{" + _BARE_PERCENT_RE.sub(r"\\%", s) + "}"
 
 
 def _record_field_order(rec):
@@ -345,7 +411,7 @@ def write_record(rec):
     for i, (k, v) in enumerate(pairs):
         sep = "," if i < len(pairs) - 1 else ""
         lines.append("  {:<{w}} = {}{}".format(
-            k, _format_value(v), sep, w=width))
+            k, _format_value(v, k), sep, w=width))
     lines.append("}")
     return "\n".join(lines)
 

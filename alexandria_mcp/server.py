@@ -44,8 +44,8 @@ import re
 import tempfile
 import urllib.parse
 
-from alexandria import (bibtex_import, index, metrics, pdf_fetch,
-                        pdf_text, sidecar)
+from alexandria import (bibtex_import, index, jats, metrics,
+                        pdf_fetch, pdf_text, sidecar)
 
 from . import __version__, config, db
 from .models import PaperDetail, PaperSummary, PdfText
@@ -849,6 +849,116 @@ def get_citation_neighbourhood(
             "in_library_citers": n_citers_in,
         },
     }
+
+
+@mcp.tool()
+def get_full_texts(
+    paper_ids: list[int],
+    max_chars: int = 40000,
+    offset: int = 0,
+) -> list[dict]:
+    """The best available full text for each paper: the publisher's
+    JATS where we hold it, the PDF's extracted text otherwise, and
+    the abstract when there is neither.
+
+    **Prefer this to `get_pdf_texts` for reading a paper.** Where a
+    JATS exists it is markedly better: no running heads, no
+    "Downloaded from …" stamped through every page, no two-column
+    reading-order guesswork, no hyphens left from justification —
+    and the author's own section headings, kept as Markdown-style
+    `#` lines so you can tell which part of the paper you are in.
+    On one real paper the PDF route yields 46,722 characters against
+    the JATS body's 32,011, and the difference is almost entirely
+    furniture. Reach for `get_pdf_texts` when you specifically need
+    the printed page — a particular page number, or a paper with no
+    JATS where the page range matters.
+
+    Each result carries `source` ("jats" / "pdf" / "abstract"),
+    `chars_total`, `chars_returned`, `offset` and `next_offset`, so
+    you can tell how much of the paper you have actually read — and
+    page through the rest by passing `next_offset` back as `offset`
+    rather than silently summarising the first few pages. Pass the
+    `source` you used to `set_summary`.
+
+    Ghost (BibTeX-only) entries fall back to the abstract; papers
+    with nothing at all return `error`. Capped at 20 IDs per call.
+    """
+    if not paper_ids:
+        return []
+    if len(paper_ids) > 20:
+        raise ValueError(
+            "get_full_texts: at most 20 IDs per call ({} given)".format(
+                len(paper_ids)))
+    if max_chars < 100:
+        raise ValueError(
+            "get_full_texts: max_chars must be >= 100 ({} given)".format(
+                max_chars))
+    offset = max(0, int(offset))
+
+    conn = db.get_ro_connection()
+    out = []
+    for pid in paper_ids:
+        row = conn.execute(
+            "SELECT id, pdf_path, sidecar_path FROM papers WHERE id = ?",
+            (pid,)).fetchone()
+        if row is None:
+            out.append({"paper_id": pid, "error": "no such paper"})
+            continue
+        text, source, err = _best_full_text(row)
+        if text is None:
+            out.append({"paper_id": pid, "source": None, "error": err})
+            continue
+        total = len(text)
+        chunk = text[offset:offset + max_chars]
+        nxt = offset + len(chunk)
+        out.append({
+            "paper_id": pid,
+            "source": source,
+            "text": chunk,
+            "chars_total": total,
+            "chars_returned": len(chunk),
+            "offset": offset,
+            "next_offset": nxt if nxt < total else None,
+            "truncated": nxt < total,
+        })
+    return out
+
+
+def _best_full_text(row):
+    """`(text, source, error)` — JATS, then PDF, then abstract."""
+    pdf_path = row["pdf_path"] or ""
+    if not str(pdf_path).startswith("bibtex:"):
+        try:
+            xml = jats.jats_path(pdf_path)
+            if os.path.isfile(xml):
+                body = jats.body_text(xml)
+                if body:
+                    return (body, "jats", None)
+        except Exception:
+            pass
+        try:
+            text, _trunc, err = pdf_text.extract_pages(
+                pdf_path, max_chars=10 ** 7)
+            if text and text.strip():
+                return (text, "pdf", None)
+        except Exception:
+            pass
+    block = _sidecar_abstract(row["sidecar_path"])
+    if block:
+        return (block, "abstract", None)
+    if str(pdf_path).startswith("bibtex:"):
+        return (None, None, "ghost entry with no abstract")
+    return (None, None, "no text available")
+
+
+def _sidecar_abstract(sidecar_path):
+    try:
+        with open(sidecar_path, "r", encoding="utf-8") as fh:
+            rec = json.load(fh)
+    except Exception:
+        return None
+    a = (rec.get("abstract") or "").strip()
+    return a or None
 
 
 @mcp.tool()

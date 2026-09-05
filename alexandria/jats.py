@@ -309,6 +309,75 @@ def _tagged_text(ref, name):
     return None
 
 
+# Elements whose text is not body prose. Figure and table captions
+# are dropped because a summariser reading them out of position
+# mistakes them for narrative; the reference list is dropped because
+# forty citations would swamp a summary and `parse_ref_list` already
+# serves them properly.
+_NOT_BODY_PROSE = frozenset(("fig", "table-wrap", "graphic", "media",
+                             "table", "ref-list", "fn-group",
+                             "supplementary-material"))
+
+
+def _para_text(elem):
+    """One paragraph as a single line. `itertext` keeps `<xref>`
+    markers and `<italic>` runs in place — they are words the reader
+    sees, and dropping them changes sentences."""
+    return re.sub(r"\s+", " ", "".join(elem.itertext())).strip()
+
+
+def body_text(xml_path, heading_prefix="#"):
+    """The article body as readable text, with section titles kept as
+    Markdown-style headings whose depth follows the nesting.
+
+    This is what a summariser should read when it exists. The
+    publisher's own text has no running heads, no "Downloaded from
+    …" stamped through every page, no two-column reading-order
+    guesswork and no hyphens left over from justification — all of
+    which the PDF extraction carries. Returns "" for a missing,
+    unreadable or body-less file rather than raising."""
+    try:
+        root = ElementTree.parse(xml_path).getroot()
+    except Exception:
+        return ""
+    body = None
+    for elem in root.iter():
+        if _local(elem.tag) == "body":
+            body = elem
+            break
+    if body is None:
+        return ""
+
+    out = []
+
+    def walk(elem, depth):
+        for child in elem:
+            name = _local(child.tag)
+            if name in _NOT_BODY_PROSE:
+                continue
+            if name == "sec":
+                title = None
+                for c in child:
+                    if _local(c.tag) == "title":
+                        title = _para_text(c)
+                        break
+                if title:
+                    out.append("{} {}".format(heading_prefix * depth,
+                                              title))
+                walk(child, depth + 1)
+            elif name == "title":
+                continue          # already emitted by the parent sec
+            elif name == "p":
+                t = _para_text(child)
+                if t:
+                    out.append(t)
+            else:
+                walk(child, depth)
+
+    walk(body, 1)
+    return "\n\n".join(out).strip()
+
+
 def parse_ref_list(xml_path):
     """Bibliography entries from a stored JATS file, in the shape the
     viewer's reference popover consumes:

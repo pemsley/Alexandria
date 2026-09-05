@@ -38,9 +38,9 @@ def test_key_appended_with_ampersand_when_query_present():
     try:
         _set_key("abc123")
         out = metrics._apply_openalex_key(
-            "https://api.openalex.org/works?filter=x&mailto=a@b.com")
+            "https://api.openalex.org/works?filter=x&mailto=a@example.com")
         assert out == (
-            "https://api.openalex.org/works?filter=x&mailto=a@b.com"
+            "https://api.openalex.org/works?filter=x&mailto=a@example.com"
             "&api_key=abc123")
     finally:
         metrics._OPENALEX_API_KEY = saved

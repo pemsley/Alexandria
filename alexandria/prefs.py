@@ -253,3 +253,26 @@ def set_section_expanded(key, expanded):
     sections[key] = bool(expanded)
     data["expanded_sections"] = sections
     save(data)
+
+
+def get_contact_email(path=None):
+    """The user's own contact address for polite-pool API access, or
+    '' when unset.
+
+    OpenAlex and CrossRef ask for one so they can get in touch about
+    unusual traffic, and Unpaywall requires one. Alexandria ships
+    with none: an unconfigured install is anonymous rather than
+    identifying as somebody else."""
+    data = load(path) if path else load()
+    stored = data.get("contact_email")
+    return stored.strip() if isinstance(stored, str) else ""
+
+
+def set_contact_email(email):
+    """Persist the contact address (or clear it when given falsy)."""
+    data = load()
+    if email and email.strip():
+        data["contact_email"] = email.strip()
+    else:
+        data.pop("contact_email", None)
+    save(data)

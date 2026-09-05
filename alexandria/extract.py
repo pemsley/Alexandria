@@ -12,11 +12,11 @@ import subprocess
 import urllib.parse
 import urllib.request
 
-from .identity import maintainer_email
+from .identity import user_agent
 
 CROSSREF_USER_AGENT = os.environ.get(
     "ALEXANDRIA_CROSSREF_UA",
-    "alexandria/0.1 (mailto:{})".format(maintainer_email()))
+    user_agent())
 
 try:
     from pypdf import PdfReader

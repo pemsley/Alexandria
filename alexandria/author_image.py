@@ -25,12 +25,16 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import GdkPixbuf, Gio
 
 from . import index
+from .identity import user_agent
 from . import prefs
 
 IMAGE_DIR_NAME = ".author-images"
 MAX_SIDE = 512
 _WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
-_UA = "alexandria/0.2 (mailto:alexandria@example.org) author-photo"
+# Built rather than hard-coded: this used to carry the
+# maintainer's address verbatim, so every user's Wikidata
+# photo lookups were attributed to him.
+_UA_SUFFIX = " author-photo"
 
 
 def _images_dir(root=None):
@@ -109,7 +113,8 @@ def _run_sparql(query, http_get_json):
     url = _WIKIDATA_SPARQL + "?" + urllib.parse.urlencode(
         [("query", query), ("format", "json")])
     data = http_get_json(
-        url, {"User-Agent": _UA, "Accept": "application/sparql-results+json"},
+        url, {"User-Agent": user_agent() + _UA_SUFFIX,
+         "Accept": "application/sparql-results+json"},
         20)
     if not data:
         return []
@@ -167,7 +172,7 @@ def download_image(url, http_get_bytes=None):
     ValueError when the page names no image; other network errors
     propagate."""
     get_bytes = http_get_bytes or _http_get_bytes
-    data = get_bytes(url, {"User-Agent": _UA}, 30)
+    data = get_bytes(url, {"User-Agent": user_agent() + _UA_SUFFIX}, 30)
     if not _looks_like_html(data):
         return data
     m = _META_IMAGE_RE.search(data)
@@ -176,7 +181,7 @@ def download_image(url, http_get_bytes=None):
         if c:
             img_url = urllib.parse.urljoin(
                 url, c.group(1).decode("utf-8", "replace"))
-            return get_bytes(img_url, {"User-Agent": _UA}, 30)
+            return get_bytes(img_url, {"User-Agent": user_agent() + _UA_SUFFIX}, 30)
     raise ValueError(
         "that address is a web page with no main image (og:image)")
 
@@ -238,5 +243,5 @@ def fetch_wikidata_portrait(authorship, root=None,
             authorship.get("name"), get_json)
     if not url:
         return None
-    data = get_bytes(url, {"User-Agent": _UA}, 30)
+    data = get_bytes(url, {"User-Agent": user_agent() + _UA_SUFFIX}, 30)
     return save_image(authorship, data, root=root)

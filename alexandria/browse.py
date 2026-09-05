@@ -43,6 +43,7 @@ def _try_load_vte():
         return None
 
 from . import (index, edit_dialog, importer, metrics, sidecar, extract,
+               identity,
                viewer, marks_config, prefs, watcher as watcher_mod,
                author_works, bibtex_import, bibtex_export, ris_export,
                csl_export, opener, references_pdf, discover, csl_format,
@@ -5579,6 +5580,32 @@ class BrowserWindow(Adw.ApplicationWindow):
             "Give each mark colour a meaning, "
             "e.g. “Must Read” or “My papers”. "
             "Leave blank to show the colour name only.")
+        # ── Online services ───────────────────────────────────────────
+        net_group = Adw.PreferencesGroup()
+        net_group.set_title("Online services")
+        net_group.set_description(
+            "OpenAlex and CrossRef ask for a contact address so they "
+            "can get in touch about unusual traffic, and give politer "
+            "rate limits to requests that carry one. Unpaywall "
+            "requires one — without it, Alexandria will not look "
+            "there for open-access PDFs.")
+        email_row = Adw.EntryRow()
+        email_row.set_title("Contact email")
+        email_row.set_text(prefs.get_contact_email())
+
+        def _save_email(row, *_a):
+            prefs.set_contact_email(row.get_text())
+            # Rebind what the API modules captured at import time.
+            metrics.OPENALEX_MAILTO = identity.contact_email()
+            metrics.OPENALEX_UA = identity.user_agent()
+            metrics.CROSSREF_UA = identity.user_agent()
+            metrics.EUROPEPMC_UA = identity.user_agent()
+
+        email_row.connect("apply", _save_email)
+        email_row.connect("changed", _save_email)
+        net_group.add(email_row)
+        page.add(net_group)
+
         page.add(marks_group)
 
         mark_entries = {}

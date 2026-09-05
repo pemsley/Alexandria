@@ -14,18 +14,15 @@ import urllib.parse
 import urllib.request
 from datetime import date
 
-from .identity import maintainer_email
+from .identity import contact_email, user_agent
 
-OPENALEX_MAILTO = maintainer_email()
-OPENALEX_UA = os.environ.get(
-    "ALEXANDRIA_OPENALEX_UA",
-    "alexandria/0.1 (mailto:{})".format(OPENALEX_MAILTO))
-CROSSREF_UA = os.environ.get(
-    "ALEXANDRIA_CROSSREF_UA",
-    "alexandria/0.1 (mailto:{})".format(OPENALEX_MAILTO))
-EUROPEPMC_UA = os.environ.get(
-    "ALEXANDRIA_EUROPEPMC_UA",
-    "alexandria/0.1 (mailto:{})".format(OPENALEX_MAILTO))
+# Empty when the user has set no contact address; every caller
+# already treats that as "skip the mailto", and Unpaywall declines to
+# run at all rather than calling anonymously.
+OPENALEX_MAILTO = contact_email()
+OPENALEX_UA = os.environ.get("ALEXANDRIA_OPENALEX_UA", user_agent())
+CROSSREF_UA = os.environ.get("ALEXANDRIA_CROSSREF_UA", user_agent())
+EUROPEPMC_UA = os.environ.get("ALEXANDRIA_EUROPEPMC_UA", user_agent())
 
 # OpenAlex API key. Since Feb 2026 OpenAlex authenticates by key (the
 # old mailto "polite pool" is gone); a free key at

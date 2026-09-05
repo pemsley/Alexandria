@@ -20,7 +20,7 @@ from gi.repository import Gtk, GLib, Gdk, Gio, Pango, Adw, GObject
 import datetime
 
 from . import metrics, index, importer, opener, author_image, viewer
-from .identity import maintainer_email
+from .identity import user_agent
 from .markup import safe_pango_markup
 
 
@@ -281,7 +281,7 @@ def _curl_download(url, tmp_path, timeout):
         proc = subprocess.run(
             ["curl", "-sS", "-L",
              "--max-time", str(int(timeout)),
-             "-A", "alexandria/0.1 (mailto:{})".format(maintainer_email()),
+             "-A", user_agent(),
              "-o", tmp_path,
              url],
             capture_output=True, timeout=timeout + 5)

@@ -23,6 +23,62 @@ Pending features, roughly grouped. Newest at the top of each section.
  - zoom to fit by default (explore)
 
 ## Import / ingestion
+- **BUG: the citation refresher detects corrupt metadata and only
+  logs it.** Reported 2026-09-05. At startup the refresher prints
+  lines like
+
+      [citations] OpenAlex record for 10.1016/S0957-5820(99)70836-0
+      looks corrupted — skipping refresh
+
+  and nothing else happens: no chip on the card, and nothing in the
+  Edit-metadata dialog. The user sees a paper whose metadata is
+  wrong, with no indication anywhere that the app already knows.
+
+  **The machinery to say so exists and is simply not wired up.**
+  `browse.make_metadata_chip` (`browse.py:615`) already renders an
+  amber **"Check metadata"** chip from `metadata_conflict`, with a
+  popover showing both versions and an option to keep the PDF's.
+  `importer._enrich_*` sets that field at *import* time. But the
+  refresher (`browse.py:3130`) runs the same
+  `_openalex_record_matches` comparison, and on mismatch just
+  `_wlog(...)` and `continue`s — it never writes `metadata_conflict`,
+  so the chip never appears. One assignment before the `continue`
+  closes the loop.
+
+  **Second, separate gap: the Edit-metadata dialog shows no conflict
+  state at all.** The chip lives on the card; the dialog has Title,
+  Authors, Year, Journal, DOI, Tags, Mark, Notes and the hand-edited
+  checkbox, and nothing about verification. That is where a user goes
+  when they suspect the metadata is wrong — so the warning should be
+  visible there too, ideally with the OpenAlex-versus-PDF comparison
+  the card popover already builds.
+
+  **The worked example is instructive, because the filename held the
+  answer.** File
+  `advances-in-direct-methods-for-protein-crystallography-1-s2.0-S0959440X99000202-main.pdf`
+  had `doi: 10.1016/S0957-5820(99)70836-0` — which resolves to a
+  *Book Review* in **Process Safety and Environmental Protection** —
+  with title, journal and author all inherited from that wrong
+  record. The PII in its own filename, `S0959440X99000202`, gives
+  `10.1016/s0959-440x(99)00020-2`: **"Advances in direct methods for
+  protein crystallography"**, Current Opinion in Structural Biology
+  1999, Isabel Usón. Correct, and matching the filename prefix.
+
+  So this is a live case for the **"derive DOIs from publisher
+  filename conventions"** entry above — and more than that, an
+  argument for using a filename-derived DOI as a *cross-check* on an
+  extracted one, not merely as a fallback when extraction finds
+  nothing. Disagreement between the two is a strong corruption
+  signal, and unlike the current heuristic it does not depend on
+  OpenAlex changing its mind.
+
+  **Note the current detection fired by luck.** The refresher
+  compares the stored title against OpenAlex's current title; it
+  flagged this paper because OpenAlex's record for the bad DOI
+  *changed* ("List of Referees 1999" to "Book Review"), not because
+  anything noticed the DOI belonged to another paper. A wrong DOI
+  whose record stays stable is never detected at all.
+
 - **Construct publisher PDF URLs from the DOI, before asking anyone.**
   Borrowed from bibtui (see
   `chat-stuff/possible-collaboration-bibtui.md`), which derives a

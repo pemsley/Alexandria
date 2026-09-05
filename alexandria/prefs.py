@@ -228,3 +228,28 @@ def set_openalex_api_key(key):
     else:
         data.pop("openalex_api_key", None)
     save(data)
+
+
+def get_section_expanded(key, default=False):
+    """Whether a collapsible section of the author page is open.
+
+    The collaborator and citing-author rows are each a dozen names,
+    which pushed the works list off the bottom of the window, so both
+    now collapse. Remembering the choice means a reader who wants
+    them open says so once rather than on every author."""
+    sections = load().get("expanded_sections")
+    if not isinstance(sections, dict):
+        return default
+    val = sections.get(key)
+    return bool(val) if isinstance(val, bool) else default
+
+
+def set_section_expanded(key, expanded):
+    """Persist one section's open/closed state."""
+    data = load()
+    sections = data.get("expanded_sections")
+    if not isinstance(sections, dict):
+        sections = {}
+    sections[key] = bool(expanded)
+    data["expanded_sections"] = sections
+    save(data)

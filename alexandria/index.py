@@ -630,6 +630,88 @@ def set_author_score(conn, openalex_id, result, self_excluded=True):
     conn.commit()
 
 
+def db_path_of(conn):
+    """The file a connection is attached to, or None for an in-memory
+    or unreadable one.
+
+    Background threads must open their own connection rather than
+    borrow the GUI's — sharing one corrupts cursor state and
+    segfaults on Apple's libsqlite3 (see `7bd858d`, `ab347ba`). Some
+    windows are handed a connection and no path, so let the
+    connection say."""
+    try:
+        for _seq, name, path in conn.execute("PRAGMA database_list"):
+            if name == "main":
+                return path or None
+    except Exception:
+        return None
+    return None
+
+
+CREATE_AUTHOR_RELATIONS = """
+CREATE TABLE IF NOT EXISTS author_relations (
+    openalex_id       TEXT PRIMARY KEY,
+    cited_by_top_json TEXT NOT NULL,
+    computed_at       TEXT NOT NULL
+);
+"""
+
+
+# Days a cached "who cites this author" list stays fresh. Same
+# reasoning as AUTHOR_SCORE_TTL_DAYS: the underlying tallies move on
+# the order of weeks, and the answer is a ranking, which moves slower
+# still than the counts behind it.
+AUTHOR_RELATIONS_TTL_DAYS = 30
+
+
+def get_author_relations(conn, openalex_id):
+    """The cached `{cited_by_top, computed_at}` for `openalex_id`, or
+    None when there is no row or the stored JSON is unreadable. Does
+    not check freshness — see `author_relations_fresh`."""
+    if not openalex_id:
+        return None
+    row = conn.execute(
+        "SELECT cited_by_top_json, computed_at FROM author_relations "
+        "WHERE openalex_id = ?", (openalex_id,)).fetchone()
+    if row is None:
+        return None
+    try:
+        top = json.loads(row["cited_by_top_json"])
+    except Exception:
+        return None
+    if not isinstance(top, list):
+        return None
+    return {"cited_by_top": top, "computed_at": row["computed_at"]}
+
+
+def set_author_relations(conn, openalex_id, cited_by_top):
+    """Store the ranked list. An empty list is stored, not skipped:
+    "nobody outside their own group cites this author" is a real
+    answer, and without a row we would re-ask OpenAlex every time
+    their page is opened."""
+    if not openalex_id or cited_by_top is None:
+        return
+    conn.execute(
+        "INSERT OR REPLACE INTO author_relations "
+        "(openalex_id, cited_by_top_json, computed_at) VALUES (?, ?, ?)",
+        (openalex_id, json.dumps(cited_by_top),
+         datetime.datetime.now().isoformat(timespec="seconds")))
+    conn.commit()
+
+
+def author_relations_fresh(cached, ttl_days=AUTHOR_RELATIONS_TTL_DAYS):
+    """Whether a row from `get_author_relations` is young enough to
+    show without refetching."""
+    if not cached:
+        return False
+    try:
+        when = datetime.datetime.fromisoformat(cached["computed_at"])
+    except Exception:
+        return False
+    age = datetime.datetime.now() - when
+    return age <= datetime.timedelta(days=ttl_days)
+
+
 CREATE_AUTHOR_WORKS_CACHE = """
 CREATE TABLE IF NOT EXISTS author_works_cache (
     openalex_id  TEXT NOT NULL,
@@ -927,6 +1009,7 @@ def open_db(path=DEFAULT_DB_PATH):
     conn.executescript(CREATE_INDEXES)
     conn.executescript(CREATE_AUTHOR_SCORES)
     conn.executescript(CREATE_AUTHOR_WORKS_CACHE)
+    conn.executescript(CREATE_AUTHOR_RELATIONS)
     conn.executescript(CREATE_AUTHOR_TRAIL)
     conn.executescript(CREATE_SUBSCRIPTIONS)
     create_pdb_tables(conn)

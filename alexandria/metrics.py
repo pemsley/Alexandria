@@ -3311,3 +3311,89 @@ def search_works(query, limit=25, sort="relevance", year_min=None,
             "oa_url": best_oa.get("pdf_url") or best_oa.get("landing_page_url"),
         })
     return out
+
+
+# ---- who cites this author most often -------------------------------
+
+# OpenAlex accepts up to 100 OR'd values in a `cites:` filter; 200 is
+# rejected outright rather than truncated (measured 2026-09-01), so
+# the cap belongs here rather than being discovered as an empty result.
+MAX_CITES_OR_IDS = 100
+
+# How many names to keep. Enough to show a research community, few
+# enough to read at a glance.
+TOP_CITING_AUTHORS = 12
+
+
+def citing_authors_url(work_ids, openalex_id):
+    """URL that asks OpenAlex to tally, server-side, the authors of
+    every paper citing any of `work_ids`.
+
+    `group_by` is what makes this cheap: without it the caller would
+    have to page through every citing paper — 44,000 of them for a
+    senior author — to count the names itself. Self-citations are
+    excluded in the same request. Returns None when there is nothing
+    to ask about."""
+    ids = [w for w in (work_ids or []) if w][:MAX_CITES_OR_IDS]
+    if not ids:
+        return None
+    filt = "cites:" + "|".join(ids)
+    if openalex_id:
+        filt += ",authorships.author.id:!" + openalex_id
+    return ("https://api.openalex.org/works?filter=" + filt +
+            "&group_by=authorships.author.id&per-page=200")
+
+
+def rank_citing_authors(groups, limit=TOP_CITING_AUTHORS,
+                        exclude_id=None):
+    """`[{openalex_id, name, count}, ...]`, most citations first, from
+    an OpenAlex `group_by` payload.
+
+    Drops the `unknown` bucket (works whose authorships OpenAlex could
+    not resolve), unnamed entries, and zero counts. `exclude_id` is
+    belt and braces over the API's own self-citation filter."""
+    out = []
+    for g in (groups or []):
+        key = (g.get("key") or "").rsplit("/", 1)[-1]
+        name = (g.get("key_display_name") or "").strip()
+        count = int(g.get("count") or 0)
+        if not key or key == "unknown" or not name or count <= 0:
+            continue
+        if exclude_id and key == exclude_id:
+            continue
+        out.append({"openalex_id": key, "name": name, "count": count})
+    out.sort(key=lambda a: (-a["count"], a["name"]))
+    return out[:limit]
+
+
+def fetch_top_citing_authors(openalex_id, limit=TOP_CITING_AUTHORS,
+                             timeout=60):
+    """Who cites `openalex_id` most often: `[{openalex_id, name,
+    count}, ...]`, or None if OpenAlex could not be asked.
+
+    Two calls. The first takes the author's most-cited works, capped
+    at `MAX_CITES_OR_IDS` — for a prolific author that is their
+    influential core, which is where nearly all the citations are, and
+    it keeps the tally to a single exact request rather than several
+    batches whose counts would overlap. The second is the tally."""
+    if not openalex_id:
+        return None
+    works_url = ("https://api.openalex.org/works?filter=author.id:" +
+                 urllib.parse.quote(openalex_id) +
+                 "&select=id&sort=cited_by_count:desc&per-page=" +
+                 str(MAX_CITES_OR_IDS))
+    d = _http_get_json(_apply_openalex_key(works_url),
+                       {"User-Agent": OPENALEX_UA, "Accept": "application/json"}, timeout)
+    if d is None:
+        return None
+    ids = [(w.get("id") or "").rsplit("/", 1)[-1]
+           for w in (d.get("results") or [])]
+    url = citing_authors_url([i for i in ids if i], openalex_id)
+    if url is None:
+        return []            # a real answer: no works, so no citers
+    d2 = _http_get_json(_apply_openalex_key(url),
+                        {"User-Agent": OPENALEX_UA, "Accept": "application/json"}, timeout)
+    if d2 is None:
+        return None
+    return rank_citing_authors(d2.get("group_by"), limit=limit,
+                               exclude_id=openalex_id)

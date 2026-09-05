@@ -127,6 +127,54 @@ def _author_works_cache_is_fresh(cached):
 #
 # `(label, foreground)` tuples — no background fills, no emojis
 # (color emojis crash the user's Cairo/CoreText pipeline on macOS).
+def _people_flowbox():
+    """The wrapping grid of name buttons used by both people
+    sections."""
+    box = Gtk.FlowBox()
+    box.set_selection_mode(Gtk.SelectionMode.NONE)
+    box.set_max_children_per_line(8)
+    box.set_row_spacing(4)
+    box.set_column_spacing(4)
+    box.set_margin_top(4)
+    box.set_margin_bottom(4)
+    return box
+
+
+def _section_expander(title, child, pref_key):
+    """A collapsible section: a small grey label with a disclosure
+    triangle, revealing `child`.
+
+    Collapsed by default — these lists are a dozen names each, and
+    two of them together pushed the works list off the bottom of the
+    window. The open/closed choice is remembered, so a reader who
+    wants them open says so once rather than on every author."""
+    exp = Gtk.Expander()
+    lbl = Gtk.Label(xalign=0.0)
+    lbl.set_markup(
+        "<span size='small' alpha='65%'>{}</span>".format(
+            GLib.markup_escape_text(title)))
+    exp.set_label_widget(lbl)
+    exp.set_child(child)
+    exp.set_visible(False)
+    exp.set_expanded(_prefs.get_section_expanded(pref_key))
+    exp.connect(
+        "notify::expanded",
+        lambda e, _p, k=pref_key: _prefs.set_section_expanded(
+            k, e.get_expanded()))
+    return exp
+
+
+def _set_section_count(expander, title, n):
+    """Put the count in the section's label, so a collapsed section
+    still says how much is behind it."""
+    lbl = expander.get_label_widget()
+    if lbl is None:
+        return
+    lbl.set_markup(
+        "<span size='small' alpha='65%'>{}  ({})</span>".format(
+            GLib.markup_escape_text(title), n))
+
+
 _VENUE_CHIPS_BY_DOI_PREFIX = (
     ("10.5281/",   ("Zenodo",  "#b87000")),   # muted orange
     ("10.3791/",   ("JoVE",    "#3366aa")),   # muted blue
@@ -637,20 +685,23 @@ class AuthorPage(Gtk.Box):
         self._avatar_status_lbl.set_visible(False)
         self.append(self._avatar_status_lbl)
 
-        # Frequent collaborators row (populated async).
-        self.coauth_label = Gtk.Label(xalign=0.0)
-        self.coauth_label.set_markup(
-            "<span size='small' alpha='65%'>Frequent collaborators</span>")
-        self.coauth_label.set_visible(False)
+        # Frequent collaborators (populated async). Collapsible: a
+        # dozen names each, twice over, pushed the works list — the
+        # reason the page exists — off the bottom of the window.
+        self.coauth_box = _people_flowbox()
+        self.coauth_label = _section_expander(
+            "Frequent collaborators", self.coauth_box, "collaborators")
         self.append(self.coauth_label)
 
-        self.coauth_box = Gtk.FlowBox()
-        self.coauth_box.set_selection_mode(Gtk.SelectionMode.NONE)
-        self.coauth_box.set_max_children_per_line(8)
-        self.coauth_box.set_row_spacing(4)
-        self.coauth_box.set_column_spacing(4)
-        self.coauth_box.set_visible(False)
-        self.append(self.coauth_box)
+        # "Cited most often by" (populated async, cached 30 days).
+        # The mirror of the collaborators row: who this author works
+        # with, then who reads them. Both are the social shape of a
+        # career, which is the part of a citation graph that carries
+        # meaning to a reader.
+        self.citers_box = _people_flowbox()
+        self.citers_label = _section_expander(
+            "Cited most often by", self.citers_box, "citers")
+        self.append(self.citers_label)
 
         self.append(Gtk.Separator())
 
@@ -719,6 +770,10 @@ class AuthorPage(Gtk.Box):
             threading.Thread(
                 target=self._do_citing_impact, args=(oa_id,),
                 daemon=True).start()
+        # "Cited most often by" — two OpenAlex calls, cached 30 days,
+        # so this shows straight away on a revisit and takes a couple
+        # of seconds the first time.
+        self._start_citers_load()
 
     def _do_fetch(self, orcid, oa_id):
         profile = metrics.fetch_author_profile(orcid=orcid, openalex_id=oa_id)
@@ -1006,6 +1061,72 @@ class AuthorPage(Gtk.Box):
                 lambda _b, c=c: self._open_coauthor(c))
             self.coauth_box.append(btn)
 
+    # --- Who cites this author ----------------------------------------
+
+    def _start_citers_load(self):
+        """Fill the "Cited most often by" row, from cache when it is
+        fresh and from OpenAlex otherwise. Always off the main thread:
+        the fetch is two HTTP calls, and this row is not what the
+        reader opened the page for."""
+        oid = (self.authorship or {}).get("openalex_id")
+        if not oid:
+            return
+        cached = index.get_author_relations(self.conn, oid)
+        if cached is not None:
+            self._apply_citers(cached["cited_by_top"])
+            if index.author_relations_fresh(cached):
+                return                      # nothing more to do
+        threading.Thread(target=self._citers_worker, args=(oid,),
+                         daemon=True).start()
+
+    def _citers_worker(self, oid):
+        try:
+            top = metrics.fetch_top_citing_authors(oid)
+        except Exception:
+            top = None
+        if top is None:
+            return                          # leave any cached list up
+        try:
+            path = index.db_path_of(self.conn)
+            if path:
+                conn = index.connect_existing(path)
+                try:
+                    index.set_author_relations(conn, oid, top)
+                finally:
+                    conn.close()
+        except Exception:
+            pass                            # the display still works
+        GLib.idle_add(self._apply_citers, top)
+
+    def _apply_citers(self, top):
+        while (child := self.citers_box.get_first_child()) is not None:
+            self.citers_box.remove(child)
+        if not top:
+            self.citers_label.set_visible(False)
+            return False
+        for a in top:
+            btn = Gtk.Button()
+            lbl = Gtk.Label()
+            lbl.set_label("{}  ({})".format(a["name"], a["count"]))
+            btn.set_child(lbl)
+            btn.add_css_class("flat")
+            btn.set_tooltip_text(
+                "{} papers by {} cite {}".format(
+                    a["count"], a["name"],
+                    self.authorship.get("name") or "this author"))
+            btn.connect("clicked", lambda _b, a=a: self._open_citer(a))
+            self.citers_box.append(btn)
+        _set_section_count(self.citers_label,
+                           "Cited most often by", len(top))
+        self.citers_label.set_visible(True)
+        return False
+
+    def _open_citer(self, a):
+        """Open the citing author's own page — the same route a
+        collaborator chip takes."""
+        self._open_coauthor({"openalex_id": a["openalex_id"],
+                             "name": a["name"]})
+
     def _apply_works_only(self, works):
         if not works:
             self.status.set_markup(self._empty_status_markup())
@@ -1080,8 +1201,10 @@ class AuthorPage(Gtk.Box):
 
         if coauths:
             self._coauths = coauths
+            _set_section_count(self.coauth_label,
+                               "Frequent collaborators",
+                               len(self._coauths or []))
             self.coauth_label.set_visible(True)
-            self.coauth_box.set_visible(True)
             self._rebuild_coauth_chips(works)
 
         if not works:

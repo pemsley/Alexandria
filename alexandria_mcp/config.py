@@ -14,18 +14,38 @@ import os
 from alexandria import index, prefs
 
 
+def resolved():
+    """`{catalogue, library_root, db_path}`, all from one reading of
+    the current catalogue.
+
+    Resolved together on purpose. These were derived independently:
+    `library_root` followed the current catalogue while `db_path`
+    returned the constant `index.DEFAULT_DB_PATH`, so on any
+    catalogue but the default the server read one library's rows and
+    resolved the other library's file paths — 178 papers of the
+    default catalogue answered against moorhen's directory, with
+    write tools enabled. Nothing errored; the answers were simply
+    about the wrong library."""
+    name = prefs.get_current_catalogue_name()
+    root = os.environ.get("ALEXANDRIA_LIBRARY_ROOT")
+    if not root:
+        cat = prefs.get_catalogue(name)
+        root = (cat or {}).get("library_root") or prefs.get_library_root()
+    db = os.environ.get("ALEXANDRIA_DB")
+    if not db:
+        try:
+            db = index.db_path_for_catalogue(name)
+        except Exception:
+            db = index.DEFAULT_DB_PATH
+    return {"catalogue": name, "library_root": root, "db_path": db}
+
+
 def library_root():
-    v = os.environ.get("ALEXANDRIA_LIBRARY_ROOT")
-    if v:
-        return v
-    return prefs.get_library_root()
+    return resolved()["library_root"]
 
 
 def db_path():
-    v = os.environ.get("ALEXANDRIA_DB")
-    if v:
-        return v
-    return index.DEFAULT_DB_PATH
+    return resolved()["db_path"]
 
 
 def readonly():

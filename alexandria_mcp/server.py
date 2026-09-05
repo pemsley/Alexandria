@@ -176,13 +176,21 @@ def ping() -> dict:
     """Diagnostic: confirm the MCP server is up and report which
     Alexandria library it's pointed at.
 
-    Returns library_root, db_path, db_exists, paper_count,
-    readonly, mcp_server_version. Use this first in any session
-    to verify the server sees the library you expect."""
+    Returns catalogue, library_root, db_path, db_exists,
+    paper_count, readonly, mcp_server_version. Use this first in any
+    session to verify the server sees the library you expect.
+
+    `catalogue` is reported because the root and the database used
+    to be resolved independently, and a server serving one
+    catalogue's rows against another's file paths looked entirely
+    healthy — every field plausible, every answer about the wrong
+    library. Naming the catalogue makes the pair legible."""
+    where = config.resolved()
     out = {
-        "library_root": config.library_root(),
-        "db_path": config.db_path(),
-        "db_exists": os.path.isfile(config.db_path()),
+        "catalogue": where["catalogue"],
+        "library_root": where["library_root"],
+        "db_path": where["db_path"],
+        "db_exists": os.path.isfile(where["db_path"]),
         "paper_count": None,
         "readonly": config.readonly(),
         "mcp_server_version": __version__,

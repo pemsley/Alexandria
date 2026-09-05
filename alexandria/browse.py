@@ -19,7 +19,8 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Gdk, GLib, Gio, GObject, Pango, Adw
+from gi.repository import (Gtk, Gdk, GdkPixbuf, GLib, Gio,
+                           GObject, Pango, Adw)
 
 # VTE is loaded lazily because it's only needed when the user toggles
 # the terminal panel — keep startup paths import-free for environments
@@ -782,6 +783,43 @@ def _pdf_comment_count(sidecar_path):
     return _comment_count(record)
 
 
+# Card thumbnail frame, in pixels. The no-PDF placeholder is scaled
+# to the same height so it lines up with real thumbnails.
+_THUMB_WIDTH = 146
+_THUMB_HEIGHT = 185
+
+# Placeholder for an entry with no PDF — a BibTeX-only "ghost"
+# reference. The stock `text-x-generic-symbolic` is whatever the
+# platform icon theme provides, and on macOS that is not a good
+# match for the PDF thumbnails it sits beside; this is our own
+# drawing, shipped with the package. Loaded by path rather than
+# through the icon theme: it is a full-colour illustration, and an
+# icon-theme lookup would recolour it and square its A4 proportions.
+_NO_PDF_SVG = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "icons", "hicolor", "scalable", "actions", "alexandria-no-pdf.svg")
+
+_no_pdf_cache = {}
+
+
+def no_pdf_paintable(height):
+    """The no-PDF page drawing, scaled to `height` and cached.
+
+    Returns None if it cannot be loaded, so a card falls back to the
+    stock icon rather than failing to build."""
+    got = _no_pdf_cache.get(height)
+    if got is not None:
+        return got
+    try:
+        pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+            _NO_PDF_SVG, -1, height, True)
+        tex = Gdk.Texture.new_for_pixbuf(pb)
+    except Exception:
+        tex = None
+    _no_pdf_cache[height] = tex
+    return tex
+
+
 def _comment_count(record):
     """Commented highlights in an already-read sidecar record."""
     if not record:
@@ -810,10 +848,15 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None,
 
     img = Gtk.Image()
     img.set_pixel_size(140)
-    # Ghost (BibTeX-only) entries have no PDF and no thumbnail; show a
-    # generic "no document" icon to make the difference obvious.
-    img.set_from_icon_name("text-x-generic-symbolic" if is_ghost
-                           else "application-pdf")
+    # Ghost (BibTeX-only) entries have no PDF and no thumbnail; show
+    # our own "no PDF" page so the difference is obvious and the
+    # placeholder sits properly beside the real thumbnails.
+    ghost_page = no_pdf_paintable(_THUMB_HEIGHT) if is_ghost else None
+    if ghost_page is not None:
+        img.set_from_paintable(ghost_page)
+    else:
+        img.set_from_icon_name("text-x-generic-symbolic" if is_ghost
+                               else "application-pdf")
     if (not is_ghost and row["thumb_path"]
             and os.path.isfile(row["thumb_path"])):
         try:
@@ -822,7 +865,7 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None,
         except Exception:
             pass
     frame = Gtk.Frame()
-    frame.set_size_request(146, 185)
+    frame.set_size_request(_THUMB_WIDTH, _THUMB_HEIGHT)
     comment_count = (0 if is_ghost
                      else _comment_count(card_record))
     if comment_count:

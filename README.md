@@ -42,6 +42,13 @@ writes, by default, to `$HOME/Documents/Alexandria` and the database to
 in `$HOME/.config/Alexandria/config.json` for sort order config and
 OpenAlex key.
 
+## > [!CAUTION]
+> If you cloned Alexandria before 0.5.0 then it's probably best
+to throw away the previous repo and start fresh.
+>
+> I rewrote the history and removed and recreated the repo to remove
+> information that should not have been there.
+
 ## Screenshot
 ![Alexandria main window example — dark mode](data/screenshots/screenshot-dark-mode-main-window.png)
 

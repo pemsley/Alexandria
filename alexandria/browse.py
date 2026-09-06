@@ -4178,7 +4178,6 @@ class BrowserWindow(Adw.ApplicationWindow):
 
     def _do_get_pdf(self, row, doi, on_pdf_settled=None):
         import tempfile
-        from . import author_works as _aw
 
         # One chain, shared with the MCP server: OpenAlex → Unpaywall
         # → EuropePMC, de-duplicated and ordered. This used to be a
@@ -4188,29 +4187,25 @@ class BrowserWindow(Adw.ApplicationWindow):
         skipped = pdf_fetch.unavailable_sources()
         if skipped:
             GLib.idle_add(self._warn_oa_source_unavailable, skipped)
-        pdf_urls = pdf_fetch.oa_pdf_urls_for_doi(doi)
-        if not pdf_urls:
-            reason = "no OA PDF URL from OpenAlex, Unpaywall or EuropePMC"
-            if skipped:
-                reason += " (" + ", ".join(skipped) + " not consulted)"
-            GLib.idle_add(self._get_pdf_fallback, doi, reason, on_pdf_settled)
-            return
 
-        # Download into a tmp file. Magic-byte check + Cloudflare
-        # detection are inside _download_pdf.
+        # Say what is happening while it happens. This runs for tens
+        # of seconds across three lookups and one or more downloads,
+        # and a single frozen "Looking for an open-access PDF…" for
+        # all of it reads as a hang rather than as work.
+        def progress(message):
+            GLib.idle_add(self.status.set_text, message)
+
         fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
         os.close(fd)
-        last_msg = ""
-        ok = False
-        for u in pdf_urls:
-            ok, last_msg = _aw._download_pdf(u, tmp_path)
-            if ok:
-                break
+        ok, _url, last_msg = pdf_fetch.fetch_oa_pdf(
+            doi, tmp_path, on_progress=progress)
         if not ok:
             try:
                 os.remove(tmp_path)
             except OSError:
                 pass
+            if skipped:
+                last_msg += " ({} not consulted)".format(", ".join(skipped))
             GLib.idle_add(self._get_pdf_fallback, doi, last_msg,
                           on_pdf_settled)
             return

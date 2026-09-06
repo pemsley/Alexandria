@@ -13,8 +13,8 @@ it without pulling in PyGObject."""
 
 import json
 import os
-import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,6 +31,49 @@ _BROWSER_HEADERS = {
     "Accept": "application/pdf,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.5",
 }
+
+
+def human_size(n):
+    """Byte count as a short human string. Used in progress lines,
+    where "28.3 MB" reads and "29684721" does not."""
+    if n is None:
+        return "?"
+    n = float(n)
+    for unit in ("B", "kB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return ("{:.0f} {}" if unit == "B" or n >= 100
+                    else "{:.1f} {}").format(n, unit)
+        n /= 1024
+    return "{:.1f} GB".format(n)
+
+
+def host_of(url):
+    """The hostname to name in a progress line — what the user
+    recognises about a URL, without the tracking-length path."""
+    try:
+        return urllib.parse.urlparse(url).netloc or url
+    except Exception:
+        return url
+
+
+def _report(on_progress, message):
+    """Send a progress line, if anyone is listening.
+
+    Never let a reporting failure break a download: the callback
+    belongs to the GUI, and a fetch that dies because a status bar
+    misbehaved would be a poor trade."""
+    if on_progress is None:
+        return
+    try:
+        on_progress(message)
+    except Exception:
+        pass
+
+
+# How often a download may report its byte count. Fast enough to
+# look live, slow enough that a 28 MB PDF does not post hundreds of
+# updates into the GUI's main loop.
+_PROGRESS_INTERVAL_S = 0.3
 
 
 def _curl_download(url, target_path, timeout):
@@ -55,19 +98,46 @@ def _curl_download(url, target_path, timeout):
     return True, ""
 
 
-def download_pdf(url, target_path, timeout=60):
+def download_pdf(url, target_path, timeout=60, on_progress=None):
     """Download `url` to `target_path` (atomic .tmp + rename).
     Returns (ok, msg). On Cloudflare blocks (HTTP 403 with a
     Cloudflare server header, or HTTP 200 with an HTML body) retry
     via curl, which presents a different TLS ClientHello and is
     usually accepted. Sanity-checks the result is a real PDF
-    (%PDF- magic + reasonable size)."""
+    (%PDF- magic + reasonable size).
+
+    `on_progress` receives short human-readable lines: connecting,
+    the reply, and bytes as they arrive. A 28 MB paper takes half a
+    minute on a slow publisher, and a caller with no way to say so
+    can only offer a frozen "Looking…"."""
     tmp = target_path + ".tmp"
+    host = host_of(url)
+    _report(on_progress, "Connecting to {}…".format(host))
     try:
         req = urllib.request.Request(url, headers=_BROWSER_HEADERS)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            total = resp.headers.get("Content-Length")
+            total = int(total) if (total or "").isdigit() else None
+            _report(on_progress, "{} replied ({}) — downloading {}".format(
+                host, getattr(resp, "status", 200) or 200,
+                human_size(total) if total else "unknown size"))
+            done = 0
+            last = 0.0
             with open(tmp, "wb") as f:
-                shutil.copyfileobj(resp, f, 1 << 16)
+                while True:
+                    chunk = resp.read(1 << 16)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    now = time.monotonic()
+                    if now - last >= _PROGRESS_INTERVAL_S:
+                        last = now
+                        _report(on_progress,
+                                "Downloading from {} — {}{}".format(
+                                    host, human_size(done),
+                                    " of " + human_size(total)
+                                    if total else ""))
     except urllib.error.HTTPError as e:
         _silent_remove(tmp)
         if e.code == 403 and "cloudflare" in (
@@ -243,37 +313,80 @@ def unavailable_sources():
     return missing
 
 
-def oa_pdf_urls_for_doi(doi, also_try_europepmc=True):
+def oa_pdf_urls_for_doi(doi, also_try_europepmc=True,
+                        on_progress=None):
     """Ordered list of candidate OA PDF URLs, de-duplicated.
 
     Order: OpenAlex → Unpaywall → EuropePMC. The caller tries each
     until one downloads as a real PDF. EuropePMC is last so the
     canonical publisher / repository URLs get a chance first, but
     routinely saves the day for Cloudflare-blocked publishers."""
+    _report(on_progress, "Asking OpenAlex about {}…".format(doi))
     urls = _openalex_pdf_urls(doi)
-    for u in _unpaywall_pdf_urls(doi):
-        if u not in urls:
-            urls.append(u)
+    _report(on_progress, "OpenAlex: {}".format(
+        _found(len(urls))))
+
+    skipped = unavailable_sources()
+    if "Unpaywall" in skipped:
+        _report(on_progress,
+                "Skipping Unpaywall — it needs a contact email "
+                "(Preferences → Online services)")
+    else:
+        _report(on_progress, "Asking Unpaywall…")
+        n = 0
+        for u in _unpaywall_pdf_urls(doi):
+            if u not in urls:
+                urls.append(u)
+                n += 1
+        _report(on_progress, "Unpaywall: {}".format(_found(n)))
+
     if also_try_europepmc:
+        _report(on_progress, "Asking EuropePMC…")
+        n = 0
         for u in _europepmc_pdf_urls(doi):
             if u not in urls:
                 urls.append(u)
+                n += 1
+        _report(on_progress, "EuropePMC: {}".format(_found(n)))
     return urls
 
 
+def _found(n):
+    """"nothing" / "1 PDF" / "3 PDFs" — a progress line reads better
+    than a bare count, and "0 PDFs" reads worse than "nothing"."""
+    if not n:
+        return "nothing"
+    return "{} PDF{}".format(n, "" if n == 1 else "s")
+
+
 def fetch_oa_pdf(doi, target_path, also_try_europepmc=True,
-                 per_url_timeout=60):
+                 per_url_timeout=60, on_progress=None):
     """Try every OA URL for `doi` until one downloads as a real
     PDF. Returns `(ok, source_url, message)` — `source_url` is
     the URL that actually worked (None on failure), `message` is
-    the last error explanation when all attempts failed."""
-    urls = oa_pdf_urls_for_doi(doi, also_try_europepmc=also_try_europepmc)
+    the last error explanation when all attempts failed.
+
+    `on_progress` receives a line per step: which source is being
+    asked, what it said, and how each download is going. The whole
+    run can take half a minute, and every part of it is something
+    the user would rather see than wait through."""
+    urls = oa_pdf_urls_for_doi(doi, also_try_europepmc=also_try_europepmc,
+                               on_progress=on_progress)
     if not urls:
-        return False, None, "no OA PDF URLs known to OpenAlex / Unpaywall / EuropePMC"
+        return (False, None,
+                "no OA PDF URLs known to OpenAlex / Unpaywall / EuropePMC")
     last = ""
-    for u in urls:
-        ok, msg = download_pdf(u, target_path, timeout=per_url_timeout)
+    for i, u in enumerate(urls, start=1):
+        if len(urls) > 1:
+            _report(on_progress, "Candidate {} of {}: {}".format(
+                i, len(urls), host_of(u)))
+        ok, msg = download_pdf(u, target_path, timeout=per_url_timeout,
+                               on_progress=on_progress)
         if ok:
+            _report(on_progress, "Got the PDF from {}".format(host_of(u)))
             return True, u, ""
         last = msg
+        _report(on_progress, "{} failed: {}{}".format(
+            host_of(u), msg, " — trying the next candidate"
+            if i < len(urls) else ""))
     return False, None, last or "all PDF candidates failed"

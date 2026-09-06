@@ -43,7 +43,7 @@ def _try_load_vte():
         return None
 
 from . import (index, edit_dialog, importer, metrics, sidecar, extract,
-               identity, author_image,
+               identity, author_image, pdf_fetch,
                viewer, marks_config, prefs, watcher as watcher_mod,
                author_works, bibtex_import, bibtex_export, ris_export,
                csl_export, opener, references_pdf, discover, csl_format,
@@ -4178,43 +4178,21 @@ class BrowserWindow(Adw.ApplicationWindow):
 
     def _do_get_pdf(self, row, doi, on_pdf_settled=None):
         import tempfile
-        import urllib.parse as _up
         from . import author_works as _aw
 
-        url = ("https://api.openalex.org/works/doi:"
-               + _up.quote(doi, safe="")
-               + "?mailto=" + _up.quote(metrics.OPENALEX_MAILTO))
-        data = metrics._http_get_json(
-            url,
-            headers={"User-Agent": metrics.OPENALEX_UA,
-                     "Accept": "application/json"},
-            timeout=15)
-
-        # Collect every OA pdf_url. OpenAlex's `best_oa_location` and
-        # `locations` first (when the lookup succeeded), then fall
-        # through to Unpaywall's `oa_locations` for any URL OpenAlex
-        # didn't surface (BACKLOG: Unpaywall as a Get PDF fallback).
-        pdf_urls = []
-        if data:
-            bol = data.get("best_oa_location") or {}
-            if bol.get("pdf_url"):
-                pdf_urls.append(bol["pdf_url"])
-            for loc in (data.get("locations") or []):
-                if not loc.get("is_oa"):
-                    continue
-                u = loc.get("pdf_url")
-                if u and u not in pdf_urls:
-                    pdf_urls.append(u)
-        unpw = metrics.fetch_oa_locations(doi)
-        if unpw:
-            for loc in unpw.get("locations") or []:
-                u = loc.get("pdf_url")
-                if u and u not in pdf_urls:
-                    pdf_urls.append(u)
+        # One chain, shared with the MCP server: OpenAlex → Unpaywall
+        # → EuropePMC, de-duplicated and ordered. This used to be a
+        # hand-rolled copy of the first two, which is how the GUI came
+        # to be missing EuropePMC — the source that routinely rescues
+        # Cloudflare-blocked publishers.
+        skipped = pdf_fetch.unavailable_sources()
+        if skipped:
+            GLib.idle_add(self._warn_oa_source_unavailable, skipped)
+        pdf_urls = pdf_fetch.oa_pdf_urls_for_doi(doi)
         if not pdf_urls:
-            reason = ("no OA PDF URL known to OpenAlex or Unpaywall"
-                      if data else "OpenAlex lookup failed and no "
-                      "Unpaywall PDF available")
+            reason = "no OA PDF URL from OpenAlex, Unpaywall or EuropePMC"
+            if skipped:
+                reason += " (" + ", ".join(skipped) + " not consulted)"
             GLib.idle_add(self._get_pdf_fallback, doi, reason, on_pdf_settled)
             return
 
@@ -4250,6 +4228,25 @@ class BrowserWindow(Adw.ApplicationWindow):
         except OSError:
             pass
         GLib.idle_add(self._get_pdf_done, status, msg, on_pdf_settled)
+
+    def _warn_oa_source_unavailable(self, skipped):
+        """Say when Get PDF is searching fewer sources than it could.
+
+        Once per session, not per click: the condition is a missing
+        preference, so it does not change between two attempts, and
+        repeating it on every card would train the user to ignore
+        toasts. Ten seconds rather than the default three — it names
+        a setting to go and change, which is longer than a glance."""
+        if getattr(self, "_warned_oa_sources", False):
+            return False
+        self._warned_oa_sources = True
+        t = Adw.Toast.new(
+            "{} needs a contact email and is being skipped — set one "
+            "in Preferences → Online services.".format(
+                " and ".join(skipped)))
+        t.set_timeout(10)
+        self.toast_overlay.add_toast(t)
+        return False
 
     def _get_pdf_fallback(self, doi, error_msg, on_pdf_settled=None):
         """No OA copy is downloadable; open DOI in browser and let the

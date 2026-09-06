@@ -224,6 +224,25 @@ def _europepmc_pdf_urls(doi, timeout=15):
     return urls
 
 
+def unavailable_sources():
+    """Names of the OA sources that cannot run as configured.
+
+    Unpaywall requires a contact address — it is in their terms, not
+    a politeness convention, and `metrics.fetch_oa_locations` returns
+    None without one. That silence is the problem: a Get PDF that
+    quietly consults two sources instead of three looks identical to
+    one that found nothing, so the user has no way to learn that
+    filling in a preference would have helped.
+
+    Returned as names rather than a bool so the caller can say which
+    source it is skipping, and so a second source with its own
+    requirement has somewhere to go."""
+    missing = []
+    if not metrics.OPENALEX_MAILTO:
+        missing.append("Unpaywall")
+    return missing
+
+
 def oa_pdf_urls_for_doi(doi, also_try_europepmc=True):
     """Ordered list of candidate OA PDF URLs, de-duplicated.
 

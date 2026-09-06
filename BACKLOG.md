@@ -637,15 +637,28 @@ Pending features, roughly grouped. Newest at the top of each section.
   so future re-exports preserve it. For entries with a DOI, enrich
   via OpenAlex.
 - URL drops (drag a journal/PDF URL into the browser, fetch + import).
-- **HALF DONE — the machinery is built and the button does not use
-  it.** `pdf_fetch.oa_pdf_urls_for_doi` already chains OpenAlex →
-  Unpaywall → EuropePMC, and `fetch_oa_pdf` drives it — but the only
-  caller is the MCP server (`alexandria_mcp/server.py:477`). The GUI
-  "Get PDF" button still goes through `_on_get_pdf`, whose tooltip
-  says "via OpenAlex" and means it. So this is now a small wiring
-  job, not a feature. (`metrics._unpaywall_location_rank` is dead
-  code from an earlier attempt — the live ranking is in
-  `pdf_fetch`.) Original entry:
+- **DONE 2026-09-06** — `_do_get_pdf` now calls
+  `pdf_fetch.oa_pdf_urls_for_doi`, the same chain the MCP server
+  uses: OpenAlex → Unpaywall → EuropePMC, de-duplicated and ordered.
+
+  **Three wrong readings of this entry, worth recording.** It was
+  first scored done because `UNPAYWALL_BASE` existed; then half done
+  because `grep unpaywall browse.py` found nothing — the call is
+  `metrics.fetch_oa_locations`, which does not contain the word; and
+  the docstring saying "used by the Get PDF flow in browse.py" was
+  dismissed as stale when it was accurate. Reading the function
+  settled in one minute what three greps got wrong. What was
+  *actually* missing was EuropePMC, and ~25 lines of hand-rolled
+  duplication of the other two.
+
+  Unpaywall needs a contact address and returns nothing without one,
+  which used to be indistinguishable from "no OA copy exists".
+  `pdf_fetch.unavailable_sources()` names what is being skipped; the
+  GUI toasts it once per session and appends it to the failure
+  reason. (`_unpaywall_location_rank` is *not* dead code, contrary to
+  an earlier note here — `fetch_oa_locations` uses it as a sort key.)
+
+  Original entry:
 
 - **Unpaywall as a `Get PDF` fallback.** Currently "Get PDF" on a
   ghost card chases OpenAlex's `open_access.oa_url`, which is fine

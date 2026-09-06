@@ -266,6 +266,7 @@ def _enrich_from_openalex(rec, pdf_path):
         rec["metadata_unverified"] = True
         return
 
+    choice = None
     if len(set(c.lower() for c in candidates)) > 1:
         # Two candidates that disagree: resolve both cheaply and keep
         # the one whose record matches the PDF. Neither source wins in
@@ -343,7 +344,16 @@ def _enrich_from_openalex(rec, pdf_path):
     # CrossRef and OpenAlex both carry them; neither was being read,
     # which is why a 178-entry BibTeX export had not one volume,
     # number or pages field despite 146 of the entries having a DOI.
+    # `choice` exists only when two candidate DOIs disagreed and had
+    # to be resolved to pick between them. The common path has a
+    # single candidate and never resolved anything, so the record has
+    # to be fetched here — otherwise volume/issue/pages would arrive
+    # for the rare contested import and no other. Skipped when the
+    # PDF's own PRISM block already supplied pages, which keeps the
+    # extra round-trip off most imports.
     record = getattr(choice, "record", None) or {}
+    if not record and not rec.get("pages"):
+        record = metrics.resolve_doi(chosen) or {}
     for _f in ("volume", "issue", "pages"):
         _v = record.get(_f)
         if _v:

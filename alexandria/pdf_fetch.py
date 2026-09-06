@@ -11,6 +11,7 @@ GTK-free. Lives outside `author_works.py` (which holds the old GUI
 copy of the download helper) so the MCP server's venv can import
 it without pulling in PyGObject."""
 
+import inspect
 import json
 import os
 import subprocess
@@ -56,18 +57,52 @@ def host_of(url):
         return url
 
 
-def _report(on_progress, message):
+def _report(on_progress, message, transient=False):
     """Send a progress line, if anyone is listening.
 
-    Never let a reporting failure break a download: the callback
-    belongs to the GUI, and a fetch that dies because a status bar
-    misbehaved would be a poor trade."""
+    `transient` marks a line that is worth showing only while
+    nothing better is on screen — the byte counter, which is
+    superseded a moment later. Milestones (what we asked, what it
+    said, what failed) are not transient: each has to hold the line
+    long enough to be read, which is the receiver's job.
+
+    Callbacks arrive normalised to two arguments by `_accept`, so a
+    caller that only wants the text can still pass `print`. Never
+    let a
+    reporting failure break a download: the callback belongs to the
+    GUI, and a fetch that dies because a status bar misbehaved would
+    be a poor trade."""
     if on_progress is None:
         return
     try:
-        on_progress(message)
+        on_progress(message, transient)
     except Exception:
         pass
+
+
+def _accept(on_progress):
+    """Normalise a progress callback to `(message, transient)`.
+
+    Callers that only care about the text — a script, a test — pass
+    a one-argument callable, and should not have to learn about
+    transience to do so. Decided once here rather than per message:
+    calling with two arguments and retrying on TypeError would call
+    a one-argument callback twice whenever it raised TypeError of
+    its own."""
+    if on_progress is None:
+        return None
+    try:
+        params = inspect.signature(on_progress).parameters
+        takes_two = len([
+            p for p in params.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]) >= 2
+        if any(p.kind == p.VAR_POSITIONAL for p in params.values()):
+            takes_two = True
+    except (TypeError, ValueError):
+        takes_two = False       # builtins (list.append) refuse inspection
+    if takes_two:
+        return on_progress
+    return lambda message, transient=False: on_progress(message)
 
 
 # How often a download may report its byte count. Fast enough to
@@ -110,6 +145,7 @@ def download_pdf(url, target_path, timeout=60, on_progress=None):
     the reply, and bytes as they arrive. A 28 MB paper takes half a
     minute on a slow publisher, and a caller with no way to say so
     can only offer a frozen "Looking…"."""
+    on_progress = _accept(on_progress)
     tmp = target_path + ".tmp"
     host = host_of(url)
     _report(on_progress, "Connecting to {}…".format(host))
@@ -137,7 +173,8 @@ def download_pdf(url, target_path, timeout=60, on_progress=None):
                                 "Downloading from {} — {}{}".format(
                                     host, human_size(done),
                                     " of " + human_size(total)
-                                    if total else ""))
+                                    if total else ""),
+                                transient=True)
     except urllib.error.HTTPError as e:
         _silent_remove(tmp)
         if e.code == 403 and "cloudflare" in (
@@ -345,6 +382,7 @@ def oa_pdf_urls_for_doi(doi, also_try_europepmc=True,
     until one downloads as a real PDF. EuropePMC is last so the
     canonical publisher / repository URLs get a chance first, but
     routinely saves the day for Cloudflare-blocked publishers."""
+    on_progress = _accept(on_progress)
     _report(on_progress, "Asking OpenAlex about {}…".format(doi))
     urls = _openalex_pdf_urls(doi)
     _report(on_progress, "OpenAlex: {}".format(
@@ -397,6 +435,7 @@ def fetch_oa_pdf(doi, target_path, also_try_europepmc=True,
     asked, what it said, and how each download is going. The whole
     run can take half a minute, and every part of it is something
     the user would rather see than wait through."""
+    on_progress = _accept(on_progress)
     urls = oa_pdf_urls_for_doi(doi, also_try_europepmc=also_try_europepmc,
                                on_progress=on_progress)
     if not urls:

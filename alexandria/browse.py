@@ -43,7 +43,7 @@ def _try_load_vte():
         return None
 
 from . import (index, edit_dialog, importer, metrics, sidecar, extract,
-               identity, author_image, pdf_fetch,
+               identity, author_image, pdf_fetch, status_ticker,
                viewer, marks_config, prefs, watcher as watcher_mod,
                author_works, bibtex_import, bibtex_export, ris_export,
                csl_export, opener, references_pdf, discover, csl_format,
@@ -3887,6 +3887,21 @@ class BrowserWindow(Adw.ApplicationWindow):
 
     # --- Toasts -------------------------------------------------------
 
+    def _status_progress(self):
+        """A pdf_fetch `on_progress` callback that writes to the
+        status bar, holding each milestone long enough to read.
+
+        The source lookups answer in well under a second and each
+        verdict is followed immediately by the next "Asking…", so
+        written straight to the label the interesting lines showed
+        for under 100 ms. The ticker queues milestones and lets the
+        byte counter fill the gaps."""
+        ticker = status_ticker.StatusTicker(
+            show=lambda message: GLib.idle_add(
+                self.status.set_text, message),
+            schedule=lambda delay_ms, fn: GLib.timeout_add(delay_ms, fn))
+        return ticker.callback()
+
     def _toast(self, message, timeout=3):
         """Show a transient Adw.Toast over the results area."""
         t = Adw.Toast.new(message)
@@ -4193,8 +4208,11 @@ class BrowserWindow(Adw.ApplicationWindow):
         # of seconds across three lookups and one or more downloads,
         # and a single frozen "Looking for an open-access PDF…" for
         # all of it reads as a hang rather than as work.
-        def progress(message):
-            GLib.idle_add(self.status.set_text, message)
+        #
+        # Through a ticker, because the lookups answer back to back:
+        # each verdict was replaced by the next "Asking…" within
+        # 100 ms, so the informative lines were the ones nobody saw.
+        progress = self._status_progress()
 
         fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
         os.close(fd)
@@ -4310,8 +4328,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             GLib.idle_add(self._add_pv_done, btn, False, "filename clash")
             return
 
-        def progress(message):
-            GLib.idle_add(self.status.set_text, message)
+        progress = self._status_progress()
 
         GLib.idle_add(btn.set_label, "Downloading…")
         ok, _url, last_msg = pdf_fetch.fetch_oa_pdf(

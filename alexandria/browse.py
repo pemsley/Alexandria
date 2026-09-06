@@ -5826,10 +5826,21 @@ def main(argv=None):
             if display is not None:
                 theme = Gtk.IconTheme.get_for_display(display)
                 here = os.path.dirname(os.path.abspath(__file__))
-                icon_dir = os.path.realpath(
-                    os.path.join(here, "..", "icons"))
-                if os.path.isdir(icon_dir):
-                    theme.add_search_path(icon_dir)
+                # Two trees. `../icons` is the source-tree app
+                # icon, installed system-wide by the Makefile and
+                # *not* package data. `./icons` ships inside the
+                # package (see pyproject's package-data) and holds our
+                # own symbolic action icons — including
+                # edit-rename-symbolic and view-filter-symbolic, which
+                # no Adwaita version provides, so the Rename and
+                # filter-by-author buttons render as broken squares
+                # without it. Registering it here rather than relying
+                # on viewer._ensure_bundled_icons: the card buttons
+                # need them before any viewer has been opened.
+                for rel in (("..", "icons"), ("icons",)):
+                    icon_dir = os.path.realpath(os.path.join(here, *rel))
+                    if os.path.isdir(icon_dir):
+                        theme.add_search_path(icon_dir)
         except Exception as e:
             print("[icon] theme search-path register failed:", e)
 

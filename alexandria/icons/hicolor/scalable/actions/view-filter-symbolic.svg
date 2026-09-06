@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Filter: a funnel. No funnel glyph exists in current Adwaita, which
+     is why `view-filter-symbolic` resolves nowhere and the button in the
+     author popover rendered as image-missing. -->
+<svg height="16px" viewBox="0 0 16 16" width="16px" xmlns="http://www.w3.org/2000/svg">
+    <path d="m 1.5 2 h 13 c 0.414062 0 0.75 0.335938 0.75 0.75 c 0 0.191406 -0.074219 0.375 -0.203125 0.515625 l -5.046875 5.417969 v 5.566406 c 0 0.414062 -0.335938 0.75 -0.75 0.75 c -0.140625 0 -0.28125 -0.042969 -0.402344 -0.121094 l -2.5 -1.625 c -0.210937 -0.140625 -0.34375 -0.378906 -0.34375 -0.628906 v -3.941406 l -5.046875 -5.417969 c -0.28125 -0.303125 -0.265625 -0.777344 0.039063 -1.058594 c 0.136718 -0.128906 0.320312 -0.203125 0.511718 -0.203125 z m 1.71875 1.5 l 4.28125 4.597656 v 3.964844 l 1 0.648438 v -4.613282 l 4.28125 -4.597656 z m 0 0" fill="#2e3436"/>
+</svg>

@@ -584,7 +584,10 @@ class PdfViewerWindow(Gtk.Window):
         self.pdf_path = pdf_path
         self.sidecar_path = sidecar_path
         self.set_title(os.path.basename(pdf_path))
-        self.set_default_size(820, 1000)
+        # Wide enough that the sidebar, which is open on startup,
+        # does not eat into the page: a portrait page is 595pt, and
+        # the sidebar takes 30% (capped at 360).
+        self.set_default_size(1100, 1000)
 
         try:
             uri = Gio.File.new_for_path(pdf_path).get_uri()
@@ -721,7 +724,7 @@ class PdfViewerWindow(Gtk.Window):
         # in this document".
         self.sidebar_toggle = Gtk.ToggleButton()
         self.sidebar_toggle.set_icon_name("sidebar-show-symbolic")
-        self.sidebar_toggle.set_tooltip_text("Show sidebar (F9)")
+        self.sidebar_toggle.set_tooltip_text("Toggle sidebar (F9)")
         self.sidebar_toggle.connect("toggled", self._on_sidebar_toggled)
 
         # Reference popover button. Hidden until the user clicks an
@@ -786,16 +789,20 @@ class PdfViewerWindow(Gtk.Window):
                                  Gtk.PolicyType.AUTOMATIC)
         self.scrolled.set_child(self.pages_box)
 
-        # Sidebar over the pages rather than beside them: it is
-        # occasional furniture, and the reader should get the width
-        # back when it is closed.
+        # Open on startup: the sidebar is how you navigate a paper —
+        # its contents, its pages, your own highlights — not
+        # occasional furniture, and a panel nobody knows is there
+        # gets used by nobody. GNOME Papers shows its side pane the
+        # same way. Closing it still gives the full width back.
         self.split = Adw.OverlaySplitView()
         self.split.set_sidebar(self._build_sidebar())
         self.split.set_content(self.scrolled)
-        self.split.set_show_sidebar(False)
+        self.split.set_show_sidebar(True)
         self.split.set_sidebar_width_fraction(0.30)
         self.split.set_max_sidebar_width(360)
         self.split.set_vexpand(True)
+        # Keep the toolbar button showing the state it starts in.
+        self.sidebar_toggle.set_active(True)
         outer.append(self.split)
         self.set_child(outer)
 

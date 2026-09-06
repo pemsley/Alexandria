@@ -5,8 +5,6 @@ Opened from the authors-popover "find more by author" button.
 """
 
 import os
-import shutil
-import subprocess
 import threading
 import urllib.error
 import urllib.parse
@@ -19,7 +17,8 @@ from gi.repository import Gtk, GLib, Gdk, Gio, Pango, Adw, GObject
 
 import datetime
 
-from . import metrics, index, importer, opener, author_image, viewer
+from . import (metrics, index, importer, opener, author_image,
+               viewer, pdf_fetch, status_ticker)
 from .identity import user_agent
 from .markup import safe_pango_markup
 
@@ -270,137 +269,10 @@ def _filename_for(doi, oa_url):
     return None
 
 
-def _curl_download(url, tmp_path, timeout):
-    """Subprocess curl fallback. Used when urllib hits a Cloudflare
-    403 — Cloudflare TLS-fingerprints Python's `ssl` module and
-    rejects it before the request body is even read. System curl
-    presents a different TLS ClientHello that Cloudflare accepts.
-    Returns (ok, msg). Curl ships in the GNOME Flatpak runtime, so
-    this works inside the sandbox too."""
-    try:
-        proc = subprocess.run(
-            ["curl", "-sS", "-L",
-             "--max-time", str(int(timeout)),
-             "-A", user_agent(),
-             "-o", tmp_path,
-             url],
-            capture_output=True, timeout=timeout + 5)
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return False, "curl fallback failed: {}".format(e)
-    if proc.returncode != 0:
-        err = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
-        return False, "curl: {}".format(err or "exit {}".format(proc.returncode))
-    return True, ""
-
-
-def _download_pdf(url, target_path, timeout=60):
-    """Download `url` to `target_path` atomically (.tmp + rename).
-    Returns (ok, msg). The returned msg is empty on success and
-    a short user-friendly explanation otherwise.
-
-    Tries urllib first; on a Cloudflare 403 (the IUCr / Wiley etc.
-    case — TLS-fingerprint rejection rather than a JS challenge),
-    retries via subprocess curl which uses a different TLS stack."""
-    tmp = target_path + ".tmp"
-    # Pretend to be a normal browser: many publishers (and Cloudflare-
-    # protected sites in particular) will 403 anything that doesn't
-    # look like one.
-    headers = {
-        "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) "
-                       "AppleWebKit/537.36 (KHTML, like Gecko) "
-                       "Chrome/124.0.0.0 Safari/537.36"),
-        "Accept": "application/pdf,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-    }
-    try:
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            with open(tmp, "wb") as f:
-                shutil.copyfileobj(resp, f, 1 << 16)
-    except urllib.error.HTTPError as e:
-        try:
-            if os.path.isfile(tmp):
-                os.remove(tmp)
-        except OSError:
-            pass
-        if e.code == 403 and "cloudflare" in (
-                (e.headers.get("server") or "").lower()
-                if e.headers else ""):
-            # Cloudflare rejected the urllib request on TLS
-            # fingerprint. Retry via curl, which presents a
-            # different ClientHello and is usually accepted.
-            ok, curl_msg = _curl_download(url, tmp, timeout)
-            if not ok:
-                try:
-                    if os.path.isfile(tmp):
-                        os.remove(tmp)
-                except OSError:
-                    pass
-                return False, ("blocked by Cloudflare; curl fallback "
-                               "also failed ({})".format(curl_msg))
-            # Fall through to the PDF sanity-check below.
-        else:
-            if e.code == 403:
-                return False, ("HTTP 403 Forbidden — the publisher refused "
-                               "the download. Use View to see the paper in "
-                               "your browser.")
-            if e.code == 404:
-                return False, "HTTP 404 — the PDF URL is no longer valid"
-            return False, "HTTP {} {}".format(e.code, e.reason or "")
-    except (urllib.error.URLError, OSError, TimeoutError) as e:
-        try:
-            if os.path.isfile(tmp):
-                os.remove(tmp)
-        except OSError:
-            pass
-        return False, str(e)
-    # Sanity check: real PDFs start with %PDF and are at least a few KB.
-    try:
-        size = os.path.getsize(tmp)
-        with open(tmp, "rb") as f:
-            head = f.read(5)
-    except OSError as e:
-        return False, str(e)
-    if size < 1024 or head != b"%PDF-":
-        # urllib succeeded (HTTP 200) but the body is HTML — a
-        # Cloudflare interstitial wrapped in a successful response,
-        # not a 403. The IUCr "Radiation damage" case fits this
-        # exactly. Retry via curl, which sees the real PDF.
-        looks_like_html = (head[:5].lower().startswith(b"<htm")
-                           or head[:5] == b"<!DOC"[:5])
-        if looks_like_html:
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
-            ok, curl_msg = _curl_download(url, tmp, timeout)
-            if ok:
-                # Re-run the sanity check on whatever curl fetched.
-                try:
-                    size = os.path.getsize(tmp)
-                    with open(tmp, "rb") as f:
-                        head = f.read(5)
-                except OSError as e:
-                    return False, str(e)
-                if size >= 1024 and head == b"%PDF-":
-                    os.rename(tmp, target_path)
-                    return True, ""
-            try:
-                if os.path.isfile(tmp):
-                    os.remove(tmp)
-            except OSError:
-                pass
-            return False, ("server returned HTML, not a PDF — likely "
-                           "an anti-bot challenge or login wall; curl "
-                           "fallback also did not yield a PDF")
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        return False, "downloaded data isn't a PDF (size={}, head={!r})".format(
-            size, head)
-    os.rename(tmp, target_path)
-    return True, ""
+# The download helpers that used to live here (a curl fallback and
+# _download_pdf) moved to pdf_fetch, which the MCP server also uses
+# and which reports progress. Keeping a second copy here is how the
+# GUI came to be a source behind: see the Unpaywall backlog entry.
 
 
 def _truncate_authors(names, max_chars=110):
@@ -1858,16 +1730,46 @@ class AuthorPage(Gtk.Box):
 
         btn.set_sensitive(False)
         btn.set_label("Downloading…")
+        # The download narrates itself on the status line; remember
+        # what was there so it can be handed back afterwards.
+        self._status_before_download = self.status.get_label()
         threading.Thread(
             target=self._do_add_to_archive,
             args=(urls, target, doi, btn),
             daemon=True,
         ).start()
 
+    def _archive_progress(self):
+        """A pdf_fetch `on_progress` callback writing to this page's
+        status line, holding each milestone long enough to read.
+
+        The button says "Downloading…" and has room for nothing else;
+        which host answered, and how many megabytes have arrived, go
+        where there is space for them. `_restore_status` puts the
+        works summary back afterwards."""
+        ticker = status_ticker.StatusTicker(
+            show=lambda message: GLib.idle_add(
+                self.status.set_markup,
+                "<span alpha='75%'>{}</span>".format(
+                    GLib.markup_escape_text(message))),
+            schedule=lambda delay_ms, fn: GLib.timeout_add(delay_ms, fn))
+        return ticker.callback()
+
+    def _restore_status(self):
+        """Put back whatever the status line said before the
+        download borrowed it — saved verbatim rather than rebuilt,
+        because the page does not keep the works list around to
+        recount."""
+        saved = getattr(self, "_status_before_download", None)
+        if saved is not None:
+            self.status.set_markup(saved)
+        return False
+
     def _do_add_to_archive(self, urls, target, doi, btn):
         # Try each candidate in order, falling back to the next on
         # failure. Most papers succeed on the first; CF-protected
         # bioRxiv etc. often have a PMC mirror that works.
+        progress = self._archive_progress()
         last_msg = ""
         last_url = ""
         for i, url in enumerate(urls):
@@ -1875,7 +1777,8 @@ class AuthorPage(Gtk.Box):
                 GLib.idle_add(
                     self._set_add_btn_label, btn,
                     "Trying mirror {} / {}…".format(i + 1, len(urls)))
-            ok, msg = _download_pdf(url, target)
+            ok, msg = pdf_fetch.download_pdf(url, target,
+                                             on_progress=progress)
             last_msg = msg
             last_url = url
             if ok:
@@ -1883,12 +1786,22 @@ class AuthorPage(Gtk.Box):
             print("Add to archive: download failed for {}: {}".format(
                 url, msg))
         else:
-            n = len(urls)
-            tail = (" (tried {} mirrors)".format(n) if n > 1 else "")
-            GLib.idle_add(
-                self._add_to_archive_done, btn, False,
-                last_msg + tail, None)
-            return
+            # The URLs above come from the work record we already had.
+            # When every one of them fails — Cloudflare, a dead
+            # mirror — ask the sources that record knows nothing
+            # about, the same chain "Get PDF" uses.
+            ok = False
+            if doi:
+                ok, last_url, last_msg = pdf_fetch.fetch_oa_pdf(
+                    doi, target, on_progress=progress)
+            if not ok:
+                n = len(urls)
+                tail = (" (tried {} mirror{})".format(
+                    n, "" if n == 1 else "s") if n > 1 else "")
+                GLib.idle_add(
+                    self._add_to_archive_done, btn, False,
+                    last_msg + tail, None)
+                return
 
         try:
             rec, status = importer.import_pdf(self.conn, target)
@@ -1905,6 +1818,9 @@ class AuthorPage(Gtk.Box):
         return False
 
     def _add_to_archive_done(self, btn, ok, status_or_msg, _rec):
+        # Whatever happened, the status line goes back to describing
+        # the works list rather than the last download step.
+        self._restore_status()
         if ok:
             btn.set_label("Added")
             btn.remove_css_class("suggested-action")

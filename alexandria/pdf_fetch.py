@@ -234,21 +234,45 @@ def _openalex_pdf_urls(doi, timeout=15):
     return urls
 
 
-def _unpaywall_pdf_urls(doi):
-    """Unpaywall via `metrics.fetch_oa_locations`. Empty list on
-    failure."""
+def _unpaywall_report(doi):
+    """`(pdf_urls, message)` from Unpaywall.
+
+    "Unpaywall: nothing" covered three different situations, and only
+    one of them is a problem:
+
+      - it did not answer, or has never heard of the DOI;
+      - it answered and knows of no open-access copy at all;
+      - it answered, the paper *is* open access, but every location
+        it holds is a landing page with no direct PDF link.
+
+    The third is the surprising one — Slice'N'Dice is hybrid OA with
+    two locations and no downloadable file among them — and the one
+    most likely to be read as a fault. `fetch_oa_locations` already
+    drops locations without a `url_for_pdf`, but it keeps `is_oa` and
+    `oa_status`, which is enough to tell the three apart."""
     try:
         unpw = metrics.fetch_oa_locations(doi)
-    except Exception:
-        return []
+    except Exception as e:
+        return [], "Unpaywall: no answer ({})".format(e)
     if not unpw:
-        return []
+        return [], "Unpaywall: no answer, or no record of this DOI"
     urls = []
     for loc in unpw.get("locations") or []:
         u = loc.get("pdf_url")
         if u and u not in urls:
             urls.append(u)
-    return urls
+    if urls:
+        return urls, "Unpaywall: {}".format(_found(len(urls)))
+    if unpw.get("is_oa"):
+        return [], ("Unpaywall: open access ({}) but no direct PDF "
+                    "link — landing pages only".format(
+                        unpw.get("oa_status") or "status unknown"))
+    return [], "Unpaywall: no open-access copy known"
+
+
+def _unpaywall_pdf_urls(doi):
+    """Just the URLs — see `_unpaywall_report` for the reasoning."""
+    return _unpaywall_report(doi)[0]
 
 
 def _europepmc_pdf_urls(doi, timeout=15):
@@ -333,12 +357,15 @@ def oa_pdf_urls_for_doi(doi, also_try_europepmc=True,
                 "(Preferences → Online services)")
     else:
         _report(on_progress, "Asking Unpaywall…")
-        n = 0
-        for u in _unpaywall_pdf_urls(doi):
+        found, message = _unpaywall_report(doi)
+        fresh = 0
+        for u in found:
             if u not in urls:
                 urls.append(u)
-                n += 1
-        _report(on_progress, "Unpaywall: {}".format(_found(n)))
+                fresh += 1
+        if found and not fresh:
+            message += " — all already offered by OpenAlex"
+        _report(on_progress, message)
 
     if also_try_europepmc:
         _report(on_progress, "Asking EuropePMC…")

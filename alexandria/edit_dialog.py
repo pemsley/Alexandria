@@ -174,11 +174,22 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
     add_label("Volume/issue\n/pages:", 4)
     grid.attach(biblio_row, 1, 4, 1, 1)
 
+    # "Fetch" beside the DOI, because "I know the DOI, go and look it
+    # up" had no affordance at all: Refresh means "re-read the PDF",
+    # which is defensible but is not discoverable as *not* meaning
+    # this. Reported 2026-08-27 by a user who typed a DOI, pressed
+    # Refresh, and got an empty field back.
+    doi_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
     doi_entry = Gtk.Entry()
     doi_entry.set_text(rec.get("doi") or "")
     doi_entry.set_hexpand(True)
+    doi_box.append(doi_entry)
+    doi_fetch_btn = Gtk.Button(label="Fetch")
+    doi_fetch_btn.set_tooltip_text(
+        "Look this DOI up on OpenAlex and fill in the fields above")
+    doi_box.append(doi_fetch_btn)
     add_label("DOI:", 5)
-    grid.attach(doi_entry, 1, 5, 1, 1)
+    grid.attach(doi_box, 1, 5, 1, 1)
 
     # Citation key. A human artefact — people have typed
     # `emsley2010features` into LaTeX for decades, and a paper's key
@@ -312,7 +323,48 @@ def open_editor(parent, conn, pdf_path, sidecar_path, on_saved):
         year_entry.set_text(str(c["year"]) if c.get("year") else "")
         journal_entry.set_text(c.get("journal") or "")
         doi_entry.set_text(c.get("doi") or "")
+        # Volume/issue/pages only when the source has them. A title
+        # search returns candidates with no biblio block at all, and
+        # blanking a filled field is never an improvement — the same
+        # rule `importer.refresh_pdf` follows.
+        for entry, key in ((volume_entry, "volume"),
+                           (issue_entry, "issue"),
+                           (pages_entry, "pages")):
+            if c.get(key):
+                entry.set_text(str(c[key]))
         _find_status("Filled from OpenAlex — review, then Save.")
+
+    def _apply_doi_result(work):
+        doi_fetch_btn.set_sensitive(True)
+        if not work:
+            _find_status("OpenAlex has no record of that DOI.")
+            return False
+        apply_candidate(work)
+        return False
+
+    def on_fetch_doi(_b):
+        doi = metrics.normalise_typed_doi(doi_entry.get_text())
+        if not doi:
+            _find_status("That does not look like a DOI — they start "
+                         "\"10.\" and contain a slash.")
+            return
+        # Show what we actually looked up, so a pasted URL visibly
+        # becomes the DOI that will be saved.
+        doi_entry.set_text(doi)
+        _find_status("Looking up {} on OpenAlex…".format(doi))
+        doi_fetch_btn.set_sensitive(False)
+
+        def work():
+            try:
+                found = metrics.fetch_work_by_doi(doi)
+            except Exception as e:
+                GLib.idle_add(_find_status, "Lookup failed: {}".format(e))
+                GLib.idle_add(doi_fetch_btn.set_sensitive, True)
+                return
+            GLib.idle_add(_apply_doi_result, found)
+        threading.Thread(target=work, daemon=True).start()
+
+    doi_fetch_btn.connect("clicked", on_fetch_doi)
 
     def show_results(mode, cands):
         find_btn.set_sensitive(True)

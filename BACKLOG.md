@@ -295,6 +295,44 @@ Pending features, roughly grouped. Newest at the top of each section.
       today they only waste calls and show as confusing empty
       cards. Stay indexed and searchable.
 
+- **DONE 2026-09-06: both halves fixed, plus the root cause.**
+
+    1. *Preserving what is there.* `refresh_pdf` now refuses to
+       replace a stored value with a blank one, for `doi`, `title`,
+       `authors`, `year`, `journal`, `volume`, `issue` and `pages`.
+       These stay out of the preserve list proper — a better
+       extraction should still be allowed to *improve* them — but a
+       blank is not an improvement. The filename that `_build_record`
+       substitutes when it finds no title counts as blank too,
+       otherwise it displaces the real title.
+    2. *The missing affordance.* A **Fetch** button now sits beside
+       the DOI entry in the editor: it looks the DOI up on OpenAlex
+       and fills title / authors / year / journal / volume / issue /
+       pages in place, before save, so the result is visible and
+       correctable. `metrics.normalise_typed_doi` takes a DOI in any
+       of the forms a person pastes (bare, `doi:`, a doi.org or
+       dx.doi.org URL, trailing full stop, wrapped in prose) and
+       reports junk rather than sending it to OpenAlex.
+
+  **The root cause, found by testing the fix on the reported file.**
+  Refresh had also been replacing the title with `PII:
+  S0022-2836(95)80037-9` and the year 1995 with 2005 — an Elsevier
+  back-catalogue re-export asserting its own re-stamp date. Both are
+  now dropped at extraction (`extract.drop_pii_artefacts`): a title
+  that is only a PII is not a title, and a year that post-dates the
+  year encoded in the PII is unknown rather than asserted. This also
+  settles the separate "Do not take the publication year from the
+  PDF CreationDate" item below.
+
+  And the reason the DOI was missing in the first place: two
+  filename→DOI decoders existed, and extraction used the weaker one.
+  `_enrich` now chains both, so the Elsevier `1-s2.0-<PII>-…` form
+  resolves. On the reported file a fresh import now yields the right
+  DOI, year 1995 and "Journal of Molecular Biology" — the journal
+  its sidecar still records as `null`.
+
+  Original report follows.
+
 - **BUG: "refresh" destroys a hand-entered DOI, and there is no path
   from "I know the DOI" to "fetch the metadata".** Reported
   2026-08-27 against
@@ -443,6 +481,14 @@ Pending features, roughly grouped. Newest at the top of each section.
   real answers to "get me this PDF" remain the OA path we already
   have (OpenAlex / Unpaywall), EZproxy for subscribed content, and
   the inside-the-firewall waiting list.
+
+- **DONE 2026-09-06** — `extract.drop_pii_artefacts`, alongside the
+  refresh bug above. The PII ceiling is implemented exactly as
+  described here; a year at or before the encoded one is left alone,
+  since this is a ceiling and not a correction. Not addressed: a
+  CreationDate year on a paper with *no* PII is still asserted —
+  there is nothing to check it against, and OpenAlex overrides it
+  whenever a DOI resolves. Original entry:
 
 - **Do not take the publication year from the PDF CreationDate.**
   Same sidecar: `year: 2005`, from `CreationDate D:20050105…`, for a

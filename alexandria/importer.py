@@ -524,6 +524,22 @@ def _openalex_record_matches(pdf_title, pdf_year, oa_title, oa_year):
     return False
 
 
+def _is_blank(value):
+    """Whether a metadata field carries no information. `0` counts as
+    blank for a year (there is no year zero here, only a failed
+    parse), but not for anything numeric we might add later, so the
+    test is deliberately narrow: None, empty string, empty list."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    if isinstance(value, (list, tuple, dict)):
+        return len(value) == 0
+    if isinstance(value, int) and value == 0:
+        return True
+    return False
+
+
 def _build_record(pdf_path):
     """Run the full extraction pipeline and return a fresh record dict."""
     rec = sidecar.new_record(pdf_path)
@@ -574,6 +590,24 @@ def refresh_pdf(conn, pdf_path):
                 "bibtex_key", "bibtex_type", "bibtex_extra"):
         if key in old:
             fresh[key] = old[key]
+    # A fresh extraction that finds nothing must not erase what is
+    # already there. `doi`, `title`, `authors`, `year`, `journal` and
+    # the biblio fields are deliberately absent from the preserve
+    # list above — a better extraction is allowed to *improve* them —
+    # but replacing a value with an empty one is never an
+    # improvement. It is how a hand-entered DOI was destroyed:
+    # the user typed one, pressed refresh expecting a lookup, and got
+    # `doi: null` back because the PDF itself yields no DOI.
+    for key in ("doi", "title", "authors", "year", "journal",
+                "volume", "issue", "pages"):
+        if _is_blank(fresh.get(key)) and not _is_blank(old.get(key)):
+            fresh[key] = old[key]
+    # `_build_record` puts the filename in the title when extraction
+    # finds none. That is a placeholder standing in for a blank, not
+    # a finding, so it must not displace a real stored title either.
+    stem = os.path.splitext(os.path.basename(pdf_path))[0]
+    if fresh.get("title") == stem and not _is_blank(old.get("title")):
+        fresh["title"] = old["title"]
     if not fresh.get("sha256"):
         fresh["sha256"] = old.get("sha256") or _sha256(pdf_path)
 

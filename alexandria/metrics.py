@@ -575,6 +575,34 @@ def _normalize_doi(doi):
     return s or None
 
 
+_TYPED_DOI_RE = re.compile(r"10\.\d{4,9}/\S+")
+
+
+def normalise_typed_doi(text):
+    """A DOI as a person pastes it, reduced to the bare DOI, or None.
+
+    `_normalize_doi` handles what OpenAlex returns; this handles what
+    a human hands you. Copying a DOI out of a reference list, a
+    browser bar or an email brings along a `doi:` prefix, a
+    `dx.doi.org` URL, a trailing full stop, or a stray line break.
+    Rather than enumerate the wrappers, find the DOI inside the
+    string: every DOI is `10.` + a 4-9 digit registrant + `/` + a
+    suffix, which no plausible wrapper looks like.
+
+    Trailing sentence punctuation is stripped, because a DOI copied
+    from prose usually ends a sentence and `.` is legal inside a
+    suffix — so it can only be judged at the end. Returns None when
+    there is no DOI in there at all, which the caller reports rather
+    than sending nonsense to OpenAlex."""
+    if not text:
+        return None
+    m = _TYPED_DOI_RE.search(text.strip())
+    if m is None:
+        return None
+    doi = m.group(0).rstrip(".,;)]}>\"'")
+    return doi or None
+
+
 _AUTHOR_WORKS_SORTS = {
     "recent": "publication_date:desc",
     "cited":  "cited_by_count:desc",

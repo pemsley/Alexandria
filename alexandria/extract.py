@@ -873,6 +873,74 @@ def _scrape_first_page(pdf_path):
     return title, authors
 
 
+def pii_year(text):
+    """The publication year encoded in an Elsevier PII, or None.
+
+    A PII is `S` + ISSN + a two-digit year + sequence + check
+    character: the `(95)` in `S0022-2836(95)80037-9` *is* 1995. That
+    makes it a rare thing in PDF metadata — a publication year the
+    file states rather than implies.
+
+    Two digits need a century. Try 2000 first and fall back to 1900
+    when that would be in the future, which is right for everything
+    Elsevier has digitised and stays right without a hard-coded
+    cutoff to revisit."""
+    if not text:
+        return None
+    s = re.sub(r"[()\-\s]", "", str(text))
+    m = _PII_RE.search(s)
+    if m is None:
+        return None
+    from datetime import date as _date
+    yy = int(m.group(3))
+    year = 2000 + yy
+    if year > _date.today().year:
+        year = 1900 + yy
+    return year
+
+
+def looks_like_pii_title(title):
+    """Whether a "title" is really just a PII.
+
+    Elsevier's back-catalogue re-exports carry `PII:
+    S0022-2836(95)80037-9` in the title slot. It is an identifier
+    that happens to sit where a title goes, and asserting it as one
+    puts a line of gibberish on the card."""
+    if not title:
+        return False
+    s = re.sub(r"^\s*PII[:\s]+", "", str(title).strip(), flags=re.IGNORECASE)
+    s = re.sub(r"[()\-\s]", "", s)
+    return bool(s) and _PII_RE.fullmatch(s) is not None
+
+
+def drop_pii_artefacts(result, pdf_path=None):
+    """Remove the two things an Elsevier re-export asserts falsely.
+
+    Elsevier re-exported its back catalogue in the mid-2000s, so a
+    1995 paper arrives with `CreationDate D:20050105…` and a title
+    of `PII: S0022-2836(95)80037-9`. Both are confident and both are
+    wrong, and confidently wrong metadata is worse than none:
+    downstream, "no year" is filled from OpenAlex, while "2005" is
+    believed.
+
+    So a year that post-dates the year in the PII becomes unknown
+    rather than asserted — the PII is the file's own statement about
+    itself, and a paper cannot have been published after the
+    identifier that names it. A year at or before it is left alone;
+    this is a ceiling, not a correction."""
+    title = result.get("title")
+    if looks_like_pii_title(title):
+        result["title"] = None
+    year = result.get("year")
+    if year:
+        encoded = (pii_year(title)
+                   or pii_year(result.get("doi"))
+                   or pii_year(os.path.basename(pdf_path or "")))
+        if encoded and year > encoded:
+            result["year"] = None
+    return result
+
+
 def _enrich(result, pdf_path):
     """If metadata is incomplete, scrape page 1 for a DOI and overlay
     CrossRef data. Also detects SI documents and re-routes them through
@@ -908,7 +976,15 @@ def _enrich(result, pdf_path):
             # DOI-as-filename). Older PNAS PDFs in particular have
             # the DOI nowhere in their text but encode it in the
             # filename ("pnas-0502225102.pdf").
-            doi = _doi_from_filename(pdf_path)
+            # Two filename decoders exist: the private one here, and
+            # the public `doi_from_filename` added later for the
+            # import-time conflict check, which also knows the
+            # Elsevier `1-s2.0-<PII>-…` form and the Nature/BMC/
+            # Springer rules. Extraction never used the second, so a
+            # paper whose DOI was sitting in its own filename could
+            # still import with `doi: null`. Chained rather than
+            # replaced: neither is a superset of the other.
+            doi = _doi_from_filename(pdf_path) or doi_from_filename(pdf_path)
         if not doi:
             # Some journals (e.g. Science) print the DOI on the references
             # page rather than page 1. Cast a wider net before giving up.
@@ -942,7 +1018,7 @@ def _enrich(result, pdf_path):
             result["title"] = t
         if a and not result.get("authors"):
             result["authors"] = a
-    return result
+    return drop_pii_artefacts(result, pdf_path)
 
 
 def extract_from_pdf(pdf_path):

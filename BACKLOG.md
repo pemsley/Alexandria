@@ -23,6 +23,10 @@ Pending features, roughly grouped. Newest at the top of each section.
  - zoom to fit by default (explore)
 
 ## Import / ingestion
+- **DONE 2026-09-06** — fixed in `8df1688`. The chip is on the card
+  (`browse.py:631`) and the detail is in Edit metadata
+  (`edit_dialog.py:229`). Original entry:
+
 - **BUG: the citation refresher detects corrupt metadata and only
   logs it.** Reported 2026-09-05. At startup the refresher prints
   lines like
@@ -379,6 +383,12 @@ Pending features, roughly grouped. Newest at the top of each section.
        defensible; it just is not discoverable as *not* meaning "go
        and look this up".
 
+- **DONE 2026-09-06** — `extract.doi_from_filename` covers PNAS,
+  bioRxiv, Science Advances, DOI-as-filename, Elsevier PII and the
+  Nature/BMC/Springer shapes. It was used only for the import-time
+  conflict check until `_enrich` was wired to it as well. Original
+  entry:
+
 - **Derive DOIs from publisher filename conventions.** Download
   filenames are not noise — most publishers encode an identifier in
   them, usually the DOI with the punctuation filed off. Worth trying
@@ -517,6 +527,13 @@ Pending features, roughly grouped. Newest at the top of each section.
   sandbox" path — either re-prompt the user via `Gtk.FileDialog` to
   relaunder the path through the portal, or surface a clear error
   message.
+- **DONE 2026-09-06** — shipped as catalogues: one DB per catalogue
+  (`index.db_path_for_catalogue`), `prefs.get_catalogues`, and a
+  switcher in the hamburger menu (`browse.py:1816`). The design
+  question this entry raises about *cross-catalogue search* is
+  still open, and is now the only part of it that is. Original
+  entry:
+
 - **Multi-directory libraries / multiple catalogs.** Currently
   `LIBRARY_ROOT` is a single directory. Some users want separate
   catalogs (e.g. "Personal", "Work", "Crystallography teaching")
@@ -557,6 +574,9 @@ Pending features, roughly grouped. Newest at the top of each section.
       single-writer-at-a-time guarantee documented in
       `docs/design/database-and-nfs.md` — two simultaneous
       editors on two hosts is the unsolved race.
+- **DONE 2026-09-03** — the import dialog takes "a DOI, PubMed ID or
+  PMC ID" (`doi_import_dialog.py:48`). Original entry:
+
 - **Import by PMC / PubMed identifier**, alongside import by DOI.
   Asked for 2026-09-03. Paste `PMC1234567` (or a bare PMID) and get
   the paper, exactly as `doi_import_dialog.open_doi_import` does for
@@ -597,10 +617,17 @@ Pending features, roughly grouped. Newest at the top of each section.
   and the ghost/duplicate handling rather than growing a parallel
   implementation.
 
+- **DONE** — `doi_import_dialog.open_doi_import`, wired to the Import
+  menu (`browse.py:2725`). Original entry:
+
 - **Import from DOI (paste):** small dialog with a DOI entry field. Fetch
   metadata via OpenAlex/CrossRef, then attempt to fetch the open-access
   PDF (when `is_oa` and `oa_url` are present); if no OA copy, save a
   metadata-only sidecar with a placeholder so it shows up in the index.
+- **DONE** — `bibtex_import.py`, on the menu as "Import BibTeX…"
+  (`browse.py:1789`). Ghost cards, `bibtex_key` persistence and
+  round-trip fidelity all followed. Original entry:
+
 - **Import from BibTeX file:** use `bibtexparser` to parse a `.bib`
   file and create a sidecar per entry. Entries without a `file =
   {...}` PDF path become **PDF-less sidecars** — they show up in the
@@ -610,6 +637,16 @@ Pending features, roughly grouped. Newest at the top of each section.
   so future re-exports preserve it. For entries with a DOI, enrich
   via OpenAlex.
 - URL drops (drag a journal/PDF URL into the browser, fetch + import).
+- **HALF DONE — the machinery is built and the button does not use
+  it.** `pdf_fetch.oa_pdf_urls_for_doi` already chains OpenAlex →
+  Unpaywall → EuropePMC, and `fetch_oa_pdf` drives it — but the only
+  caller is the MCP server (`alexandria_mcp/server.py:477`). The GUI
+  "Get PDF" button still goes through `_on_get_pdf`, whose tooltip
+  says "via OpenAlex" and means it. So this is now a small wiring
+  job, not a feature. (`metrics._unpaywall_location_rank` is dead
+  code from an earlier attempt — the live ranking is in
+  `pdf_fetch`.) Original entry:
+
 - **Unpaywall as a `Get PDF` fallback.** Currently "Get PDF" on a
   ghost card chases OpenAlex's `open_access.oa_url`, which is fine
   when it resolves but misses a long tail. Unpaywall (same parent
@@ -722,6 +759,8 @@ Pending features, roughly grouped. Newest at the top of each section.
   `pdfminer.six` or `pymupdf` for proper layout analysis; (c) implement
   page segmentation via connected-components on glyph rectangles.
 
+- **DONE** — `browse.py:_open_references_popover`. Original entry:
+
 - **References panel** (per-paper, popover). Use OpenAlex's
   `referenced_works` field on the paper's Work record — already
   structured (each is an OpenAlex Work ID), batched-resolve to
@@ -737,6 +776,11 @@ Pending features, roughly grouped. Newest at the top of each section.
   Nature). What's still missing is the parser-driven fallback for
   PDFs without those annotations — see "Citation hit-testing
   fallback" below.)*
+
+- **PARTLY DONE** — Path E (JATS) shipped and delivers exactly this
+  for papers with stored JATS: `references_pdf.find_jats_citations`
+  locates each `[N]` in the page text. Path B below is still the
+  answer for PDFs with no JATS available. Original entry:
 
 - **Citation hit-testing fallback for un-annotated `[N]` PDFs
   (numbered).** Click-to-jump and the resolved-reference popover
@@ -793,6 +837,13 @@ Pending features, roughly grouped. Newest at the top of each section.
       and `metrics.fetch_cited_by` already exist.
 
 ## Discovery
+- **DONE 2026-09-06** — both halves exist: the parser is
+  `metrics.parse_citation_hint`, and the front door is the "Find
+  metadata" box in the Edit-metadata dialog, which shows the ranked
+  list this entry asks for. Note it landed *there* rather than as
+  the fifth Discover tab proposed below; a Discover home would be
+  an addition, not a fix. Original entry:
+
 - **Resolve a pasted citation string ("Jones et al., J. Mol. Biol.
   1995").** LLM answers, emails and talks hand out references in
   loose prose form. We can already resolve these — the gap is a front
@@ -904,7 +955,8 @@ Pending features, roughly grouped. Newest at the top of each section.
   DOI suffix says `1996`. Publication year cannot be read off a
   DOI.)
 
-- **Watch / subscription feed (Wispar-shaped).** A "follow this
+- **v1 SHIPPED; the rest is follow-up.** Watch / subscription
+  feed (Wispar-shaped). A "follow this
   journal / save this OpenAlex search and tell me what's new"
   feature, designed by reading Wispar's `feed_service.dart` /
   `feed_api.dart` / `home_screen.dart` (cloned at
@@ -1264,6 +1316,12 @@ Pending features, roughly grouped. Newest at the top of each section.
   database is the natural companion to a shared image store, and to
   the avatar packs below.
 
+- **PARTLY DONE** — every work row already carries an "In library"
+  badge (`author_works.py:1795`, kept live by `refresh_in_library`).
+  The *section* this entry asks for — them gathered in one place
+  alongside Frequent collaborators — does not exist. Original
+  entry:
+
 - **"Papers in the library" section in the author page.** Asked for
   2026-09-02: on an author's page, show which of their papers you
   already hold — as a section alongside "Frequent collaborators" and
@@ -1308,6 +1366,11 @@ Pending features, roughly grouped. Newest at the top of each section.
   mostly rearranging what is already computed — and treating the
   cross-catalogue count as a follow-on once the section exists and
   its usefulness is obvious.
+
+- **STILL OPEN — do not be fooled by `author_relations`.** That
+  table stores `cited_by_top_json`, which is the *other* direction
+  ("Cited most often by", shipped 2026-09-01). Nothing yet shows
+  who this author reads. Original entry:
 
 - **"This author cites" author list in the author dialog.** The
   companion to the "Cited most often by" row shipped on 2026-09-01
@@ -1357,7 +1420,8 @@ Pending features, roughly grouped. Newest at the top of each section.
     `index.db_path_of` was added so the worker can open its own
     connection from a window that is handed only a connection.)*
 
-- **Citing-impact score per author.** `metrics.compute_citing_impact`
+- **SHIPPED; the rest is refinement.** Citing-impact score per
+  author. `metrics.compute_citing_impact`
   is shipped — sums `cited_by_count` across every paper that cites
   any of an author's papers (self-cites excluded server-side via
   OpenAlex's filter negation). Now bucketed by paper kind via

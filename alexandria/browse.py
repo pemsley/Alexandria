@@ -5314,6 +5314,54 @@ class BrowserWindow(Adw.ApplicationWindow):
         pop.set_child(outer)
         pop.popup()
 
+    # Scaled author photos, keyed by trail key. The popover is
+    # rebuilt on every open and the same authors recur across cards,
+    # so decoding a 512px PNG each time would be paid repeatedly for
+    # an image drawn at 22px.
+    _AVATAR_PX = 22
+    _avatar_textures = {}
+
+    def _author_avatar(self, authorship):
+        """A small photo for authors who have one, blank space for
+        everyone else.
+
+        Deliberately not `Adw.Avatar`: its initials disc would give
+        every author a mark, and the value here is that most rows
+        have nothing. A photo exists only because someone went and
+        found one, so it means "I care about this person" — in a
+        fifty-name list that makes it a scanning aid, and sparseness
+        is the whole point. The column keeps its width either way so
+        the names stay aligned."""
+        holder = Gtk.Box()
+        holder.set_size_request(self._AVATAR_PX, -1)
+        holder.set_valign(Gtk.Align.START)
+        holder.set_margin_end(6)
+
+        key = index.author_trail_key(authorship)
+        if not key:
+            return holder          # no identifier: never has a photo
+        texture = self._avatar_textures.get(key)
+        if texture is None:
+            path = author_image.image_path(authorship)
+            if not path or not os.path.isfile(path):
+                return holder
+            try:
+                texture = Gdk.Texture.new_from_filename(path)
+            except Exception:
+                return holder
+            self._avatar_textures[key] = texture
+
+        # Adw.Avatar for the platform's round crop — no CSS provider
+        # needed, and its initials fallback can never fire because
+        # this branch is only reached when a photo exists.
+        pic = Adw.Avatar(size=self._AVATAR_PX, show_initials=False)
+        pic.set_custom_image(texture)
+        pic.set_tooltip_text(
+            "{} — you have a photo for this author".format(
+                authorship.get("name") or "This author"))
+        holder.append(pic)
+        return holder
+
     def _build_author_row(self, grid, idx, authorship, popover):
         name = authorship.get("name") or "(unknown)"
         position = (authorship.get("position") or "").lower()
@@ -5350,14 +5398,15 @@ class BrowserWindow(Adw.ApplicationWindow):
         name_btn.connect(
             "clicked",
             lambda _b, a=authorship: self._find_more_by_author(a, popover))
-        grid.attach(name_btn, 0, name_row, 1, 1)
+        grid.attach(self._author_avatar(authorship), 0, name_row, 1, 2)
+        grid.attach(name_btn, 1, name_row, 1, 1)
 
         # Position marker (subtle): "first" / "last" only.
         if position in ("first", "last"):
             pos_lbl = Gtk.Label()
             pos_lbl.set_markup("<small><i>{}</i></small>".format(position))
             pos_lbl.set_halign(Gtk.Align.START)
-            grid.attach(pos_lbl, 1, name_row, 1, 1)
+            grid.attach(pos_lbl, 2, name_row, 1, 1)
 
         # Filter button: click → set search to the surname, FTS picks
         # up. Works for every author, matched or not.
@@ -5370,7 +5419,7 @@ class BrowserWindow(Adw.ApplicationWindow):
         filter_btn.connect(
             "clicked",
             lambda _b, n=name: self._filter_by_author(n, popover))
-        grid.attach(filter_btn, 2, name_row, 1, 1)
+        grid.attach(filter_btn, 3, name_row, 1, 1)
 
         # Institution directly under the name, in small grey text.
         if institution:
@@ -5381,7 +5430,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             inst_lbl.set_halign(Gtk.Align.START)
             inst_lbl.set_margin_start(12)
             inst_lbl.set_margin_bottom(2)
-            grid.attach(inst_lbl, 0, inst_row, 3, 1)
+            grid.attach(inst_lbl, 1, inst_row, 3, 1)
 
     def _filter_by_author(self, name, popover):
         # Use the surname (last whitespace-separated token); FTS prefix

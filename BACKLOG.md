@@ -2188,6 +2188,22 @@ via `extract.CROSSREF_USER_AGENT`.
   folder).
 
 ## UI
+- **DONE 2026-09-06** — `BrowserWindow._author_avatar`, a leading
+  column in the popover grid spanning both of an author's rows.
+  Built as specified below: `Adw.Avatar` with a custom image and
+  `show_initials=False`, created *only* when a photo exists, so the
+  initials fallback can never fire and most rows stay empty. The
+  column keeps its width either way, so names stay aligned. Textures
+  are cached by trail key on the class — the CCP4 suite paper has 94
+  authors, 10 of them photographed, and the popover is rebuilt on
+  every open.
+
+  `Adw.Avatar` rather than `Gtk.Picture` + CSS because the app has no
+  CSS provider at all, and adding one for a rounded crop would be new
+  machinery for something the platform already does.
+
+  Original entry:
+
 - **Show the author's avatar in the main-window author popover.**
   Clicking the author list on a card opens the popover built by
   `_open_authors_popover` / `_build_author_row` (`browse.py:5066`,

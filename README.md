@@ -49,8 +49,10 @@ to throw away the previous repo and start fresh.
 > I rewrote the history and removed and recreated the repo to remove
 > information that should not have been there.
 
-## Screenshot
-![Alexandria main window example — dark mode](data/screenshots/screenshot-dark-mode-main-window.png)
+## Screenshots
+![Alexandria main window example](data/screenshots/main-window-screenshot.png)
+![Alexandria author view example](data/screenshots/author-window-screenshot.png)
+
 
 ## Install
 

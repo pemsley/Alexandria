@@ -954,16 +954,17 @@ def make_card(row, parent_window, conn, on_saved, mark_labels=None,
                                           row["sidecar_path"]))
         btn_row.append(open_btn)
     else:
-        # "Get PDF" — try to download an OA copy via OpenAlex's
-        # best_oa_location (and its mirrors), and on success run the
-        # ghost-merge automatically. If nothing OA is downloadable
-        # (paywall, Cloudflare, no OA URL), fall back to opening the
-        # DOI in the browser so the user can save and drag in.
+        # "Get PDF" — try every OA source we know (OpenAlex,
+        # Unpaywall, EuropePMC) and on success run the ghost-merge
+        # automatically. If nothing OA is downloadable (paywall,
+        # Cloudflare, no OA URL), fall back to opening the DOI in the
+        # browser so the user can save and drag in.
         get_btn = Gtk.Button.new_from_icon_name("folder-download-symbolic")
         if row["doi"]:
             get_btn.set_tooltip_text(
-                "Get PDF — try downloading an open-access copy via "
-                "OpenAlex; on failure, open the DOI in your browser.")
+                "Get PDF — try downloading an open-access copy from "
+                "OpenAlex, Unpaywall or EuropePMC; on failure, open "
+                "the DOI in your browser.")
             get_btn.connect(
                 "clicked",
                 lambda _b, r=row: parent_window._on_get_pdf(r))
@@ -4290,40 +4291,16 @@ class BrowserWindow(Adw.ApplicationWindow):
         ).start()
 
     def _do_add_published_version(self, doi, btn):
-        # Need the OpenAlex Work to get OA pdf URLs.
-        import urllib.parse as _up
-        url = ("https://api.openalex.org/works/doi:"
-               + _up.quote(doi, safe="")
-               + "?mailto=" + _up.quote(metrics.OPENALEX_MAILTO))
-        data = metrics._http_get_json(
-            url,
-            headers={"User-Agent": metrics.OPENALEX_UA,
-                     "Accept": "application/json"},
-            timeout=15)
-        # Collect all known OA pdf URLs. OpenAlex's `best_oa_location`
-        # + `locations` first (when the lookup succeeded), Unpaywall
-        # second for anything OpenAlex didn't surface.
-        pdf_urls = []
-        if data:
-            bol = data.get("best_oa_location") or {}
-            if bol.get("pdf_url"):
-                pdf_urls.append(bol["pdf_url"])
-            for loc in (data.get("locations") or []):
-                if not loc.get("is_oa"):
-                    continue
-                u = loc.get("pdf_url")
-                if u and u not in pdf_urls:
-                    pdf_urls.append(u)
-        unpw = metrics.fetch_oa_locations(doi)
-        if unpw:
-            for loc in unpw.get("locations") or []:
-                u = loc.get("pdf_url")
-                if u and u not in pdf_urls:
-                    pdf_urls.append(u)
-        if not pdf_urls:
-            GLib.idle_add(self._add_pv_done, btn, False,
-                          "no OA PDF URL available")
-            return
+        """Fetch the published version's PDF and import it.
+
+        Same chain and same narration as the ghost-card "Get PDF":
+        this used to keep its own copy of the OpenAlex + Unpaywall
+        URL collection — the third in the file — and so was also
+        missing EuropePMC. The button shows the short state; the
+        detail goes to the status bar, which has room for it."""
+        skipped = pdf_fetch.unavailable_sources()
+        if skipped:
+            GLib.idle_add(self._warn_oa_source_unavailable, skipped)
 
         os.makedirs(self.library_root, exist_ok=True)
         # Filename: derive from DOI.
@@ -4333,21 +4310,15 @@ class BrowserWindow(Adw.ApplicationWindow):
             GLib.idle_add(self._add_pv_done, btn, False, "filename clash")
             return
 
-        # Use the same downloader the author-works dialog does — it
-        # already handles atomic write, %PDF- magic-byte check, and
-        # the Cloudflare 403 case.
-        from . import author_works as _aw
-        last_msg = ""
-        for i, u in enumerate(pdf_urls):
-            if i > 0:
-                GLib.idle_add(
-                    btn.set_label,
-                    "Trying mirror {}/{}…".format(i + 1, len(pdf_urls)))
-            ok, msg = _aw._download_pdf(u, target)
-            last_msg = msg
-            if ok:
-                break
-        else:
+        def progress(message):
+            GLib.idle_add(self.status.set_text, message)
+
+        GLib.idle_add(btn.set_label, "Downloading…")
+        ok, _url, last_msg = pdf_fetch.fetch_oa_pdf(
+            doi, target, on_progress=progress)
+        if not ok:
+            if skipped:
+                last_msg += " ({} not consulted)".format(", ".join(skipped))
             GLib.idle_add(self._add_pv_done, btn, False, last_msg)
             return
 

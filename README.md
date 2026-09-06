@@ -61,6 +61,51 @@ to throw away the previous repo and start fresh.
     apt install python3-gi gir1.2-gtk-4.0 gir1.2-poppler-0.18 poppler-utils
     make install
 
+### Arch Linux
+
+The GTK stack and PyGObject come from pacman — PyGObject has to be
+built against the same GTK it will load, so mixing a pip-installed
+one with the system libraries is the way to a segfault:
+
+    sudo pacman -S --needed gtk4 libadwaita poppler poppler-glib \
+                            python-gobject python-cairo \
+                            adwaita-icon-theme librsvg vte4
+
+`poppler-glib` carries the `Poppler-0.18` typelib the viewer imports;
+`poppler` provides `pdftotext`, which the text extraction shells out
+to. `adwaita-icon-theme` and `librsvg` are what make the toolbar
+render as icons rather than broken-image squares. `vte4` is only for
+the optional built-in terminal.
+
+The Python dependencies come from pip, and cannot come from pacman:
+Arch ships `python-bibtexparser` 1.4.4, while `bibtex.py` uses the
+v2 `parse_string` / middlewares API, and `pdfx` and `citeproc-py` are
+not in the repositories at all.
+
+Arch also marks its system Python as externally managed (PEP 668), so
+`pip install --user` refuses to run. Use a virtualenv that can still
+see pacman's PyGObject:
+
+    python -m venv --system-site-packages ~/.venvs/alexandria
+    make install PYTHON=~/.venvs/alexandria/bin/python
+
+`--system-site-packages` is the load-bearing flag: without it the
+venv cannot see `gi` at all, and pip will try to build PyGObject from
+source to fill the gap. With it, pip installs only the pure-Python
+dependencies and leaves the GTK bindings to pacman.
+
+Then run `~/.venvs/alexandria/bin/alexandria-browse`, or put
+`~/.venvs/alexandria/bin` on your `PATH`. The `.desktop` file
+`make install` writes calls `alexandria-browse`, so either the venv's
+`bin` needs to be on the PATH your desktop session sees, or edit the
+`Exec=` line to the absolute path.
+
+To run from the source tree instead, no install is needed once the
+pacman packages above are present and the pip dependencies are in
+the venv:
+
+    ~/.venvs/alexandria/bin/python alexandria-browse.py
+
 ### macOS (Homebrew)
 
 Alexandria is a GTK4 application, so the GTK stack and its

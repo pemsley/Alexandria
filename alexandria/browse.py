@@ -3118,13 +3118,29 @@ class BrowserWindow(Adw.ApplicationWindow):
         if self._import_busy:
             self.status.set_text("Import already running")
             return
+        # Claim the import *before* the asynchronous read, not in the
+        # callback. The other import routes open a modal file chooser,
+        # which blocks a second activation on its own; this one shows
+        # no dialog, so between the check above and the callback below
+        # the menu item is live and a second activation would pass the
+        # same guard and start a parallel import — two worker threads
+        # on the shared connection, which is what `connect_existing`
+        # exists to avoid.
+        self._import_busy = True
         self.get_clipboard().read_text_async(
             None, self._on_clipboard_bibtex_read)
 
     def _on_clipboard_bibtex_read(self, clipboard, result):
+        # Every path out of here that does not reach
+        # `_start_import_bib_text` has to hand the claim back, or a
+        # clipboard holding something else would wedge importing for
+        # the rest of the session. `_start_import_bib_text` sets the
+        # flag again itself, which is why the success path can leave
+        # it alone.
         try:
             text = clipboard.read_text_finish(result)
         except GLib.Error as e:
+            self._import_busy = False
             self._toast("Couldn't read the clipboard: {}".format(e.message))
             return
         if not bibtex_import.looks_like_bibtex(text):
@@ -3133,6 +3149,7 @@ class BrowserWindow(Adw.ApplicationWindow):
             # hands back None for an empty clipboard and for one
             # holding something that isn't text at all — both are the
             # first case from here.
+            self._import_busy = False
             self._toast("No BibTeX on the clipboard"
                         if (text or "").strip()
                         else "Nothing on the clipboard to import")
